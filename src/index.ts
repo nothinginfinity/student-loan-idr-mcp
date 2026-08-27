@@ -2,7 +2,7 @@ import { calculateRepayment, getPolicyStatus } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
 import type { CalculatorRequest, TemplateRequest } from "./types.ts";
 
-const SERVER_VERSION = "0.4.0";
+const SERVER_VERSION = "0.5.0";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -159,6 +159,373 @@ const toolDefinitions = [
     }
   }
 ] as const;
+
+const BORROWER_UI_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Student Loan IDR Estimate</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: Canvas; color: CanvasText; line-height: 1.5; }
+    main { width: min(1040px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0 64px; }
+    h1 { font-size: clamp(2rem, 7vw, 4rem); line-height: 1; letter-spacing: -0.045em; margin: 0 0 16px; }
+    h2 { margin-top: 0; }
+    .lede { max-width: 780px; font-size: 1.05rem; color: color-mix(in srgb, CanvasText 72%, transparent); }
+    .notice { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 16px; padding: 16px; margin: 24px 0; background: color-mix(in srgb, CanvasText 4%, Canvas); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .span-2 { grid-column: 1 / -1; }
+    label, legend { font-weight: 650; }
+    label { display: grid; gap: 7px; }
+    input, select, button { font: inherit; }
+    input, select { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: Canvas; color: CanvasText; }
+    fieldset { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 12px; padding: 14px; margin: 0; }
+    .checks { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
+    .checks label { display: flex; align-items: center; gap: 7px; font-weight: 500; }
+    .checks input { width: auto; }
+    .actions { display: flex; gap: 12px; align-items: center; margin-top: 22px; flex-wrap: wrap; }
+    button { border: 0; border-radius: 999px; padding: 12px 18px; font-weight: 750; cursor: pointer; background: CanvasText; color: Canvas; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { min-height: 1.5em; color: color-mix(in srgb, CanvasText 70%, transparent); }
+    #results { margin-top: 32px; }
+    .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0 20px; }
+    .metric, .plan { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 14px; padding: 16px; }
+    .metric strong { display: block; font-size: 1.35rem; }
+    .plans { display: grid; gap: 12px; }
+    .plan-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .plan-head strong { font-size: 1.15rem; }
+    .payment { font-size: 1.35rem; font-weight: 800; }
+    .badge { display: inline-flex; padding: 3px 9px; border: 1px solid currentColor; border-radius: 999px; font-size: .82rem; text-transform: capitalize; }
+    .muted { color: color-mix(in srgb, CanvasText 66%, transparent); }
+    ul { padding-left: 22px; }
+    a { color: inherit; }
+    footer { margin-top: 36px; font-size: .9rem; color: color-mix(in srgb, CanvasText 65%, transparent); }
+    @media (max-width: 700px) { .grid, .summary { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } }
+  </style>
+</head>
+<body>
+<main>
+  <p><strong>Student Loan IDR Estimate</strong> · policy snapshot 2026-08-27</p>
+  <h1>Estimate a monthly federal student-loan payment.</h1>
+  <p class="lede">This calculator annualizes the income facts you enter and applies the same deterministic RAP, IBR, PAYE, and ICR formulas exposed by this Worker’s MCP tools. It is an estimate—not an official eligibility or billing decision.</p>
+  <div class="notice"><strong>Privacy:</strong> this page has no analytics, no external assets, and no browser storage. Calculation inputs are sent only to this same Worker for the current request. Do not enter SSNs, account numbers, or fabricated facts.</div>
+
+  <form id="calculator-form">
+    <div class="grid">
+      <label>Income cadence
+        <select name="cadence" id="cadence">
+          <option value="annual">Annual</option>
+          <option value="monthly">Monthly</option>
+          <option value="semimonthly">Twice monthly</option>
+          <option value="biweekly">Every two weeks</option>
+          <option value="weekly">Weekly</option>
+          <option value="hourly">Hourly</option>
+        </select>
+      </label>
+      <label>Gross taxable income amount for that cadence
+        <input name="incomeAmount" type="number" min="0" step="0.01" value="50000" required>
+      </label>
+      <label id="hours-field" hidden>Hours per week
+        <input name="hoursPerWeek" type="number" min="0" step="0.01" value="40">
+      </label>
+      <label id="weeks-field" hidden>Weeks per year
+        <input name="weeksPerYear" type="number" min="0" step="0.01" value="52">
+      </label>
+      <label>Region
+        <select name="region">
+          <option value="contiguous_us">48 states + D.C.</option>
+          <option value="alaska">Alaska</option>
+          <option value="hawaii">Hawaii</option>
+        </select>
+      </label>
+      <label>Family size
+        <input name="familySize" type="number" min="1" step="1" value="1" required>
+      </label>
+      <label>Dependents claimed on federal tax return
+        <input name="dependents" type="number" min="0" step="1" value="0" required>
+      </label>
+      <label>Estimated above-the-line adjustments <span class="muted">(optional)</span>
+        <input name="adjustments" type="number" min="0" step="0.01" placeholder="0">
+      </label>
+      <label>AGI override <span class="muted">(optional)</span>
+        <input name="agiOverride" type="number" min="0" step="0.01" placeholder="Use calculated estimate">
+      </label>
+      <label>Tax filing status <span class="muted">(helps ICR)</span>
+        <select name="taxFilingStatus">
+          <option value="">Not supplied</option>
+          <option value="single">Single</option>
+          <option value="married_filing_jointly">Married filing jointly</option>
+          <option value="married_filing_separately">Married filing separately</option>
+          <option value="head_of_household">Head of household</option>
+        </select>
+      </label>
+      <label>Loan principal <span class="muted">(optional; improves caps/ICR)</span>
+        <input name="principal" type="number" min="0" step="0.01" placeholder="e.g. 30000">
+      </label>
+      <label>Annual interest rate % <span class="muted">(optional)</span>
+        <input name="interestRate" type="number" min="0" step="0.001" placeholder="e.g. 6.5">
+      </label>
+      <label>Loan type <span class="muted">(optional eligibility screen)</span>
+        <select name="loanType">
+          <option value="">Not supplied</option>
+          <option value="direct_subsidized">Direct Subsidized</option>
+          <option value="direct_unsubsidized">Direct Unsubsidized</option>
+          <option value="direct_grad_plus">Direct Grad PLUS</option>
+          <option value="direct_parent_plus">Direct Parent PLUS</option>
+          <option value="direct_consolidation_no_parent_plus">Direct Consolidation — no Parent PLUS</option>
+          <option value="direct_consolidation_with_parent_plus">Direct Consolidation — includes Parent PLUS</option>
+          <option value="ffel_subsidized_stafford">FFEL Subsidized Stafford</option>
+          <option value="ffel_unsubsidized_stafford">FFEL Unsubsidized Stafford</option>
+          <option value="ffel_grad_plus">FFEL Grad PLUS</option>
+          <option value="ffel_parent_plus">FFEL Parent PLUS</option>
+          <option value="ffel_consolidation_no_parent_plus">FFEL Consolidation — no Parent PLUS</option>
+          <option value="ffel_consolidation_with_parent_plus">FFEL Consolidation — includes Parent PLUS</option>
+          <option value="perkins">Perkins</option>
+        </select>
+      </label>
+      <label>Loan disbursement period
+        <select name="disbursementPeriod">
+          <option value="before_2026_07_01">Before July 1, 2026</option>
+          <option value="on_or_after_2026_07_01">On/after July 1, 2026</option>
+        </select>
+      </label>
+      <label>IBR borrower timing
+        <select name="ibrNewBorrower">
+          <option value="">Not supplied</option>
+          <option value="true">New borrower on/after July 1, 2014</option>
+          <option value="false">Earlier borrower</option>
+        </select>
+      </label>
+      <fieldset class="span-2">
+        <legend>Plans to estimate</legend>
+        <div class="checks">
+          <label><input type="checkbox" name="plans" value="RAP" checked> RAP</label>
+          <label><input type="checkbox" name="plans" value="IBR" checked> IBR</label>
+          <label><input type="checkbox" name="plans" value="PAYE" checked> PAYE</label>
+          <label><input type="checkbox" name="plans" value="ICR" checked> ICR</label>
+        </div>
+      </fieldset>
+    </div>
+    <div class="actions">
+      <button type="submit" id="submit">Calculate estimate</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+
+  <section id="results" aria-live="polite"></section>
+  <footer>Official eligibility and payment amounts come from the U.S. Department of Education and your loan servicer. SAVE is not modeled in this 2026-08-27 policy snapshot.</footer>
+</main>
+<script>
+(() => {
+  const form = document.getElementById("calculator-form");
+  const cadence = document.getElementById("cadence");
+  const hoursField = document.getElementById("hours-field");
+  const weeksField = document.getElementById("weeks-field");
+  const status = document.getElementById("status");
+  const results = document.getElementById("results");
+  const submit = document.getElementById("submit");
+  const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+  const numberOrUndefined = (value) => value === "" ? undefined : Number(value);
+
+  function syncHourlyFields() {
+    const hourly = cadence.value === "hourly";
+    hoursField.hidden = !hourly;
+    weeksField.hidden = !hourly;
+  }
+
+  function addText(tag, text, className) {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function render(result) {
+    results.replaceChildren();
+    results.appendChild(addText("h2", "Estimate"));
+
+    const summary = document.createElement("div");
+    summary.className = "summary";
+    [
+      ["Annualized taxable gross", money.format(result.normalizedAnnualTaxableGrossIncome)],
+      ["Estimated AGI", money.format(result.estimatedAdjustedGrossIncome)],
+      ["2026 poverty guideline", money.format(result.povertyGuideline)]
+    ].forEach(([label, value]) => {
+      const metric = document.createElement("div");
+      metric.className = "metric";
+      metric.append(addText("span", label, "muted"), addText("strong", value));
+      summary.appendChild(metric);
+    });
+    results.appendChild(summary);
+
+    const plans = document.createElement("div");
+    plans.className = "plans";
+    result.planEstimates.forEach((plan) => {
+      const card = document.createElement("article");
+      card.className = "plan";
+      const head = document.createElement("div");
+      head.className = "plan-head";
+      const title = document.createElement("div");
+      title.append(addText("strong", plan.plan), document.createTextNode(" "), addText("span", plan.eligibility.status, "badge"));
+      head.append(title, addText("span", money.format(plan.monthlyPaymentEstimate) + "/mo", "payment"));
+      card.append(head);
+      card.appendChild(addText("p", plan.formulaSummary));
+      card.appendChild(addText("p", plan.eligibilityNote, "muted"));
+      if (plan.warnings.length) {
+        const list = document.createElement("ul");
+        plan.warnings.forEach((warning) => list.appendChild(addText("li", warning)));
+        card.appendChild(list);
+      }
+      plans.appendChild(card);
+    });
+    results.appendChild(plans);
+
+    const caveats = document.createElement("details");
+    const summaryNode = addText("summary", "Assumptions and warnings");
+    caveats.appendChild(summaryNode);
+    const list = document.createElement("ul");
+    [...result.assumptions, ...result.warnings].forEach((item) => list.appendChild(addText("li", item)));
+    caveats.appendChild(list);
+    results.appendChild(caveats);
+  }
+
+  cadence.addEventListener("change", syncHourlyFields);
+  syncHourlyFields();
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    status.textContent = "Calculating…";
+    results.replaceChildren();
+
+    try {
+      const data = new FormData(form);
+      const selectedPlans = data.getAll("plans").map(String);
+      if (!selectedPlans.length) throw new Error("Select at least one repayment plan.");
+
+      const cadenceValue = String(data.get("cadence"));
+      const amount = Number(data.get("incomeAmount"));
+      const income = cadenceValue === "hourly"
+        ? [{ cadence: cadenceValue, hourlyRate: amount, hoursPerWeek: Number(data.get("hoursPerWeek")), weeksPerYear: Number(data.get("weeksPerYear")) }]
+        : [{ cadence: cadenceValue, amount }];
+
+      const payload = {
+        income,
+        region: String(data.get("region")),
+        familySize: Number(data.get("familySize")),
+        dependentsClaimedOnFederalTaxReturn: Number(data.get("dependents")),
+        plans: selectedPlans
+      };
+
+      const adjustments = numberOrUndefined(String(data.get("adjustments")));
+      const agiOverride = numberOrUndefined(String(data.get("agiOverride")));
+      const taxFilingStatus = String(data.get("taxFilingStatus"));
+      if (adjustments !== undefined) payload.estimatedAboveTheLineAdjustments = adjustments;
+      if (agiOverride !== undefined) payload.adjustedGrossIncomeOverride = agiOverride;
+      if (taxFilingStatus) payload.taxFilingStatus = taxFilingStatus;
+
+      const loan = {};
+      const principal = numberOrUndefined(String(data.get("principal")));
+      const interestRate = numberOrUndefined(String(data.get("interestRate")));
+      const loanType = String(data.get("loanType"));
+      const ibrNewBorrower = String(data.get("ibrNewBorrower"));
+      if (principal !== undefined) loan.principal = principal;
+      if (interestRate !== undefined) loan.annualInterestRatePercent = interestRate;
+      if (loanType) {
+        loan.eligibilityLoans = [{
+          loanType,
+          disbursementPeriod: String(data.get("disbursementPeriod"))
+        }];
+      }
+      if (ibrNewBorrower) loan.newBorrowerOnOrAfterJuly1_2014 = ibrNewBorrower === "true";
+      if (Object.keys(loan).length) payload.loan = loan;
+
+      const response = await fetch("/api/calculate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error(body.error || "Calculation failed.");
+      render(body.result);
+      status.textContent = "Estimate ready.";
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : "Calculation failed.";
+    } finally {
+      submit.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>`;
+
+function uiResponse(): Response {
+  return new Response(BORROWER_UI_HTML, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    }
+  });
+}
+
+async function handleCalculatorApi(request: Request, env: Env): Promise<Response> {
+  const origin = request.headers.get("origin");
+  if (origin !== null && origin !== new URL(request.url).origin) {
+    return jsonResponse({ ok: false, error: "Cross-origin calculator requests are not allowed." }, 403, request, env, { "cache-control": "no-store" });
+  }
+
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("application/json")) {
+    return jsonResponse({ ok: false, error: "Content-Type must be application/json." }, 415, request, env, { "cache-control": "no-store" });
+  }
+
+  if (env.MCP_RATE_LIMITER) {
+    try {
+      const { success } = await env.MCP_RATE_LIMITER.limit({ key: "public:/api/calculate" });
+      if (!success) return jsonResponse({ ok: false, error: "Rate limit exceeded." }, 429, request, env, { "cache-control": "no-store" });
+    } catch {
+      return jsonResponse({ ok: false, error: "Rate limiter unavailable." }, 503, request, env, { "cache-control": "no-store" });
+    }
+  }
+
+  let text: string;
+  try {
+    text = (await readRequestText(request)).text;
+  } catch (error) {
+    if (error instanceof RequestTooLargeError) {
+      return jsonResponse({ ok: false, error: `Request body exceeds ${MAX_REQUEST_BYTES} bytes.` }, 413, request, env, { "cache-control": "no-store" });
+    }
+    return jsonResponse({ ok: false, error: "Unable to read request body." }, 400, request, env, { "cache-control": "no-store" });
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch {
+    return jsonResponse({ ok: false, error: "Invalid JSON." }, 400, request, env, { "cache-control": "no-store" });
+  }
+
+  const calculatorDefinition = toolDefinitions.find((tool) => tool.name === "calculate_alt_income_student_loan")!;
+  const issues = validateSchema(body, calculatorDefinition.inputSchema as RuntimeSchema);
+  if (issues.length > 0) {
+    return jsonResponse({ ok: false, error: "Invalid calculator input.", issues }, 400, request, env, { "cache-control": "no-store" });
+  }
+
+  try {
+    return jsonResponse({ ok: true, result: calculateRepayment(body as CalculatorRequest) }, 200, request, env, { "cache-control": "no-store" });
+  } catch (error) {
+    return jsonResponse({ ok: false, error: error instanceof Error ? error.message : "Calculation failed." }, 400, request, env, { "cache-control": "no-store" });
+  }
+}
 
 const hasOwn = (value: JsonObject, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
 const isObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -465,7 +832,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /health", "POST /mcp"],
+    endpoints: ["GET /", "GET /health", "POST /api/calculate", "POST /mcp"],
     hardening: {
       max_request_bytes: MAX_REQUEST_BYTES,
       bearer_auth_configured: Boolean(env.MCP_BEARER_TOKEN),
@@ -483,7 +850,9 @@ export default {
       if (!allowedOrigin(request, env)) return jsonResponse(jsonRpcErrorObject(null, -32600, "Forbidden Origin"), 403, request, env);
       return new Response(null, { status: 204, headers: responseHeaders(request, env) });
     }
-    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) return home(request, env);
+    if (request.method === "GET" && url.pathname === "/") return uiResponse();
+    if (request.method === "GET" && url.pathname === "/health") return home(request, env);
+    if (request.method === "POST" && url.pathname === "/api/calculate") return handleCalculatorApi(request, env);
     if (url.pathname === "/mcp" && request.method === "GET") {
       if (!allowedOrigin(request, env)) return jsonResponse(jsonRpcErrorObject(null, -32600, "Forbidden Origin"), 403, request, env);
       return new Response("SSE listening is not implemented by this stateless server.", { status: 405, headers: { allow: "POST, OPTIONS" } });
