@@ -8,6 +8,7 @@ import {
   normalizeIncomeToAnnual,
   povertyGuideline
 } from "../src/formulas.ts";
+import { getDocumentationTemplate } from "../src/templates.ts";
 import type { CalculatorRequest, EligibilityStatus, LoanType, RepaymentPlan } from "../src/types.ts";
 
 test("annualizes hourly income", () => {
@@ -267,4 +268,98 @@ test("PAYE rejects initial enrollment when modeled PAYE amount is not below 10-y
   });
   assert.equal(result.planEstimates[0]?.monthlyPaymentEstimate, 53.03);
   assert.equal(result.planEstimates[0]?.eligibility.status, "ineligible");
+});
+
+test("documentation workflow renders multiple structured income sources without inventing missing facts", () => {
+  const document = getDocumentationTemplate({
+    templateType: "current_income_statement",
+    borrowerName: "Alex Example",
+    incomeSources: [
+      {
+        sourceType: "employment",
+        name: "Northwind Services",
+        address: "100 Main Street",
+        grossAmount: 1200,
+        paymentFrequency: "biweekly"
+      },
+      {
+        sourceType: "contract",
+        name: "Side Client"
+      }
+    ]
+  });
+
+  assert.match(document, /Income source 1/);
+  assert.match(document, /Northwind Services/);
+  assert.match(document, /Income source 2/);
+  assert.match(document, /Side Client/);
+  assert.match(document, /\[income source address\]/);
+  assert.match(document, /\[gross amount\]/);
+  assert.match(document, /no single item guarantees acceptance/i);
+});
+
+test("documentation workflow renders plain text while preserving the evidence checklist", () => {
+  const document = getDocumentationTemplate({
+    templateType: "income_change_explanation",
+    outputFormat: "text",
+    incomeSources: [{ name: "Example Employer" }]
+  });
+
+  assert.doesNotMatch(document, /^# /m);
+  assert.match(document, /Supporting evidence checklist/);
+  assert.match(document, /\[ \] Review the loan servicer's current instructions/);
+});
+
+test("printable HTML escapes caller-supplied markup and makes no external requests", () => {
+  const document = getDocumentationTemplate({
+    templateType: "current_income_statement",
+    outputFormat: "html",
+    borrowerName: "<script>alert('x')</script>",
+    incomeSources: [{ name: "<img src=https://example.com/x>" }]
+  });
+
+  assert.match(document, /^<!doctype html>/);
+  assert.match(document, /default-src 'none'/);
+  assert.match(document, /&lt;script&gt;alert\(&#39;x&#39;\)&lt;\/script&gt;/);
+  assert.match(document, /&lt;img src=https:\/\/example.com\/x&gt;/);
+  assert.doesNotMatch(document, /<script>/);
+  assert.doesNotMatch(document, /<img src=/);
+});
+
+test("minimal documentation requests expose placeholders for every unsupplied fact", () => {
+  const document = getDocumentationTemplate({ templateType: "current_income_statement" });
+  for (const placeholder of [
+    "[date]",
+    "[borrower full name]",
+    "[loan servicer]",
+    "[income source type]",
+    "[income source / employer / client]",
+    "[income source address]",
+    "[gross amount]",
+    "[payment frequency]",
+    "[source notes]",
+    "[optional explanation]"
+  ]) {
+    assert.match(document, new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("legacy single-source documentation fields remain supported and no-income statements reject contradictory sources", () => {
+  const legacy = getDocumentationTemplate({
+    templateType: "current_income_statement",
+    incomeSourceName: "Legacy Employer",
+    incomeSourceAddress: "10 Legacy Road",
+    paymentFrequency: "monthly",
+    grossAmount: 900
+  });
+  assert.match(legacy, /Legacy Employer/);
+  assert.match(legacy, /\$900\.00/);
+
+  assert.throws(
+    () => getDocumentationTemplate({
+      templateType: "no_current_taxable_income_statement",
+      incomeSources: [{ name: "Contradictory Employer" }]
+    }),
+    /cannot include current income sources/
+  );
 });
