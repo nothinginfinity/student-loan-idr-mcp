@@ -1,0 +1,37 @@
+{
+  "schema": "student-loan-idr-deploy-artifact-v1",
+  "source_commit": "4f88622253fe866bba27d9fbff702a5da0a74b15",
+  "source_tree": "212d2fb8fdf1ab85331d224ca874ec3672c948bc",
+  "worker_sha256": "1144961add77f8f2c0faa71dd179fcb71f584b192bfc0edc6f63f0962aeb8e30",
+  "generated_at": "2026-08-27T20:04:22.311Z",
+  "toolchain": {
+    "node": "v22.23.2",
+    "wrangler": "4.127.0"
+  },
+  "inputs": {
+    "wrangler_jsonc_sha256": "57e8b9e690d36bd7dfe2d4ee5a7e09ace649456721c8c93d483020815c8676e4",
+    "package_json_sha256": "449b4489e611d4b148f75e804f61a8e387dbed6888e6ca3272f8247e66257127",
+    "source_files": [
+      {
+        "path": "src/constants.ts",
+        "sha256": "17515ece118f2776fa38dea84df453f58d403b57da86351da5e9eb538da7ff06"
+      },
+      {
+        "path": "src/formulas.ts",
+        "sha256": "feb03c7c6ff1b1e8c412a8db324faa4e966378cb2d3018fa87b6a695019b427b"
+      },
+      {
+        "path": "src/index.ts",
+        "sha256": "0218c233d5ceadf2a60268201bfb9836a7d2fb6bfb4a4a37df50685b357bb74f"
+      },
+      {
+        "path": "src/templates.ts",
+        "sha256": "c28cdaf75bf079f8b76aeaf4f1a5fa22c99e0c0dfc89c3338ab6f57d864b1244"
+      },
+      {
+        "path": "src/types.ts",
+        "sha256": "fcb0a4148c4b3c2b92f9d7b1282cc926f080d5490fd7208588e18672b0a17fe3"
+      }
+    ]
+  }
+}
