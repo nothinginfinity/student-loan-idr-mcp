@@ -16,17 +16,23 @@ Give an AI client a deterministic, inspectable way to normalize irregular taxabl
 - Supporting-statement templates for current taxable income, significant income change, unemployment compensation income, and no current taxable income.
 - Tests, README, and Cloudflare deployment manifest.
 
-## V0.2 — Policy correctness hardening — NEXT
+## V0.2 — Policy correctness hardening — COMPLETE
 
-1. Add a version-controlled annual ICR income-percentage-factor table and tests so callers do not have to supply the factor.
-2. Add explicit loan-type/disbursement eligibility objects instead of only warnings.
-3. Add policy fixtures derived from current Federal Student Aid examples.
-4. Add a `policy_status` tool that reports snapshot date, supported plans, known sunset dates, and source links.
-5. Add a scheduled/manual policy-refresh workflow that opens a review PR rather than silently changing constants.
+1. Added the version-controlled 2026 ICR income-percentage-factor table, including deterministic linear interpolation, so callers do not have to supply the factor.
+2. Added explicit loan-type/disbursement eligibility objects with `eligible`, `ineligible`, `conditional`, `mixed`, and `unknown` outcomes instead of relying only on warnings.
+3. Added source-backed policy fixtures, including published 2026 ICR examples and a table-driven current Federal Student Aid loan-eligibility matrix.
+4. Added the `policy_status` MCP tool reporting snapshot date, supported plans, known sunset dates, the ICR factor-table effective period, and source links.
+5. Added scheduled/manual policy refresh that fingerprints four official policy sources and opens a review PR rather than silently changing constants. The initial fingerprint baseline was reviewed and merged through PR #1.
+6. Hardened CI to require strict TypeScript, all deterministic tests, and a real `wrangler deploy --dry-run` bundle check.
 
-Acceptance: every repayment formula and eligibility branch has a source-backed fixture and deterministic regression test.
+Acceptance evidence:
 
-## V0.3 — Document workflow
+- 21 deterministic policy/formula regression tests passing.
+- Push CI + Wrangler acceptance run `33098442626` succeeded on commit `9a2c7de9c9e9e5d39428702107d9bf50e3417bd8`.
+- Manual policy-refresh + full test/Wrangler run `33098620922` succeeded on the same commit.
+- Policy source fingerprint baseline merged as commit `71dfd775d99b76d1857bd43e712a318ef3cb0cbd`.
+
+## V0.3 — Document workflow — NEXT
 
 - Add structured source-of-income arrays to template generation.
 - Add Markdown + plain-text outputs.
