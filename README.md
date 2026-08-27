@@ -5,14 +5,14 @@ A small Cloudflare Workers MCP server for people whose income is irregular, seas
 The service exposes three MCP tools:
 
 1. `calculate_alt_income_student_loan` — normalizes variable taxable income into an annual estimate and computes repayment-plan estimates for RAP, IBR, PAYE, and ICR.
-2. `get_repayment_documentation_template` — generates clean Markdown supporting-statement templates for current income and income changes.
+2. `get_repayment_documentation_template` — generates truthful supporting-statement documents from structured income-source arrays in Markdown, plain text, or privacy-safe printable HTML.
 3. `policy_status` — reports the immutable policy snapshot, supported plans, known sunset dates, the effective period of the built-in ICR factor table, and official source links.
 
 ## Why this exists
 
 Federal Student Aid permits current-income documentation in situations where tax-return information does not reflect a borrower's current income. The current IDR request form says documentation usually includes a pay stub or employer letter, and when documentation is unavailable or the borrower wants to explain income, a signed statement can be attached that identifies each income source and its address.
 
-This project does **not** fabricate tax documents, deductions, or eligibility. It produces estimates, deterministic eligibility-screening objects, and user-editable supporting-document templates.
+This project does **not** fabricate tax documents, deductions, or eligibility. It produces estimates, deterministic eligibility-screening objects, and user-editable supporting documents that leave explicit placeholders for facts the caller did not supply.
 
 ## Policy snapshot
 
@@ -53,6 +53,16 @@ The service does **not** apply a fake “standard deduction” to gross income. 
 The eligibility object is a deterministic screening aid, not an official determination. Borrower-specific facts that are not supplied remain conditional or unknown instead of being invented.
 
 For PAYE, optional borrower/date flags model the published Oct. 1, 2007 and Oct. 1, 2011 conditions. For ICR, callers can provide `taxFilingStatus` or `loan.icrIncomeFactorCategory`; the calculator then selects and interpolates the official 2026 factor automatically. `loan.icrIncomePercentageFactor` remains available only as an explicit override.
+
+## V0.3 document workflow
+
+`get_repayment_documentation_template` accepts an optional `incomeSources` array. Each source can carry a source type, payer/name, address, gross amount, payment frequency, and notes. If a required descriptive fact is not supplied, the generated document keeps a visible placeholder instead of inventing a value.
+
+Set `outputFormat` to `markdown` (default), `text`, or `html`. The HTML renderer escapes caller-supplied content, includes no scripts or external resources, and ships with a restrictive Content Security Policy suitable for a privacy-safe printable document.
+
+Every generated statement includes a checklist of common supporting-evidence categories. The checklist is guidance only: it explicitly says a servicer may request different or additional evidence and that no single item guarantees acceptance.
+
+The legacy single-source fields (`incomeSourceName`, `incomeSourceAddress`, `paymentFrequency`, and `grossAmount`) remain supported for compatibility. A `no_current_taxable_income_statement` rejects contradictory current-income source data rather than silently producing an inconsistent statement.
 
 ## MCP
 
