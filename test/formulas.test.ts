@@ -9,6 +9,7 @@ import {
   povertyGuideline
 } from "../src/formulas.ts";
 import { getDocumentationTemplate } from "../src/templates.ts";
+import worker from "../src/index.ts";
 import type { CalculatorRequest, EligibilityStatus, LoanType, RepaymentPlan } from "../src/types.ts";
 
 test("annualizes hourly income", () => {
@@ -362,4 +363,184 @@ test("legacy single-source documentation fields remain supported and no-income s
     }),
     /cannot include current income sources/
   );
+});
+
+const MCP_HEADERS = {
+  "content-type": "application/json",
+  accept: "application/json, text/event-stream"
+};
+
+async function mcpCall(payload: unknown, env: Record<string, unknown> = {}, extraHeaders: Record<string, string> = {}): Promise<Response> {
+  return worker.fetch(new Request("https://student-loan-idr-mcp.example/mcp", {
+    method: "POST",
+    headers: { ...MCP_HEADERS, ...extraHeaders },
+    body: JSON.stringify(payload)
+  }), env);
+}
+
+test("MCP initialize negotiates the declared protocol revision and V0.4 server version", async () => {
+  const response = await mcpCall({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "test-client", version: "1.0.0" }
+    }
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.result.protocolVersion, "2025-03-26");
+  assert.equal(body.result.serverInfo.version, "0.4.0");
+});
+
+test("MCP notification-only requests return 202 with no response body", async () => {
+  const response = await mcpCall({ jsonrpc: "2.0", method: "notifications/initialized" });
+  assert.equal(response.status, 202);
+  assert.equal(await response.text(), "");
+});
+
+test("MCP accepts JSON-RPC batches but rejects initialize inside a batch", async () => {
+  const response = await mcpCall([
+    { jsonrpc: "2.0", id: 1, method: "ping" },
+    { jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1" } } }
+  ]);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.length, 2);
+  assert.deepEqual(body[0].result, {});
+  assert.equal(body[1].error.code, -32600);
+});
+
+test("MCP rejects null request ids and malformed initialize params", async () => {
+  const nullId = await mcpCall({ jsonrpc: "2.0", id: null, method: "ping" });
+  assert.equal((await nullId.json()).error.code, -32600);
+
+  const badInitialize = await mcpCall({ jsonrpc: "2.0", id: 3, method: "initialize", params: {} });
+  assert.equal((await badInitialize.json()).error.code, -32602);
+});
+
+test("MCP runtime schema validation rejects unknown and mistyped tool fields", async () => {
+  const response = await mcpCall({
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: {
+      name: "calculate_alt_income_student_loan",
+      arguments: {
+        income: [{ cadence: "annual", amount: 50000 }],
+        region: "contiguous_us",
+        familySize: "2",
+        secretExtraField: "should-never-be-accepted"
+      }
+    }
+  });
+  const body = await response.json();
+  assert.equal(body.error.code, -32602);
+  assert.ok(body.error.data.issues.some((issue: string) => issue.includes("familySize")));
+  assert.ok(body.error.data.issues.some((issue: string) => issue.includes("secretExtraField")));
+  assert.doesNotMatch(JSON.stringify(body.error.data), /should-never-be-accepted/);
+});
+
+test("MCP enforces application/json and Streamable HTTP Accept media types", async () => {
+  const wrongContentType = await worker.fetch(new Request("https://student-loan-idr-mcp.example/mcp", {
+    method: "POST",
+    headers: { accept: "application/json, text/event-stream", "content-type": "text/plain" },
+    body: "{}"
+  }), {});
+  assert.equal(wrongContentType.status, 415);
+
+  const wrongAccept = await worker.fetch(new Request("https://student-loan-idr-mcp.example/mcp", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" })
+  }), {});
+  assert.equal(wrongAccept.status, 406);
+});
+
+test("MCP caps request bodies at 64 KiB before JSON parsing", async () => {
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/mcp", {
+    method: "POST",
+    headers: MCP_HEADERS,
+    body: "x".repeat(70 * 1024)
+  }), {});
+  assert.equal(response.status, 413);
+});
+
+test("MCP optional bearer authentication fails closed when configured", async () => {
+  const denied = await mcpCall({ jsonrpc: "2.0", id: 1, method: "ping" }, { MCP_BEARER_TOKEN: "top-secret-token" });
+  assert.equal(denied.status, 401);
+  assert.equal(denied.headers.get("www-authenticate"), "Bearer");
+
+  const allowed = await mcpCall(
+    { jsonrpc: "2.0", id: 2, method: "ping" },
+    { MCP_BEARER_TOKEN: "top-secret-token" },
+    { authorization: "Bearer top-secret-token" }
+  );
+  assert.equal(allowed.status, 200);
+});
+
+test("MCP validates browser origins against the configured allowlist", async () => {
+  const denied = await mcpCall({ jsonrpc: "2.0", id: 1, method: "ping" }, {}, { origin: "https://evil.example" });
+  assert.equal(denied.status, 403);
+
+  const allowed = await mcpCall(
+    { jsonrpc: "2.0", id: 2, method: "ping" },
+    { MCP_ALLOWED_ORIGINS: "https://app.example, https://other.example" },
+    { origin: "https://app.example" }
+  );
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get("access-control-allow-origin"), "https://app.example");
+});
+
+test("MCP optional Cloudflare rate limiter returns 429 and fails closed on binding errors", async () => {
+  const limited = await mcpCall(
+    { jsonrpc: "2.0", id: 1, method: "ping" },
+    { MCP_RATE_LIMITER: { limit: async () => ({ success: false }) } }
+  );
+  assert.equal(limited.status, 429);
+
+  const unavailable = await mcpCall(
+    { jsonrpc: "2.0", id: 2, method: "ping" },
+    { MCP_RATE_LIMITER: { limit: async () => { throw new Error("binding unavailable"); } } }
+  );
+  assert.equal(unavailable.status, 503);
+});
+
+test("MCP observability logs request metadata but never borrower payload content or auth secrets", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  try {
+    const response = await mcpCall(
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "get_repayment_documentation_template",
+          arguments: { templateType: "current_income_statement", borrowerName: "VERY-SENSITIVE-BORROWER" }
+        }
+      },
+      { MCP_BEARER_TOKEN: "VERY-SENSITIVE-TOKEN" },
+      { authorization: "Bearer VERY-SENSITIVE-TOKEN" }
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    console.log = originalLog;
+  }
+  const serializedLogs = logs.join("\n");
+  assert.match(serializedLogs, /\"tool\":\"get_repayment_documentation_template\"/);
+  assert.doesNotMatch(serializedLogs, /VERY-SENSITIVE-BORROWER/);
+  assert.doesNotMatch(serializedLogs, /VERY-SENSITIVE-TOKEN/);
+});
+
+test("MCP GET endpoint explicitly declines SSE listening with 405", async () => {
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/mcp", {
+    method: "GET",
+    headers: { accept: "text/event-stream" }
+  }), {});
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get("allow"), "POST, OPTIONS");
 });
