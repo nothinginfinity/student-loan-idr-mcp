@@ -1,0 +1,37 @@
+{
+  "schema": "student-loan-idr-policy-source-snapshot-v1",
+  "sources": [
+    {
+      "url": "https://studentaid.gov/articles/faqs-idr-plan/",
+      "finalUrl": "https://studentaid.gov/articles/faqs-idr-plan/",
+      "httpStatus": 200,
+      "etag": "\"0edc7b99ea31d99726f0ca091a346f8c:1787319790.097644\"",
+      "lastModified": "Wed, 19 Aug 2026 19:35:14 GMT",
+      "sha256": "81da0a0537db047cb286ef61da3fd13e508c2638c529aa27163f80fba1dd7b44"
+    },
+    {
+      "url": "https://studentaid.gov/sites/default/files/IncomeDrivenRepayment-en-us.pdf",
+      "finalUrl": "https://studentaid.gov/sites/default/files/IncomeDrivenRepayment-en-us.pdf",
+      "httpStatus": 200,
+      "etag": "\"434be520a8fdb569f399147486117ec2:1782342211.891998\"",
+      "lastModified": "Wed, 11 Mar 2026 18:20:32 GMT",
+      "sha256": "b82861a7779fa0d90aca963ae8318c1d1a6dc2259b59b8d21457d8747deae97d"
+    },
+    {
+      "url": "https://www.govinfo.gov/content/pkg/FR-2026-01-15/pdf/2026-00755.pdf",
+      "finalUrl": "https://www.govinfo.gov/content/pkg/FR-2026-01-15/pdf/2026-00755.pdf",
+      "httpStatus": 200,
+      "etag": null,
+      "lastModified": "Thu, 15 Jan 2026 21:07:37 GMT",
+      "sha256": "67f71197b8df72f2200478f0ec5a68db2619f4554bef6f0ce4057164d2d0f339"
+    },
+    {
+      "url": "https://www.govinfo.gov/content/pkg/FR-2026-06-09/pdf/2026-11540.pdf",
+      "finalUrl": "https://www.govinfo.gov/content/pkg/FR-2026-06-09/pdf/2026-11540.pdf",
+      "httpStatus": 200,
+      "etag": null,
+      "lastModified": "Tue, 09 Jun 2026 17:26:32 GMT",
+      "sha256": "5252a7656d172641f0fbd6f30723c6258f4c72016bce8bc571670a90ea282a85"
+    }
+  ]
+}
