@@ -64,6 +64,15 @@ Acceptance evidence:
 
 Core roadmap V0.1 through V0.4 is now complete. The next decision gate is live deployment/operational acceptance and selection of any later optional productization work.
 
+## Operational activation — IN PROGRESS
+
+1. Added a manually gated CI path that can build a single Wrangler deploy artifact from an explicitly selected source commit, run strict TypeScript and all deterministic tests against that exact source, and publish the bundle plus a SHA-256/provenance manifest to the separate `deployment-artifacts` branch without changing accepted runtime source.
+2. Built and published the V0.4 artifact from immutable source commit `4f88622253fe866bba27d9fbff702a5da0a74b15`. Artifact workflow run `33111497757` succeeded; the published `worker.js` is 55,031 bytes with SHA-256 `1144961add77f8f2c0faa71dd179fcb71f584b192bfc0edc6f63f0962aeb8e30`, exactly matching its manifest.
+3. Added a separate `deploy_live` workflow gate. Live deployment requires `source_ref` to be a full 40-hex commit SHA, re-verifies the checked-out commit identity, reruns typecheck/tests, requires explicit `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` repository secrets, and only then invokes `wrangler deploy`.
+4. The live-deploy workflow change is commit `16ed99cb04371685d162fd5024738ee8a9e2e9d0`; CI run `33112498767` succeeded. GitHub currently reports zero Actions repository secrets, so no live Cloudflare deployment or live acceptance is claimed yet.
+
+Next activation action: configure the two Cloudflare GitHub Actions secrets, then manually dispatch `ci.yml` with `deploy_live=true` and `source_ref=4f88622253fe866bba27d9fbff702a5da0a74b15`. After deployment, verify `/health`, MCP initialization, `tools/list`, representative tool calls, request-size enforcement, origin behavior, and unsupported `GET /mcp` behavior before closing operational acceptance.
+
 ## Later / optional — NEXT DECISION
 
 - Small borrower-facing calculator UI.
