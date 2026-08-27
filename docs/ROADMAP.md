@@ -47,15 +47,24 @@ Acceptance evidence:
 - Regression coverage includes multi-source generation, Markdown-to-text behavior, HTML escaping/no-network behavior, explicit placeholder completeness, legacy compatibility, evidence-checklist truthfulness, and contradictory no-income-source rejection.
 - Generated documents remain user-editable supporting statements only; they do not submit applications, fabricate evidence, or guarantee servicer acceptance.
 
-## V0.4 — Production MCP hardening — NEXT
+## V0.4 — Production MCP hardening — COMPLETE
 
-- Add protocol conformance tests.
-- Add request-size limits and stricter schema validation.
-- Add rate limiting / abuse controls if exposed publicly.
-- Add structured observability without logging sensitive document content.
-- Optional authentication if the service is used with real borrower data.
+1. Added protocol-conformance coverage for the server's declared MCP `2025-03-26` Streamable HTTP revision, including initialization negotiation, notification-only `202` responses, JSON-RPC batch reception, request-ID rules, media-type enforcement, and explicit handling for unsupported SSE listening.
+2. Added a 64 KiB streamed request-body ceiling plus recursive runtime validation against each tool's declared input schema. Unknown fields and mistyped values are rejected without echoing rejected payload values.
+3. Added exact browser-origin allowlisting through `MCP_ALLOWED_ORIGINS`; server-to-server calls without an `Origin` header remain supported.
+4. Added optional bearer authentication through the `MCP_BEARER_TOKEN` Cloudflare secret. Authentication is fail-closed when configured and remains disabled when no secret is configured.
+5. Added optional native Cloudflare Rate Limiting binding support through `MCP_RATE_LIMITER`, returning `429` on a denied request and failing closed with `503` if a configured binding errors. The account-specific rate-limit namespace is deliberately not invented or committed; activation remains a deployment decision.
+6. Added structured request observability that logs only service/version, JSON-RPC method, tool name, HTTP status, request byte count, and duration. Borrower/document fields, tool arguments, authorization secrets, origins, and IP addresses are not logged by application code.
 
-## Later / optional
+Acceptance evidence:
+
+- V0.4 implementation commit `3e0ec5e4b45a9e279e32bd2ef5cef8c330698a38` passed strict TypeScript, all 38 deterministic regressions, and `wrangler deploy --dry-run` in CI run `33105610355`.
+- The 12 new V0.4 regressions cover initialization/version negotiation, notification semantics, batches, malformed IDs/params, runtime schema rejection, HTTP media types, the 64 KiB body cap, optional bearer authentication, origin allowlisting, optional native rate limiting, sensitive-log redaction, and explicit `GET /mcp` behavior.
+- Wrangler 4.127.0 produced the V0.4 bundle successfully. No rate-limit binding or bearer secret is claimed as live-configured, and no Cloudflare live deployment acceptance is claimed from dry-run evidence.
+
+Core roadmap V0.1 through V0.4 is now complete. The next decision gate is live deployment/operational acceptance and selection of any later optional productization work.
+
+## Later / optional — NEXT DECISION
 
 - Small borrower-facing calculator UI.
 - x402 paid access for agent-to-agent use.
