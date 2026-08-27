@@ -64,6 +64,22 @@ Every generated statement includes a checklist of common supporting-evidence cat
 
 The legacy single-source fields (`incomeSourceName`, `incomeSourceAddress`, `paymentFrequency`, and `grossAmount`) remain supported for compatibility. A `no_current_taxable_income_statement` rejects contradictory current-income source data rather than silently producing an inconsistent statement.
 
+## V0.4 production MCP hardening
+
+The HTTP transport now enforces a 64 KiB request-body ceiling, `application/json` content type, the Streamable HTTP `Accept` media types, JSON-RPC request/notification ID rules, batch reception, initialization version negotiation, and runtime validation against each tool's declared input schema. Unknown tool-argument fields are rejected rather than silently ignored.
+
+Browser-origin requests to `/mcp` are denied unless their exact origin is present in the comma-separated `MCP_ALLOWED_ORIGINS` environment variable. Server-to-server requests without an `Origin` header continue to work normally.
+
+Authentication is optional until the service is used with real borrower data. To enable bearer authentication, store the token as a Cloudflare secret rather than a plaintext Wrangler variable:
+
+```bash
+npx wrangler secret put MCP_BEARER_TOKEN
+```
+
+The Worker also supports the native Cloudflare Rate Limiting binding under the optional binding name `MCP_RATE_LIMITER`. When public exposure warrants rate limiting, add a `ratelimits` entry to `wrangler.jsonc` with a positive-integer namespace ID unique to the Cloudflare account and the desired 10- or 60-second limit window. The runtime fails closed with HTTP 503 if a configured binding errors and returns HTTP 429 when the binding denies a request. Cloudflare documents the binding as available in Wrangler 4.36.0 and later.
+
+Structured request logs contain only service/version, JSON-RPC method, tool name, HTTP status, request byte count, and duration. Borrower names, document fields, tool arguments, authorization headers/tokens, origins, and IP addresses are not logged by application code.
+
 ## MCP
 
 Endpoint: `POST /mcp`
@@ -71,9 +87,12 @@ Endpoint: `POST /mcp`
 Supported JSON-RPC methods:
 
 - `initialize`
+- `notifications/initialized`
 - `ping`
 - `tools/list`
 - `tools/call`
+
+For the declared `2025-03-26` Streamable HTTP revision, POST requests should send both `Content-Type: application/json` and `Accept: application/json, text/event-stream`. `GET /mcp` intentionally returns `405` because this stateless server does not provide an SSE listening stream.
 
 ### Example tool call
 
