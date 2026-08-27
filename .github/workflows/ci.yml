@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      deploy_live:
+        description: "Deploy the immutable source commit to Cloudflare Workers"
+        required: false
+        type: boolean
+        default: false
       source_ref:
         description: "Immutable commit SHA to bundle; defaults to workflow commit"
         required: false
@@ -33,7 +38,7 @@ jobs:
       - run: npx wrangler deploy --dry-run --outdir=.wrangler-dry-run
 
   policy-refresh:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish_deploy_artifact != true)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish_deploy_artifact != true && inputs.deploy_live != true)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -201,3 +206,49 @@ jobs:
             git commit -m "Publish deploy artifact $SOURCE_SHA"
             git push origin HEAD:deployment-artifacts
           )
+
+  deploy-live:
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_live == true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: student-loan-idr-live-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Require an immutable source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          requested='${{ inputs.source_ref }}'
+          if [[ ! "$requested" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "deploy_live requires source_ref to be a full 40-hex commit SHA." >&2
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$requested" ]; then
+            echo "Checked-out commit $actual does not match requested immutable source $requested." >&2
+            exit 1
+          fi
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
+      - name: Require explicit Cloudflare deployment credentials
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing CLOUDFLARE_ACCOUNT_ID repository secret." >&2; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing CLOUDFLARE_API_TOKEN repository secret." >&2; exit 1; }
+      - name: Deploy exact tested commit with Wrangler
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy
