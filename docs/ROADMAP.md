@@ -87,9 +87,23 @@ Live acceptance evidence:
 
 Operational activation is closed. Optional bearer authentication and native Cloudflare rate limiting remain deployment choices and are not claimed as enabled by this acceptance.
 
+## V0.5 — Borrower-facing calculator UI — COMPLETE
+
+1. Added a responsive borrower-facing calculator at `GET /` on the same Cloudflare Worker. The page has no analytics, no external assets, and no browser storage, and it explicitly warns users not to enter SSNs, account numbers, or fabricated facts.
+2. Added a thin same-origin `POST /api/calculate` route that reuses the exact deterministic `calculateRepayment()` engine and the calculator MCP tool's runtime input schema rather than duplicating repayment formulas in browser code.
+3. Preserved the hardened `/mcp` contract and exact three-tool inventory. The borrower route is separate from MCP transport negotiation and does not weaken MCP authentication/origin/media-type behavior.
+4. Applied `Cache-Control: no-store`, a restrictive no-network Content Security Policy, frame/referrer hardening, same-origin API enforcement, the existing 64 KiB request ceiling, and optional reuse of the native Cloudflare rate-limiter binding when configured.
+5. Added deterministic regressions for the HTML/privacy shell, the known RAP `$116.67` fixture through `/api/calculate`, schema rejection without rejected-value echo, cross-origin rejection, and the request-size ceiling.
+6. Extended the immutable live-deploy workflow to exercise the borrower page/API in production while retaining the original MCP acceptance suite.
+
+Acceptance evidence:
+
+- Exact V0.5 runtime/workflow source commit `be8cb125ca51b7c68fd71c42a232fe941a5f87d3` passed normal CI in run `33124927471`: strict TypeScript, all 42 deterministic regressions, and Wrangler deployment dry-run.
+- Live deploy + production acceptance run `33125464977` succeeded from that exact immutable source. All 16 production checks passed, including the borrower HTML/CSP shell, same-origin RAP calculation, browser-origin rejection, 64 KiB ceiling, MCP initialize/tool inventory, policy status, document generation, notification semantics, and MCP media/origin guards.
+- Live borrower calculator: `https://student-loan-idr-mcp.jaredtechfit.workers.dev/`.
+
 ## Later / optional — NEXT DECISION
 
-- Small borrower-facing calculator UI.
 - x402 paid access for agent-to-agent use.
 - Policy change monitor that proposes reviewed constants updates.
 - Multi-year policy snapshots for historical calculations.
