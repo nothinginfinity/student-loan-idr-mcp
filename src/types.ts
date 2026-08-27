@@ -9,6 +9,26 @@ export type IncomeCadence =
 
 export type Region = "contiguous_us" | "alaska" | "hawaii";
 export type RepaymentPlan = "RAP" | "IBR" | "PAYE" | "ICR";
+export type TaxFilingStatus = "single" | "married_filing_jointly" | "married_filing_separately" | "head_of_household";
+export type IcrIncomeFactorCategory = "single" | "married_or_head_of_household";
+export type LoanDisbursementPeriod = "before_2026_07_01" | "on_or_after_2026_07_01";
+export type LoanType =
+  | "direct_subsidized"
+  | "direct_unsubsidized"
+  | "direct_grad_plus"
+  | "direct_parent_plus"
+  | "direct_consolidation_no_parent_plus"
+  | "direct_consolidation_with_parent_plus"
+  | "ffel_subsidized_stafford"
+  | "ffel_unsubsidized_stafford"
+  | "ffel_grad_plus"
+  | "ffel_parent_plus"
+  | "ffel_consolidation_no_parent_plus"
+  | "ffel_consolidation_with_parent_plus"
+  | "perkins";
+
+export type EligibilityStatus = "eligible" | "ineligible" | "conditional" | "mixed" | "unknown";
+export type LoanEligibilityStatus = Exclude<EligibilityStatus, "mixed" | "unknown">;
 
 export interface IncomeInput {
   cadence: IncomeCadence;
@@ -19,12 +39,23 @@ export interface IncomeInput {
   seasonalPayments?: number[];
 }
 
+export interface EligibilityLoanInput {
+  loanType: LoanType;
+  disbursementPeriod: LoanDisbursementPeriod;
+  inDefault?: boolean;
+  madeIcrPaymentBeforeJuly1_2028?: boolean;
+}
+
 export interface LoanInputs {
   principal?: number;
   annualInterestRatePercent?: number;
   newBorrowerOnOrAfterJuly1_2014?: boolean;
   hasLoanDisbursedOnOrAfterJuly1_2026?: boolean;
   icrIncomePercentageFactor?: number;
+  icrIncomeFactorCategory?: IcrIncomeFactorCategory;
+  payeNewBorrowerOnOrAfterOct1_2007?: boolean;
+  payeDirectLoanDisbursementOnOrAfterOct1_2011?: boolean;
+  eligibilityLoans?: EligibilityLoanInput[];
 }
 
 export interface CalculatorRequest {
@@ -34,8 +65,24 @@ export interface CalculatorRequest {
   dependentsClaimedOnFederalTaxReturn?: number;
   estimatedAboveTheLineAdjustments?: number;
   adjustedGrossIncomeOverride?: number;
+  taxFilingStatus?: TaxFilingStatus;
   loan?: LoanInputs;
   plans?: RepaymentPlan[];
+}
+
+export interface LoanEligibilityAssessment {
+  loanIndex: number;
+  loanType: LoanType;
+  disbursementPeriod: LoanDisbursementPeriod;
+  status: LoanEligibilityStatus;
+  reasons: string[];
+}
+
+export interface PlanEligibility {
+  status: EligibilityStatus;
+  loanAssessments: LoanEligibilityAssessment[];
+  reasons: string[];
+  sourceUrls: string[];
 }
 
 export interface PlanEstimate {
@@ -44,6 +91,7 @@ export interface PlanEstimate {
   annualPaymentEstimate: number;
   formulaSummary: string;
   completeness: "estimate" | "partial";
+  eligibility: PlanEligibility;
   eligibilityNote: string;
   warnings: string[];
 }
@@ -58,6 +106,27 @@ export interface CalculatorResult {
   planEstimates: PlanEstimate[];
   assumptions: string[];
   warnings: string[];
+  sources: string[];
+}
+
+export interface PolicyPlanStatus {
+  plan: RepaymentPlan;
+  supported: true;
+  effectiveDate?: string;
+  sunsetDate?: string;
+  notes: string[];
+}
+
+export interface PolicyStatusResult {
+  policySnapshot: string;
+  supportedPlans: PolicyPlanStatus[];
+  icrFactorTable: {
+    year: 2026;
+    effectiveFrom: string;
+    effectiveThrough: string;
+    interpolation: "linear";
+  };
+  knownPlanChanges: string[];
   sources: string[];
 }
 
