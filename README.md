@@ -1,6 +1,6 @@
 # Student Loan IDR MCP
 
-A small Cloudflare Workers MCP server for people whose income is irregular, seasonal, hourly, freelance, contract-based, or otherwise difficult to express as a single annual number.
+A small Cloudflare Workers service with both an MCP interface and a borrower-facing calculator for people whose income is irregular, seasonal, hourly, freelance, contract-based, or otherwise difficult to express as a single annual number.
 
 The service exposes three MCP tools:
 
@@ -79,6 +79,14 @@ npx wrangler secret put MCP_BEARER_TOKEN
 The Worker also supports the native Cloudflare Rate Limiting binding under the optional binding name `MCP_RATE_LIMITER`. When public exposure warrants rate limiting, add a `ratelimits` entry to `wrangler.jsonc` with a positive-integer namespace ID unique to the Cloudflare account and the desired 10- or 60-second limit window. The runtime fails closed with HTTP 503 if a configured binding errors and returns HTTP 429 when the binding denies a request. Cloudflare documents the binding as available in Wrangler 4.36.0 and later.
 
 Structured request logs contain only service/version, JSON-RPC method, tool name, HTTP status, request byte count, and duration. Borrower names, document fields, tool arguments, authorization headers/tokens, origins, and IP addresses are not logged by application code.
+
+## V0.5 borrower-facing calculator
+
+The live Worker now serves a small borrower calculator at `GET /`. It uses the same deterministic `calculateRepayment()` engine as the MCP tool through a thin same-origin `POST /api/calculate` route; the hardened `/mcp` contract and three-tool inventory are unchanged.
+
+The browser surface has no analytics, external assets, or browser storage. Responses use `Cache-Control: no-store`, a restrictive Content Security Policy, same-origin API enforcement, the existing 64 KiB request ceiling, and the same runtime input-schema validation used by MCP. Results remain estimates and show eligibility as `eligible`, `ineligible`, `conditional`, `mixed`, or `unknown` rather than presenting a servicer decision.
+
+Live borrower calculator: `https://student-loan-idr-mcp.jaredtechfit.workers.dev/`
 
 ## MCP
 
