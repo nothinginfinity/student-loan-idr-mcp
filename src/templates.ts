@@ -24,13 +24,13 @@ function normalizedIncomeSources(request: TemplateRequest): DocumentationIncomeS
 
   if (request.incomeSources?.length) return request.incomeSources;
 
-  return [{
-    sourceType: request.templateType === "unemployment_income_statement" ? "unemployment" : undefined,
-    name: request.incomeSourceName,
-    address: request.incomeSourceAddress,
-    grossAmount: request.grossAmount,
-    paymentFrequency: request.paymentFrequency
-  }];
+  const legacySource: DocumentationIncomeSource = {};
+  if (request.templateType === "unemployment_income_statement") legacySource.sourceType = "unemployment";
+  if (request.incomeSourceName !== undefined) legacySource.name = request.incomeSourceName;
+  if (request.incomeSourceAddress !== undefined) legacySource.address = request.incomeSourceAddress;
+  if (request.grossAmount !== undefined) legacySource.grossAmount = request.grossAmount;
+  if (request.paymentFrequency !== undefined) legacySource.paymentFrequency = request.paymentFrequency;
+  return [legacySource];
 }
 
 function incomeSourcesMarkdown(request: TemplateRequest): string {
