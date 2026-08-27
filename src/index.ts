@@ -1,4 +1,4 @@
-import { calculateRepayment } from "./formulas.ts";
+import { calculateRepayment, getPolicyStatus } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
 import type { CalculatorRequest, JsonRpcRequest, TemplateRequest } from "./types.ts";
 
@@ -9,10 +9,26 @@ const JSON_HEADERS = {
   "access-control-allow-methods": "GET, POST, OPTIONS"
 };
 
+const loanTypeEnum = [
+  "direct_subsidized",
+  "direct_unsubsidized",
+  "direct_grad_plus",
+  "direct_parent_plus",
+  "direct_consolidation_no_parent_plus",
+  "direct_consolidation_with_parent_plus",
+  "ffel_subsidized_stafford",
+  "ffel_unsubsidized_stafford",
+  "ffel_grad_plus",
+  "ffel_parent_plus",
+  "ffel_consolidation_no_parent_plus",
+  "ffel_consolidation_with_parent_plus",
+  "perkins"
+] as const;
+
 const toolDefinitions = [
   {
     name: "calculate_alt_income_student_loan",
-    description: "Annualize variable taxable income and estimate federal student-loan payments under RAP, IBR, PAYE, and ICR using a versioned 2026 policy snapshot. Estimates only; official eligibility and billing come from Federal Student Aid and the servicer.",
+    description: "Annualize variable taxable income and estimate federal student-loan payments under RAP, IBR, PAYE, and ICR using a versioned 2026 policy snapshot. V0.2 adds explicit loan-type/disbursement eligibility objects and the official 2026 ICR income-percentage-factor table. Estimates only; official eligibility and billing come from Federal Student Aid and the servicer.",
     inputSchema: {
       type: "object",
       required: ["income", "region", "familySize"],
@@ -38,14 +54,32 @@ const toolDefinitions = [
         dependentsClaimedOnFederalTaxReturn: { type: "integer", minimum: 0 },
         estimatedAboveTheLineAdjustments: { type: "number", minimum: 0 },
         adjustedGrossIncomeOverride: { type: "number", minimum: 0 },
+        taxFilingStatus: { enum: ["single", "married_filing_jointly", "married_filing_separately", "head_of_household"] },
         loan: {
           type: "object",
           properties: {
             principal: { type: "number", minimum: 0 },
             annualInterestRatePercent: { type: "number", minimum: 0 },
             newBorrowerOnOrAfterJuly1_2014: { type: "boolean" },
-            hasLoanDisbursedOnOrAfterJuly1_2026: { type: "boolean" },
-            icrIncomePercentageFactor: { type: "number", exclusiveMinimum: 0 }
+            hasLoanDisbursedOnOrAfterJuly1_2026: { type: "boolean", description: "Legacy V0.1 compatibility hint. Prefer eligibilityLoans for V0.2 eligibility assessment." },
+            icrIncomePercentageFactor: { type: "number", exclusiveMinimum: 0, description: "Optional explicit override. Usually unnecessary in V0.2 because the 2026 official table is built in." },
+            icrIncomeFactorCategory: { enum: ["single", "married_or_head_of_household"] },
+            payeNewBorrowerOnOrAfterOct1_2007: { type: "boolean" },
+            payeDirectLoanDisbursementOnOrAfterOct1_2011: { type: "boolean" },
+            eligibilityLoans: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                required: ["loanType", "disbursementPeriod"],
+                properties: {
+                  loanType: { enum: loanTypeEnum },
+                  disbursementPeriod: { enum: ["before_2026_07_01", "on_or_after_2026_07_01"] },
+                  inDefault: { type: "boolean" },
+                  madeIcrPaymentBeforeJuly1_2028: { type: "boolean" }
+                }
+              }
+            }
           }
         },
         plans: { type: "array", items: { enum: ["RAP", "IBR", "PAYE", "ICR"] } }
@@ -68,6 +102,14 @@ const toolDefinitions = [
         grossAmount: { type: "number", minimum: 0 },
         notes: { type: "string" }
       }
+    }
+  },
+  {
+    name: "policy_status",
+    description: "Report the calculator's immutable policy snapshot date, supported repayment plans, known PAYE/ICR sunset dates, the effective period of the built-in 2026 ICR factor table, and official source links.",
+    inputSchema: {
+      type: "object",
+      properties: {}
     }
   }
 ] as const;
@@ -106,7 +148,7 @@ async function handleMcp(request: Request): Promise<Response> {
     return jsonRpcResult(body.id, {
       protocolVersion: "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "student-loan-idr-mcp", version: "0.1.0" }
+      serverInfo: { name: "student-loan-idr-mcp", version: "0.2.0" }
     });
   }
 
@@ -128,6 +170,9 @@ async function handleMcp(request: Request): Promise<Response> {
       if (params.name === "get_repayment_documentation_template") {
         return jsonRpcResult(body.id, contentResult(getDocumentationTemplate((params.arguments ?? {}) as TemplateRequest)));
       }
+      if (params.name === "policy_status") {
+        return jsonRpcResult(body.id, contentResult(getPolicyStatus()));
+      }
       return jsonRpcError(body.id, -32601, `Unknown tool: ${params.name}`);
     } catch (error) {
       return jsonRpcResult(body.id, {
@@ -144,7 +189,7 @@ function home(): Response {
   return new Response(JSON.stringify({
     ok: true,
     name: "student-loan-idr-mcp",
-    version: "0.1.0",
+    version: "0.2.0",
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
     endpoints: ["GET /", "GET /health", "POST /mcp"]
