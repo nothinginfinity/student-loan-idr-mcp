@@ -365,6 +365,75 @@ test("legacy single-source documentation fields remain supported and no-income s
   );
 });
 
+test("borrower UI serves a privacy-safe same-origin calculator shell", async () => {
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/"), {});
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /text\/html/);
+  assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+  assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  assert.match(html, /id="calculator-form"/);
+  assert.match(html, /\/api\/calculate/);
+  assert.match(html, /no analytics, no external assets, and no browser storage/i);
+  assert.doesNotMatch(html, /<(?:img|script|link)[^>]+(?:src|href)="https?:\/\//i);
+});
+
+test("borrower calculator API uses the deterministic RAP engine", async () => {
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/calculate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      income: [{ cadence: "annual", amount: 50000 }],
+      region: "contiguous_us",
+      familySize: 2,
+      dependentsClaimedOnFederalTaxReturn: 1,
+      plans: ["RAP"]
+    })
+  }), {});
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.result.planEstimates[0].monthlyPaymentEstimate, 116.67);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
+test("borrower calculator API rejects unknown fields without echoing their values", async () => {
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/calculate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      income: [{ cadence: "annual", amount: 50000 }],
+      region: "contiguous_us",
+      familySize: "2",
+      privateUnexpectedField: "VERY-SENSITIVE-UI-VALUE"
+    })
+  }), {});
+  const text = await response.text();
+  const body = JSON.parse(text);
+  assert.equal(response.status, 400);
+  assert.equal(body.ok, false);
+  assert.ok(body.issues.some((issue: string) => issue.includes("familySize")));
+  assert.ok(body.issues.some((issue: string) => issue.includes("privateUnexpectedField")));
+  assert.doesNotMatch(text, /VERY-SENSITIVE-UI-VALUE/);
+});
+
+test("borrower calculator API is same-origin and keeps the 64 KiB body ceiling", async () => {
+  const forbidden = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/calculate", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://evil.example" },
+    body: "{}"
+  }), {});
+  assert.equal(forbidden.status, 403);
+
+  const oversized = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/calculate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "x".repeat(70 * 1024)
+  }), {});
+  assert.equal(oversized.status, 413);
+});
+
 const MCP_HEADERS = {
   "content-type": "application/json",
   accept: "application/json, text/event-stream"
@@ -392,7 +461,7 @@ test("MCP initialize negotiates the declared protocol revision and V0.4 server v
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.result.protocolVersion, "2025-03-26");
-  assert.equal(body.result.serverInfo.version, "0.4.0");
+  assert.equal(body.result.serverInfo.version, "0.5.0");
 });
 
 test("MCP notification-only requests return 202 with no response body", async () => {
