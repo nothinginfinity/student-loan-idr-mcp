@@ -42,7 +42,7 @@ jobs:
           const urls = [
             'https://studentaid.gov/articles/faqs-idr-plan/',
             'https://studentaid.gov/sites/default/files/IncomeDrivenRepayment-en-us.pdf',
-            'https://aspe.hhs.gov/topics/poverty-economic-mobility/poverty-guidelines',
+            'https://www.govinfo.gov/content/pkg/FR-2026-01-15/pdf/2026-00755.pdf',
             'https://www.govinfo.gov/content/pkg/FR-2026-06-09/pdf/2026-11540.pdf'
           ];
 
