@@ -32,16 +32,22 @@ Acceptance evidence:
 - Manual policy-refresh + full test/Wrangler run `33098620922` succeeded on the same commit.
 - Policy source fingerprint baseline merged as commit `71dfd775d99b76d1857bd43e712a318ef3cb0cbd`.
 
-## V0.3 — Document workflow — NEXT
+## V0.3 — Document workflow — COMPLETE
 
-- Add structured source-of-income arrays to template generation.
-- Add Markdown + plain-text outputs.
-- Add a privacy-safe printable HTML renderer.
-- Add a checklist of commonly requested supporting evidence without asserting that any single item guarantees acceptance.
+1. Added structured `incomeSources` arrays while preserving the legacy single-source fields for compatibility.
+2. Added Markdown (default), plain-text, and privacy-safe printable HTML output formats.
+3. Added HTML escaping, a restrictive no-network Content Security Policy, and no scripts or external resources in generated HTML.
+4. Added a commonly requested supporting-evidence checklist that explicitly states a servicer may request different/additional evidence and that no single item guarantees acceptance.
+5. Added contradiction protection so a no-current-taxable-income statement rejects supplied current-income sources rather than producing an inconsistent document.
+6. Preserved explicit placeholders for every unsupplied descriptive fact instead of inventing borrower, servicer, source, amount, date, frequency, or explanation data.
 
-Acceptance: generated documents never invent facts and contain explicit placeholders for anything not supplied by the caller.
+Acceptance evidence:
 
-## V0.4 — Production MCP hardening
+- Implementation commit `5b04e3f4c37042ca80da887eaa47eba4d657ddc3` passed strict TypeScript, all 26 deterministic tests, and `wrangler deploy --dry-run` in CI run `33104204004`.
+- Regression coverage includes multi-source generation, Markdown-to-text behavior, HTML escaping/no-network behavior, explicit placeholder completeness, legacy compatibility, evidence-checklist truthfulness, and contradictory no-income-source rejection.
+- Generated documents remain user-editable supporting statements only; they do not submit applications, fabricate evidence, or guarantee servicer acceptance.
+
+## V0.4 — Production MCP hardening — NEXT
 
 - Add protocol conformance tests.
 - Add request-size limits and stricter schema validation.
