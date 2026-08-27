@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 11 * * 1"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -16,3 +19,72 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm test
+
+  policy-refresh:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fingerprint official policy sources
+        shell: bash
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { writeFileSync } = require('node:fs');
+
+          const urls = [
+            'https://studentaid.gov/articles/faqs-idr-plan/',
+            'https://studentaid.gov/sites/default/files/IncomeDrivenRepayment-en-us.pdf',
+            'https://aspe.hhs.gov/topics/poverty-economic-mobility/poverty-guidelines',
+            'https://www.govinfo.gov/content/pkg/FR-2026-06-09/pdf/2026-11540.pdf'
+          ];
+
+          (async () => {
+          const sources = [];
+          for (const url of urls) {
+            const response = await fetch(url, {
+              redirect: 'follow',
+              headers: {
+                'user-agent': 'student-loan-idr-mcp-policy-refresh/0.2',
+                'accept': '*/*'
+              }
+            });
+            if (!response.ok) throw new Error(`Policy source fetch failed: ${url} -> ${response.status}`);
+            const bytes = Buffer.from(await response.arrayBuffer());
+            sources.push({
+              url,
+              finalUrl: response.url,
+              httpStatus: response.status,
+              etag: response.headers.get('etag'),
+              lastModified: response.headers.get('last-modified'),
+              sha256: createHash('sha256').update(bytes).digest('hex')
+            });
+          }
+
+          writeFileSync(
+            'docs/POLICY_SOURCE_SNAPSHOT.json',
+            JSON.stringify({ schema: 'student-loan-idr-policy-source-snapshot-v1', sources }, null, 2) + '\n'
+          );
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+      - name: Open policy review pull request when source fingerprints change
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/policy-source-refresh
+          delete-branch: true
+          commit-message: "Review updated student-loan policy source fingerprints"
+          title: "Policy source refresh review"
+          body: |
+            Official policy source fingerprints changed (or the baseline snapshot is being created).
+
+            Review the source changes manually before modifying repayment constants, formulas, eligibility rules, or the policy snapshot date. This automation intentionally never rewrites policy logic itself.
+          add-paths: docs/POLICY_SOURCE_SNAPSHOT.json
