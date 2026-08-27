@@ -64,14 +64,28 @@ Acceptance evidence:
 
 Core roadmap V0.1 through V0.4 is now complete. The next decision gate is live deployment/operational acceptance and selection of any later optional productization work.
 
-## Operational activation — IN PROGRESS
+## Operational activation — COMPLETE
 
-1. Added a manually gated CI path that can build a single Wrangler deploy artifact from an explicitly selected source commit, run strict TypeScript and all deterministic tests against that exact source, and publish the bundle plus a SHA-256/provenance manifest to the separate `deployment-artifacts` branch without changing accepted runtime source.
+1. Added a manually gated CI path that builds a single Wrangler deploy artifact from an explicitly selected source commit, runs strict TypeScript and all deterministic tests against that exact source, and publishes the bundle plus a SHA-256/provenance manifest to the separate `deployment-artifacts` branch without changing accepted runtime source.
 2. Built and published the V0.4 artifact from immutable source commit `4f88622253fe866bba27d9fbff702a5da0a74b15`. Artifact workflow run `33111497757` succeeded; the published `worker.js` is 55,031 bytes with SHA-256 `1144961add77f8f2c0faa71dd179fcb71f584b192bfc0edc6f63f0962aeb8e30`, exactly matching its manifest.
-3. Added a separate `deploy_live` workflow gate. Live deployment requires `source_ref` to be a full 40-hex commit SHA, re-verifies the checked-out commit identity, reruns typecheck/tests, requires explicit `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` repository secrets, and only then invokes `wrangler deploy`.
-4. The live-deploy workflow change is commit `16ed99cb04371685d162fd5024738ee8a9e2e9d0`; CI run `33112498767` succeeded. GitHub currently reports zero Actions repository secrets, so no live Cloudflare deployment or live acceptance is claimed yet.
+3. Added a separate fail-closed `deploy_live` workflow gate. Live deployment requires `source_ref` to be a full 40-hex commit SHA, re-verifies checked-out commit identity, reruns typecheck/tests, requires explicit `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` repository secrets, and only then invokes `wrangler deploy`.
+4. GitHub Actions repository secrets were configured on 2026-08-27. The exact accepted V0.4 source commit was deployed successfully to `https://student-loan-idr-mcp.jaredtechfit.workers.dev`. Successful deployment run `33123037565` proved the immutable source guard, typecheck, all 38 deterministic regressions, credential gate, and Wrangler deployment path.
+5. Hardened deployment observability so successful Wrangler runs publish the live Worker route and failures preserve the exact Cloudflare error. The accepted workflow then added a post-deploy production acceptance gate; workflow commit `2421826efb593c7c810d5527ead911cababc6c97` passed normal CI in run `33123355234`.
+6. Final live deployment and production acceptance run `33123401382` succeeded. The `deploy-live` job checked out exact runtime source `4f88622253fe866bba27d9fbff702a5da0a74b15`, reran strict TypeScript and all tests, deployed with Wrangler, and passed all 12 live checks against the production URL.
 
-Next activation action: configure the two Cloudflare GitHub Actions secrets, then manually dispatch `ci.yml` with `deploy_live=true` and `source_ref=4f88622253fe866bba27d9fbff702a5da0a74b15`. After deployment, verify `/health`, MCP initialization, `tools/list`, representative tool calls, request-size enforcement, origin behavior, and unsupported `GET /mcp` behavior before closing operational acceptance.
+Live acceptance evidence:
+
+- `GET /health` returned the expected `student-loan-idr-mcp` identity, version `0.4.0`, MCP protocol `2025-03-26`, policy snapshot `2026-08-27`, three-tool inventory, 65,536-byte request ceiling, and sensitive-payload logging disabled.
+- `GET /mcp` returned `405`, `Allow: POST, OPTIONS`, and the explicit stateless/SSE-not-implemented message.
+- MCP `initialize` negotiated protocol `2025-03-26` and reported server version `0.4.0`.
+- `tools/list` returned exactly `calculate_alt_income_student_loan`, `get_repayment_documentation_template`, and `policy_status`.
+- `policy_status` returned the accepted `2026-08-27` policy snapshot and the expected 2026 ICR table effective date.
+- A live RAP fixture returned the known `$116.67` monthly estimate, and a live documentation-template call preserved supplied borrower facts plus the supporting-evidence checklist.
+- Notification-only MCP traffic returned `202` with an empty body.
+- Live HTTP hardening returned `415` for invalid Content-Type, `406` for an invalid Streamable HTTP Accept header, `403` for an untrusted browser Origin, and `413` for a body over 64 KiB.
+- The final GitHub check annotation recorded `Live MCP acceptance: 12 production checks passed` and the live route `https://student-loan-idr-mcp.jaredtechfit.workers.dev`.
+
+Operational activation is closed. Optional bearer authentication and native Cloudflare rate limiting remain deployment choices and are not claimed as enabled by this acceptance.
 
 ## Later / optional — NEXT DECISION
 
