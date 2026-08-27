@@ -7,6 +7,17 @@ on:
   schedule:
     - cron: "17 11 * * 1"
   workflow_dispatch:
+    inputs:
+      publish_deploy_artifact:
+        description: "Build and publish a provenance-bearing Wrangler bundle"
+        required: false
+        type: boolean
+        default: false
+      source_ref:
+        description: "Immutable commit SHA to bundle; defaults to workflow commit"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   test:
@@ -22,7 +33,7 @@ jobs:
       - run: npx wrangler deploy --dry-run --outdir=.wrangler-dry-run
 
   policy-refresh:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish_deploy_artifact != true)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -89,3 +100,104 @@ jobs:
 
             Review the source changes manually before modifying repayment constants, formulas, eligibility rules, or the policy snapshot date. This automation intentionally never rewrites policy logic itself.
           add-paths: docs/POLICY_SOURCE_SNAPSHOT.json
+
+  deploy-artifact:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_deploy_artifact == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: student-loan-idr-deploy-artifact
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
+      - name: Build provenance-bearing Wrangler bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          SOURCE_TREE="$(git rev-parse HEAD^{tree})"
+          rm -rf .wrangler-deploy-artifact .deploy-publish
+          npx wrangler deploy --dry-run --outdir=.wrangler-deploy-artifact
+          mapfile -t js_files < <(find .wrangler-deploy-artifact -maxdepth 2 -type f -name '*.js' | sort)
+          if [ "${#js_files[@]}" -ne 1 ]; then
+            echo "Expected exactly one Wrangler JavaScript bundle, found ${#js_files[@]}" >&2
+            printf '%s\n' "${js_files[@]}" >&2
+            exit 1
+          fi
+          mkdir -p .deploy-publish
+          cp "${js_files[0]}" .deploy-publish/worker.js
+          WORKER_SHA256="$(sha256sum .deploy-publish/worker.js | awk '{print $1}')"
+          WRANGLER_VERSION="$(npx wrangler --version | tr -d '\r')"
+          export SOURCE_SHA SOURCE_TREE WORKER_SHA256 WRANGLER_VERSION
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { readFileSync, readdirSync, writeFileSync } = require('node:fs');
+
+          const sha256File = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+          const sourceFiles = readdirSync('src')
+            .filter((name) => name.endsWith('.ts'))
+            .sort()
+            .map((name) => ({ path: `src/${name}`, sha256: sha256File(`src/${name}`) }));
+
+          const manifest = {
+            schema: 'student-loan-idr-deploy-artifact-v1',
+            source_commit: process.env.SOURCE_SHA,
+            source_tree: process.env.SOURCE_TREE,
+            worker_sha256: process.env.WORKER_SHA256,
+            generated_at: new Date().toISOString(),
+            toolchain: {
+              node: process.version,
+              wrangler: process.env.WRANGLER_VERSION
+            },
+            inputs: {
+              wrangler_jsonc_sha256: sha256File('wrangler.jsonc'),
+              package_json_sha256: sha256File('package.json'),
+              source_files: sourceFiles
+            }
+          };
+          writeFileSync('.deploy-publish/manifest.json', JSON.stringify(manifest, null, 2) + '\n');
+          NODE
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "WORKER_SHA256=$WORKER_SHA256" >> "$GITHUB_ENV"
+      - name: Publish immutable bundle path to deployment-artifacts branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          worktree="$(mktemp -d)"
+          if git ls-remote --exit-code --heads origin deployment-artifacts >/dev/null 2>&1; then
+            git fetch origin deployment-artifacts
+            git worktree add -B deployment-artifacts "$worktree" origin/deployment-artifacts
+          else
+            git worktree add --detach "$worktree" HEAD
+            (
+              cd "$worktree"
+              git switch --orphan deployment-artifacts
+              git rm -rf . >/dev/null 2>&1 || true
+            )
+          fi
+          destination="$worktree/bundles/$SOURCE_SHA"
+          mkdir -p "$destination"
+          cp .deploy-publish/worker.js "$destination/worker.js"
+          cp .deploy-publish/manifest.json "$destination/manifest.json"
+          (
+            cd "$worktree"
+            git add "bundles/$SOURCE_SHA/worker.js" "bundles/$SOURCE_SHA/manifest.json"
+            if git diff --cached --quiet; then
+              echo "Artifact already published for $SOURCE_SHA"
+              exit 0
+            fi
+            git commit -m "Publish deploy artifact $SOURCE_SHA"
+            git push origin HEAD:deployment-artifacts
+          )
