@@ -273,5 +273,146 @@ jobs:
             safe_url="$(printf '%s' "$deployed_url" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
             echo "::notice title=Cloudflare live Worker::$safe_url"
             echo "Live Worker: $deployed_url" >> "$GITHUB_STEP_SUMMARY"
+            echo "DEPLOYED_URL=$deployed_url" >> "$GITHUB_ENV"
           fi
           cat wrangler-deploy.log
+      - name: Live production MCP acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.DEPLOYED_URL;
+          if (!base) throw new Error('DEPLOYED_URL was not captured from Wrangler output.');
+
+          const mcpHeaders = {
+            'content-type': 'application/json',
+            'accept': 'application/json, text/event-stream'
+          };
+          const assert = (condition, message) => {
+            if (!condition) throw new Error(message);
+          };
+          const fetchChecked = async (url, init = {}) => {
+            const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15000) });
+            return response;
+          };
+          const mcp = async (payload, extraHeaders = {}) => fetchChecked(`${base}/mcp`, {
+            method: 'POST',
+            headers: { ...mcpHeaders, ...extraHeaders },
+            body: JSON.stringify(payload)
+          });
+          const rpcJson = async (payload, extraHeaders = {}) => {
+            const response = await mcp(payload, extraHeaders);
+            const text = await response.text();
+            let body;
+            try { body = JSON.parse(text); } catch { throw new Error(`Expected JSON RPC response, got ${response.status}: ${text.slice(0, 300)}`); }
+            assert(response.status === 200, `Expected RPC HTTP 200, got ${response.status}: ${text.slice(0, 300)}`);
+            return body;
+          };
+
+          (async () => {
+            const healthResponse = await fetchChecked(`${base}/health`);
+            const health = await healthResponse.json();
+            assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
+            assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
+            assert(health.version === '0.4.0', `unexpected live version ${health.version}`);
+            assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
+            assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
+            assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
+            assert(health.hardening?.max_request_bytes === 65536, 'request ceiling mismatch');
+            assert(health.hardening?.sensitive_payload_logging === false, 'sensitive logging hardening mismatch');
+
+            const getMcp = await fetchChecked(`${base}/mcp`, { headers: { accept: 'text/event-stream' } });
+            const getMcpText = await getMcp.text();
+            assert(getMcp.status === 405, `GET /mcp expected 405, got ${getMcp.status}`);
+            assert(getMcp.headers.get('allow') === 'POST, OPTIONS', 'GET /mcp Allow header mismatch');
+            assert(/SSE listening is not implemented/i.test(getMcpText), 'GET /mcp missing explicit SSE message');
+
+            const initialize = await rpcJson({
+              jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+                protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'live-acceptance', version: '1.0.0' }
+              }
+            });
+            assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.4.0', 'initialize server version mismatch');
+
+            const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+            const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
+            assert(JSON.stringify(toolNames) === JSON.stringify([
+              'calculate_alt_income_student_loan',
+              'get_repayment_documentation_template',
+              'policy_status'
+            ].sort()), `tools/list mismatch: ${JSON.stringify(toolNames)}`);
+
+            const policy = await rpcJson({
+              jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'policy_status', arguments: {} }
+            });
+            assert(policy.result?.structuredContent?.policySnapshot === '2026-08-27', 'policy_status snapshot mismatch');
+            assert(policy.result?.structuredContent?.icrFactorTable?.effectiveFrom === '2026-07-01', 'policy_status ICR effective date mismatch');
+
+            const calculator = await rpcJson({
+              jsonrpc: '2.0', id: 4, method: 'tools/call', params: {
+                name: 'calculate_alt_income_student_loan',
+                arguments: {
+                  income: [{ cadence: 'annual', amount: 50000 }],
+                  region: 'contiguous_us',
+                  familySize: 2,
+                  dependentsClaimedOnFederalTaxReturn: 1,
+                  plans: ['RAP']
+                }
+              }
+            });
+            assert(calculator.result?.structuredContent?.planEstimates?.[0]?.monthlyPaymentEstimate === 116.67,
+              `calculator live fixture mismatch: ${JSON.stringify(calculator.result?.structuredContent?.planEstimates?.[0])}`);
+
+            const document = await rpcJson({
+              jsonrpc: '2.0', id: 5, method: 'tools/call', params: {
+                name: 'get_repayment_documentation_template',
+                arguments: {
+                  templateType: 'current_income_statement',
+                  outputFormat: 'text',
+                  borrowerName: 'Live Acceptance Borrower',
+                  incomeSources: [{ sourceType: 'employment', name: 'Example Employer', grossAmount: 1200, paymentFrequency: 'biweekly' }]
+                }
+              }
+            });
+            assert(typeof document.result?.structuredContent === 'string', 'documentation template did not return structured string content');
+            assert(document.result.structuredContent.includes('Live Acceptance Borrower'), 'documentation template lost supplied borrower fact');
+            assert(document.result.structuredContent.includes('Supporting evidence checklist'), 'documentation template missing evidence checklist');
+
+            const notification = await mcp({ jsonrpc: '2.0', method: 'notifications/initialized' });
+            assert(notification.status === 202, `notification expected 202, got ${notification.status}`);
+            assert((await notification.text()) === '', 'notification response body must be empty');
+
+            const wrongContentType = await fetchChecked(`${base}/mcp`, {
+              method: 'POST', headers: { accept: 'application/json, text/event-stream', 'content-type': 'text/plain' }, body: '{}'
+            });
+            assert(wrongContentType.status === 415, `wrong Content-Type expected 415, got ${wrongContentType.status}`);
+
+            const wrongAccept = await fetchChecked(`${base}/mcp`, {
+              method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' },
+              body: JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'ping' })
+            });
+            assert(wrongAccept.status === 406, `wrong Accept expected 406, got ${wrongAccept.status}`);
+
+            const forbiddenOrigin = await mcp({ jsonrpc: '2.0', id: 7, method: 'ping' }, { origin: 'https://evil.example' });
+            assert(forbiddenOrigin.status === 403, `untrusted Origin expected 403, got ${forbiddenOrigin.status}`);
+
+            const oversized = await fetchChecked(`${base}/mcp`, {
+              method: 'POST', headers: mcpHeaders, body: 'x'.repeat(70 * 1024)
+            });
+            assert(oversized.status === 413, `oversized request expected 413, got ${oversized.status}`);
+
+            console.log(JSON.stringify({
+              live_acceptance: 'passed',
+              url: base,
+              version: health.version,
+              policy_snapshot: health.policy_snapshot,
+              tools: toolNames,
+              checks: 12
+            }));
+            console.log('::notice title=Live MCP acceptance::12 production checks passed');
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
