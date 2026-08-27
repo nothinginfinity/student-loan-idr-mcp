@@ -268,4 +268,10 @@ jobs:
             tail -n 40 wrangler-deploy.log
             exit "$status"
           fi
+          deployed_url="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' wrangler-deploy.log | tail -n 1 || true)"
+          if [ -n "$deployed_url" ]; then
+            safe_url="$(printf '%s' "$deployed_url" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+            echo "::notice title=Cloudflare live Worker::$safe_url"
+            echo "Live Worker: $deployed_url" >> "$GITHUB_STEP_SUMMARY"
+          fi
           cat wrangler-deploy.log
