@@ -136,10 +136,25 @@ export type DocumentationTemplateType =
   | "unemployment_income_statement"
   | "no_current_taxable_income_statement";
 
+export type DocumentationOutputFormat = "markdown" | "text" | "html";
+export type DocumentationIncomeSourceType = "employment" | "self_employment" | "contract" | "unemployment" | "other";
+
+export interface DocumentationIncomeSource {
+  sourceType?: DocumentationIncomeSourceType;
+  name?: string;
+  address?: string;
+  grossAmount?: number;
+  paymentFrequency?: string;
+  notes?: string;
+}
+
 export interface TemplateRequest {
   templateType: DocumentationTemplateType;
+  outputFormat?: DocumentationOutputFormat;
+  documentDate?: string;
   borrowerName?: string;
   servicerName?: string;
+  incomeSources?: DocumentationIncomeSource[];
   incomeSourceName?: string;
   incomeSourceAddress?: string;
   paymentFrequency?: string;
