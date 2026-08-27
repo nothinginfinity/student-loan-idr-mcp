@@ -314,12 +314,44 @@ jobs:
             const health = await healthResponse.json();
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.4.0', `unexpected live version ${health.version}`);
+            assert(health.version === '0.5.0', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
             assert(health.hardening?.max_request_bytes === 65536, 'request ceiling mismatch');
             assert(health.hardening?.sensitive_payload_logging === false, 'sensitive logging hardening mismatch');
+
+            const uiResponse = await fetchChecked(`${base}/`);
+            const uiHtml = await uiResponse.text();
+            assert(uiResponse.status === 200, `UI returned ${uiResponse.status}`);
+            assert((uiResponse.headers.get('content-type') || '').includes('text/html'), 'UI content type mismatch');
+            assert((uiResponse.headers.get('content-security-policy') || '').includes("default-src 'none'"), 'UI CSP missing default-src none');
+            assert(uiHtml.includes('id="calculator-form"'), 'UI calculator form missing');
+
+            const uiCalculator = await fetchChecked(`${base}/api/calculate`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                income: [{ cadence: 'annual', amount: 50000 }],
+                region: 'contiguous_us', familySize: 2,
+                dependentsClaimedOnFederalTaxReturn: 1, plans: ['RAP']
+              })
+            });
+            const uiCalculatorBody = await uiCalculator.json();
+            assert(uiCalculator.status === 200, `UI calculator returned ${uiCalculator.status}`);
+            assert(uiCalculatorBody?.result?.planEstimates?.[0]?.monthlyPaymentEstimate === 116.67, 'UI calculator fixture mismatch');
+
+            const uiForbiddenOrigin = await fetchChecked(`${base}/api/calculate`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+              body: '{}'
+            });
+            assert(uiForbiddenOrigin.status === 403, `UI cross-origin request expected 403, got ${uiForbiddenOrigin.status}`);
+
+            const uiOversized = await fetchChecked(`${base}/api/calculate`, {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(70 * 1024)
+            });
+            assert(uiOversized.status === 413, `UI oversized request expected 413, got ${uiOversized.status}`);
 
             const getMcp = await fetchChecked(`${base}/mcp`, { headers: { accept: 'text/event-stream' } });
             const getMcpText = await getMcp.text();
@@ -333,7 +365,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.4.0', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.5.0', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -408,9 +440,9 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 12
+              checks: 16
             }));
-            console.log('::notice title=Live MCP acceptance::12 production checks passed');
+            console.log('::notice title=Live product acceptance::16 production checks passed');
           })().catch((error) => {
             console.error(error);
             process.exit(1);
