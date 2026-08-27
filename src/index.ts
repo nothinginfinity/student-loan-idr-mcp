@@ -88,18 +88,34 @@ const toolDefinitions = [
   },
   {
     name: "get_repayment_documentation_template",
-    description: "Generate a clean Markdown supporting-statement template for current taxable income, a significant income change, unemployment compensation income, or no current taxable income. The output is a template, not a filing or legal determination.",
+    description: "Generate truthful supporting-statement documents for current taxable income, a significant income change, unemployment compensation income, or no current taxable income. V0.3 accepts structured incomeSources arrays and can render Markdown, plain text, or privacy-safe printable HTML. Missing caller facts remain explicit placeholders.",
     inputSchema: {
       type: "object",
       required: ["templateType"],
       properties: {
         templateType: { enum: ["current_income_statement", "income_change_explanation", "unemployment_income_statement", "no_current_taxable_income_statement"] },
+        outputFormat: { enum: ["markdown", "text", "html"], description: "Defaults to markdown." },
+        documentDate: { type: "string", description: "Optional caller-supplied display date. Omitted dates remain [date]." },
         borrowerName: { type: "string" },
         servicerName: { type: "string" },
-        incomeSourceName: { type: "string" },
-        incomeSourceAddress: { type: "string" },
-        paymentFrequency: { type: "string" },
-        grossAmount: { type: "number", minimum: 0 },
+        incomeSources: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              sourceType: { enum: ["employment", "self_employment", "contract", "unemployment", "other"] },
+              name: { type: "string" },
+              address: { type: "string" },
+              grossAmount: { type: "number", minimum: 0 },
+              paymentFrequency: { type: "string" },
+              notes: { type: "string" }
+            }
+          }
+        },
+        incomeSourceName: { type: "string", description: "Legacy single-source compatibility field. Prefer incomeSources." },
+        incomeSourceAddress: { type: "string", description: "Legacy single-source compatibility field. Prefer incomeSources." },
+        paymentFrequency: { type: "string", description: "Legacy single-source compatibility field. Prefer incomeSources." },
+        grossAmount: { type: "number", minimum: 0, description: "Legacy single-source compatibility field. Prefer incomeSources." },
         notes: { type: "string" }
       }
     }
@@ -148,7 +164,7 @@ async function handleMcp(request: Request): Promise<Response> {
     return jsonRpcResult(body.id, {
       protocolVersion: "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "student-loan-idr-mcp", version: "0.2.0" }
+      serverInfo: { name: "student-loan-idr-mcp", version: "0.3.0" }
     });
   }
 
@@ -189,7 +205,7 @@ function home(): Response {
   return new Response(JSON.stringify({
     ok: true,
     name: "student-loan-idr-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
     endpoints: ["GET /", "GET /health", "POST /mcp"]
