@@ -514,6 +514,9 @@ jobs:
             console.log('::notice title=Live product acceptance::36 production checks passed');
           })().catch((error) => {
             console.error(error);
+            const message = error instanceof Error ? error.message : String(error);
+            const safeMessage = message.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+            console.error(`::error title=Live acceptance failure::${safeMessage}`);
             process.exit(1);
           });
           NODE
