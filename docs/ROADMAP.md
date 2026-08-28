@@ -118,13 +118,15 @@ Acceptance evidence:
 - Live deploy + production acceptance run `33131163767` succeeded from that exact immutable source. All 18 live checks passed, including the borrower import/privacy shell, absence of a raw-file import endpoint, multi-loan portfolio calculation, original borrower calculation hardening, and the unchanged three-tool MCP contract.
 - Live borrower calculator remains `https://student-loan-idr-mcp.jaredtechfit.workers.dev/`.
 
-## V0.7 — Guided application facts + evidence/document packet — NEXT
+## V0.7 — Guided application facts + evidence/document packet — IN PROGRESS
 
-1. Replace opaque single-number application fields with guided questions that mirror the facts the current federal IDR process actually asks for, while keeping RAP tax-return dependents distinct from legacy IDR family size.
-2. Build a source-by-source current-income workflow for employment, self-employment/contract income, unemployment compensation, other taxable income, and no-current-taxable-income situations.
-3. For every application fact, show provenance and readiness: borrower-stated, imported from StudentAid data, supported by uploaded/identified evidence, derived by the calculator, or still missing/needs review.
-4. Generate fast, editable supporting statements/templates and an evidence checklist from only supplied facts. Never invent employer names, amounts, dates, dependents, signatures, or supporting evidence.
-5. Keep the first guided workflow usable without a required account so the borrower can complete a private session before persistent identity/storage is introduced.
+1. Add a conversational borrower entry point that asks one focused question at a time and accepts either answer bubbles or typed responses. The deterministic browser-local fact ledger remains authoritative: the guide may prefill calculator fields only from answers the borrower actually confirms.
+2. Keep Workers AI optional and subordinate to the fact ledger. A later language layer may interpret freer phrasing, explain why a question matters, or suggest the next question, but it must never silently invent or overwrite family size, income, employer/payer, loan, evidence, or signature facts.
+3. Build a source-by-source current-income workflow for employment, self-employment/contract income, unemployment compensation, other taxable income, multiple taxable sources, and no-current-taxable-income situations.
+4. For every application fact, show provenance and readiness: borrower-stated, imported from StudentAid data, supported by uploaded/identified evidence, derived by the calculator, or still missing/needs review. RAP tax-return dependents remain distinct from legacy IDR family size.
+5. Generate fast, editable supporting statements and evidence checklists from only supplied facts. Support payer/employer-attestation drafts that an actual payer/employer can review and sign. A company logo may be uploaded as an optional browser-local branding asset for a draft, but a logo is never treated as proof of employment or payer verification and the system never invents signatures, employer records, amounts, dates, dependents, or evidence.
+6. Make completed drafts easy to print/download and suitable for normal email or later e-sign workflows, while preserving a clear review-before-sign boundary and never auto-submitting to Federal Student Aid or a servicer.
+7. Keep the guided workflow usable without a required account so a borrower can complete a private session before persistent identity/storage is introduced. V0.8 remains the boundary for saved profiles, retained drafts, and account-linked data.
 
 ## V0.8 — Borrower accounts + secure saved profile — PLANNED
 
