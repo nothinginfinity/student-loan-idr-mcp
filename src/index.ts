@@ -264,6 +264,13 @@ function studentAidYes(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
+function maskStudentAidIdentifier(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  const visible = normalized.slice(-4);
+  return `••••${visible}`;
+}
+
 function mapStudentAidLoanType(code: string | undefined, description: string | undefined, parentPlusIndicator?: string): LoanType | undefined {
   const c = String(code || "").trim().toUpperCase();
   const d = String(description || "").trim().toUpperCase();
@@ -329,7 +336,6 @@ export function parseStudentAidDataText(text: string): ParsedStudentAidPortfolio
   let currentContact: any = null;
   const pushCurrent = () => { if (current) rawLoans.push(current); current = null; currentStatus = null; currentDisbursement = null; currentContact = null; };
   const textFields: Record<string, string> = {
-    "Loan Award ID": "maskedAwardId",
     "Loan Attending School Name": "attendingSchoolName",
     "Loan Attending School OPEID": "attendingSchoolOpeid",
     "Loan Date": "loanDate",
@@ -397,6 +403,7 @@ export function parseStudentAidDataText(text: string): ParsedStudentAidPortfolio
     }
     if (!current) continue;
     if (key === "Loan Type Description") { current.loanTypeDescription = value || undefined; if (value) current.provenance.loanTypeDescription = "imported_studentaid"; continue; }
+    if (key === "Loan Award ID") { const masked = maskStudentAidIdentifier(value); if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; } continue; }
     if (textFields[key]) { current[textFields[key]] = value || undefined; if (value) current.provenance[textFields[key]] = "imported_studentaid"; continue; }
     if (numericFields[key]) { const number = studentAidNumber(value); if (number !== undefined) { current[numericFields[key]] = number; current.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
     if (key === "Loan Status") { currentStatus = { code: value || undefined }; current.statuses.push(currentStatus); continue; }
@@ -894,6 +901,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     return undefined;
   }
 
+  function maskStudentAidIdentifierLocal(value) {
+    const normalized = String(value || "").trim();
+    return normalized ? "••••" + normalized.slice(-4) : null;
+  }
+
   function mapLoanType(code, description, parentPlusIndicator) {
     const c = String(code || "").trim().toUpperCase();
     const value = String(description || "").toUpperCase();
@@ -944,7 +956,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     let currentContact = null;
     const pushCurrent = () => { if (current) records.push(current); current = null; currentStatus = null; currentDisbursement = null; currentContact = null; };
     const textFields = {
-      "Loan Award ID":"maskedAwardId", "Loan Attending School Name":"attendingSchoolName", "Loan Attending School OPEID":"attendingSchoolOpeid", "Loan Date":"loanDate", "Loan Repayment Begin Date":"repaymentBeginDate", "Loan Period Begin Date":"periodBeginDate", "Loan Period End Date":"periodEndDate", "Loan Canceled Date":"canceledDate", "Loan Outstanding Principal Balance as of Date":"outstandingPrincipalAsOfDate", "Loan Outstanding Interest Balance as of Date":"outstandingInterestAsOfDate", "Loan Interest Rate Type Code":"interestRateTypeCode", "Loan Interest Rate Type Description":"interestRateTypeDescription", "Loan Repayment Plan Type Code":"repaymentPlanTypeCode", "Loan Repayment Plan Type Code Description":"repaymentPlanDescription", "Loan Repayment Plan Begin Date":"repaymentPlanBeginDate", "Loan Repayment Plan IDR Plan Anniversary Date":"repaymentPlanIdrAnniversaryDate", "Loan Confirmed Subsidy Status":"confirmedSubsidyStatus", "Loan Reaffirmation Date":"reaffirmationDate", "Loan Most Recent Payment Effective Date":"mostRecentPaymentEffectiveDate", "Loan Next Payment Due Date":"nextPaymentDueDate", "Academic Level":"academicLevel", "Award Year":"awardYear", "Reaffirmation flag":"reaffirmationFlag", "UpdtDt":"updateDate", "DelinqDate":"delinquencyDate", "Current Loan Status":"currentLoanStatusCode", "Current Loan Status Description":"currentLoanStatusDescription", "Parent Plus First Level Consolidation Indicator":"parentPlusFirstLevelConsolidationIndicator", "Consolidation Loan With Any Parent Plus Indicator":"consolidationLoanWithAnyParentPlusIndicator"
+      "Loan Attending School Name":"attendingSchoolName", "Loan Attending School OPEID":"attendingSchoolOpeid", "Loan Date":"loanDate", "Loan Repayment Begin Date":"repaymentBeginDate", "Loan Period Begin Date":"periodBeginDate", "Loan Period End Date":"periodEndDate", "Loan Canceled Date":"canceledDate", "Loan Outstanding Principal Balance as of Date":"outstandingPrincipalAsOfDate", "Loan Outstanding Interest Balance as of Date":"outstandingInterestAsOfDate", "Loan Interest Rate Type Code":"interestRateTypeCode", "Loan Interest Rate Type Description":"interestRateTypeDescription", "Loan Repayment Plan Type Code":"repaymentPlanTypeCode", "Loan Repayment Plan Type Code Description":"repaymentPlanDescription", "Loan Repayment Plan Begin Date":"repaymentPlanBeginDate", "Loan Repayment Plan IDR Plan Anniversary Date":"repaymentPlanIdrAnniversaryDate", "Loan Confirmed Subsidy Status":"confirmedSubsidyStatus", "Loan Reaffirmation Date":"reaffirmationDate", "Loan Most Recent Payment Effective Date":"mostRecentPaymentEffectiveDate", "Loan Next Payment Due Date":"nextPaymentDueDate", "Academic Level":"academicLevel", "Award Year":"awardYear", "Reaffirmation flag":"reaffirmationFlag", "UpdtDt":"updateDate", "DelinqDate":"delinquencyDate", "Current Loan Status":"currentLoanStatusCode", "Current Loan Status Description":"currentLoanStatusDescription", "Parent Plus First Level Consolidation Indicator":"parentPlusFirstLevelConsolidationIndicator", "Consolidation Loan With Any Parent Plus Indicator":"consolidationLoanWithAnyParentPlusIndicator"
     };
     const numericFields = {
       "Loan Amount":"originalAmount", "Loan Disbursed Amount":"disbursedAmount", "Loan Canceled Amount":"canceledAmount", "Loan Outstanding Principal Balance":"outstandingPrincipal", "Loan Outstanding Interest Balance":"outstandingInterest", "Loan Interest Rate":"interestRatePercent", "Loan Actual Interest Rate":"actualInterestRatePercent", "Loan Statutory Interest Rate":"statutoryInterestRatePercent", "Loan Repayment Plan Scheduled Amount":"repaymentPlanScheduledAmount", "Loan Subsidized Usage in Years":"subsidizedUsageYears", "Loan Cumulative Payment Amount":"cumulativePaymentAmount", "Loan PSLF Cumulative Matched Months":"pslfCumulativeMatchedMonths", "Capitalized Interest":"capitalizedInterest", "Net Loan Amount":"netLoanAmount", "Calculated Subsidized Aggregate OPB":"calculatedSubsidizedAggregateOpb", "Calculated Unsubsidized Aggregate OPB":"calculatedUnsubsidizedAggregateOpb", "Calculated Combined Aggregate OPB":"calculatedCombinedAggregateOpb", "Highest Historical Outstanding Principal Balance (OPB)":"highestHistoricalOutstandingPrincipalBalance", "Current Standard-Standard Schedule Payment Amount":"currentStandardSchedulePaymentAmount", "Permanent Standard-Standard Schedule Payment Amount":"permanentStandardSchedulePaymentAmount"
@@ -964,6 +976,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       }
       if (!current) continue;
       if (key === "Loan Type Description") { current.loanTypeDescription = value || null; if (value) current.provenance.loanTypeDescription = "imported_studentaid"; continue; }
+      if (key === "Loan Award ID") { const masked = maskStudentAidIdentifierLocal(value); if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; } continue; }
       if (textFields[key]) { if (value) { current[textFields[key]] = value; current.provenance[textFields[key]] = "imported_studentaid"; } continue; }
       if (numericFields[key]) { const number = numericValue(value); if (number !== undefined) { current[numericFields[key]] = number; current.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
       if (key === "Loan Status") { currentStatus = { code: value || undefined }; current.statuses.push(currentStatus); continue; }
@@ -3100,6 +3113,10 @@ function home(request: Request, env: Env): Response {
       repayment_comparison_visualizations: true,
       retained_client_artifacts: true,
       calculation_history: true,
+      student_aid_dual_mode_import: true,
+      student_aid_normalized_prefill: true,
+      student_aid_per_loan_facts: true,
+      student_aid_provenance_review: true,
       raw_student_aid_retention: false
     },
     hardening: {
