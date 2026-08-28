@@ -28,7 +28,10 @@ class SqliteD1 implements D1DatabaseBinding {
 }
 
 const BASE = "https://student-loan-idr-mcp.example";
-const migration = readFileSync(new URL("../migrations/0001_v0_8_2_advisor_workspace.sql", import.meta.url), "utf8");
+const migration = [
+  readFileSync(new URL("../migrations/0001_v0_8_2_advisor_workspace.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../migrations/0002_v0_8_5_client_history.sql", import.meta.url), "utf8")
+].join("\n");
 
 function cookieHeader(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -120,7 +123,9 @@ test("V0.8.2 advisor sessions and D1 client CRUD are exact-owner scoped", async 
   const exported = await advisorFetch(`/api/advisor/clients/${clientId}/export`, alpha, env);
   const exportBody = await exported.json();
   assert.equal(exported.status, 200);
-  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v1");
+  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v2");
+  assert.deepEqual(exportBody.retainedArtifacts, []);
+  assert.deepEqual(exportBody.calculationSnapshots, []);
   assert.equal(exportBody.client.notes, "Advisor-only workflow note");
 
   const archive = await advisorFetch(`/api/advisor/clients/${clientId}/archive`, alpha, env, { method: "POST", body: JSON.stringify({ expectedUpdatedAt: updated.client.updatedAt }) });
@@ -328,4 +333,102 @@ test("V0.8.4 advisor comparison reuses saved facts, bounds forgiveness, and stay
   assert.equal(postBody.client.updatedAt, timed.client.updatedAt, "comparison must not mutate the client record");
   const auditRows = d1.database.prepare("SELECT action FROM advisor_audit_events WHERE advisor_id = ?").all(alpha.advisor.advisorId) as Array<{ action: string }>;
   assert.ok(auditRows.some((row) => row.action === "client.compare"));
+});
+
+test("V0.8.5 explicitly retains owner-scoped document and calculation history with immutable rerun basis", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  d1.database.exec("PRAGMA foreign_keys = ON");
+  const env = { ADVISOR_DB: d1 };
+  const alpha = await register(env, "history-alpha@example.test", "History Alpha");
+  const beta = await register(env, "history-beta@example.test", "History Beta");
+
+  const ui = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
+  const html = await ui.text();
+  assert.match(html, /id="advisor-history-workspace"/);
+  assert.match(html, /id="advisor-retain-document"/);
+  assert.match(html, /id="advisor-retain-calculation"/);
+  assert.match(html, /id="advisor-retain-comparison"/);
+  assert.match(html, /Rerun retained basis/);
+  assert.match(html, /Raw StudentAid downloads and evidence files are never retained/);
+
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({ displayName:"History Borrower" }) });
+  const created = await create.json();
+  const clientId = created.client.clientId as string;
+  const save = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({
+    expectedUpdatedAt:created.client.updatedAt,
+    confirmedFacts:{ income:[{cadence:"annual",amount:25000}], region:"contiguous_us", familySize:1, dependentsClaimedOnFederalTaxReturn:0, taxFilingStatus:"single", newBorrowerOnOrAfterJuly1_2014:true },
+    normalizedLoanPortfolio:{ repaymentLoans:[{principal:25000,annualInterestRatePercent:6.5}], eligibilityLoans:[{loanType:"direct_unsubsidized",disbursementPeriod:"before_2026_07_01"}] },
+    consideredPlans:["RAP","IBR"]
+  }) });
+  const saved = await save.json();
+  assert.equal(save.status, 200);
+
+  const retainedDocument = await advisorFetch(`/api/advisor/clients/${clientId}/artifacts`, alpha, env, { method:"POST", body:JSON.stringify({ name:"August income statement", templateRequest:{ templateType:"current_income_statement", outputFormat:"text", borrowerName:"History Borrower", servicerName:"Example Servicer", incomeSources:[{sourceType:"employment",name:"Example Employer",grossAmount:1000,paymentFrequency:"biweekly"}] } }) });
+  const documentBody = await retainedDocument.json();
+  assert.equal(retainedDocument.status, 201);
+  assert.equal(documentBody.artifact.name, "August income statement");
+  assert.match(documentBody.artifact.documentText, /History Borrower/);
+  assert.match(documentBody.artifact.documentHtml, /^<!doctype html>/);
+  const artifactId = documentBody.artifact.artifactId as string;
+
+  const artifacts = await advisorFetch(`/api/advisor/clients/${clientId}/artifacts`, alpha, env);
+  const artifactsBody = await artifacts.json();
+  assert.equal(artifactsBody.artifacts.length, 1);
+  assert.deepEqual(Object.keys(artifactsBody.artifacts[0]).sort(), ["artifactId","artifactKind","createdAt","engineVersion","name"].sort());
+  assert.doesNotMatch(JSON.stringify(artifactsBody), /Example Employer|History Borrower/);
+  const betaArtifact = await advisorFetch(`/api/advisor/clients/${clientId}/artifacts/${artifactId}`, beta, env);
+  assert.equal(betaArtifact.status, 404);
+  const regenerate = await advisorFetch(`/api/advisor/clients/${clientId}/artifacts/${artifactId}/regenerate`, alpha, env, { method:"POST", body:"{}" });
+  const regeneratedBody = await regenerate.json();
+  assert.equal(regenerate.status, 200);
+  assert.match(regeneratedBody.regenerated.documentText, /Example Employer/);
+
+  const comparisonSnapshot = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots`, alpha, env, { method:"POST", body:JSON.stringify({ name:"August forgiveness comparison", snapshotKind:"comparison" }) });
+  const comparisonSnapshotBody = await comparisonSnapshot.json();
+  assert.equal(comparisonSnapshot.status, 201);
+  assert.equal(comparisonSnapshotBody.snapshot.snapshotKind, "comparison");
+  assert.equal(comparisonSnapshotBody.snapshot.result.projections.length, 4);
+  const snapshotId = comparisonSnapshotBody.snapshot.snapshotId as string;
+  const retainedRapPayment = comparisonSnapshotBody.snapshot.result.projections.find((p:any)=>p.plan==="RAP").currentMonthlyPayment;
+
+  const calculationSnapshot = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots`, alpha, env, { method:"POST", body:JSON.stringify({ name:"August RAP and IBR calculation", snapshotKind:"calculation" }) });
+  const calculationBody = await calculationSnapshot.json();
+  assert.equal(calculationSnapshot.status, 201);
+  assert.deepEqual(calculationBody.snapshot.result.planEstimates.map((p:any)=>p.plan), ["RAP","IBR"]);
+
+  const changed = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:saved.client.updatedAt, confirmedFacts:{ ...saved.client.confirmedFacts, income:[{cadence:"annual",amount:90000}] } }) });
+  assert.equal(changed.status, 200);
+  const rerun = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/rerun`, alpha, env, { method:"POST", body:"{}" });
+  const rerunBody = await rerun.json();
+  assert.equal(rerun.status, 200);
+  assert.equal(rerunBody.rerun.basis, "retained_snapshot_basis");
+  assert.equal(rerunBody.rerun.result.projections.find((p:any)=>p.plan==="RAP").currentMonthlyPayment, retainedRapPayment, "rerun must use retained basis rather than the later client update");
+
+  const snapshots = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots`, alpha, env);
+  const snapshotsBody = await snapshots.json();
+  assert.equal(snapshotsBody.snapshots.length, 2);
+  assert.deepEqual(Object.keys(snapshotsBody.snapshots[0]).sort(), ["createdAt","engineVersion","name","policySnapshot","snapshotId","snapshotKind"].sort());
+  assert.doesNotMatch(JSON.stringify(snapshotsBody), /90000|25000/);
+  assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}`, beta, env)).status, 404);
+
+  const exported = await advisorFetch(`/api/advisor/clients/${clientId}/export`, alpha, env);
+  const exportBody = await exported.json();
+  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v2");
+  assert.equal(exportBody.retainedArtifacts.length, 1);
+  assert.equal(exportBody.calculationSnapshots.length, 2);
+
+  assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/artifacts/${artifactId}`, alpha, env, { method:"DELETE", body:"{}" })).status, 200);
+  assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}`, alpha, env, { method:"DELETE", body:"{}" })).status, 200);
+  assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/artifacts`, alpha, env).then(r=>r.json())).artifacts.length, 0);
+
+  const current = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env); const currentBody = await current.json();
+  const deletion = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"DELETE", body:JSON.stringify({confirm:"delete",expectedUpdatedAt:currentBody.client.updatedAt}) });
+  assert.equal(deletion.status, 200);
+  const remaining = d1.database.prepare("SELECT COUNT(*) AS n FROM advisor_client_calculation_snapshots WHERE owner_advisor_id=? AND client_id=?").get(alpha.advisor.advisorId,clientId) as {n:number};
+  assert.equal(remaining.n, 0, "client deletion must cascade retained history");
+
+  const auditRows = d1.database.prepare("SELECT action,metadata_json FROM advisor_audit_events WHERE advisor_id=?").all(alpha.advisor.advisorId) as Array<{action:string;metadata_json:string}>;
+  for (const action of ["client.artifact.retain","client.artifact.regenerate","client.artifact.delete","client.snapshot.retain","client.snapshot.rerun","client.snapshot.delete"]) assert.ok(auditRows.some(row=>row.action===action), action);
+  assert.ok(auditRows.every(row=>row.metadata_json==="{}"));
 });
