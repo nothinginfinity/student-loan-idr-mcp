@@ -315,12 +315,12 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.7.2') break;
+              if (healthResponse.status === 200 && health?.version === '0.7.3') break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.7.2', `unexpected live version ${health.version}`);
+            assert(health.version === '0.7.3', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -342,6 +342,12 @@ jobs:
             assert(uiHtml.includes('Prepare stated income document'), 'UI stated-income follow-up action missing');
             assert(uiHtml.includes('Prepare unemployment statement'), 'UI unemployment follow-up action missing');
             assert(uiHtml.includes('id="document-workspace"'), 'UI document review workspace missing');
+            assert(uiHtml.includes('id="income-readiness-panel"'), 'UI source-by-source readiness panel missing');
+            assert(uiHtml.includes('id="document-scope"'), 'UI source-specific draft selector missing');
+            assert(uiHtml.includes('Source-by-source income readiness'), 'UI source readiness guidance missing');
+            assert(uiHtml.includes('Application-ready') && uiHtml.includes('Document-ready'), 'UI readiness states missing');
+            assert(uiHtml.includes('Evidence in hand (borrower-stated)'), 'UI borrower-stated evidence boundary missing');
+            assert(uiHtml.includes('guidedCalculatorIncome'), 'UI multi-source calculator handoff missing');
             assert(uiHtml.includes('id="document-reviewed"'), 'UI document review acknowledgement missing');
             assert(uiHtml.includes('Print / Save PDF'), 'UI document print action missing');
             assert(uiHtml.includes('Download HTML'), 'UI document download action missing');
@@ -372,14 +378,19 @@ jobs:
                 outputFormat: 'text',
                 borrowerName: 'Live Browser Draft',
                 servicerName: 'Example Servicer',
-                incomeSources: [{ sourceType: 'unemployment', name: 'Example Agency', grossAmount: 450, paymentFrequency: 'weekly' }]
+                incomeSources: [
+                  { sourceType: 'employment', name: 'Example Employer', grossAmount: 1200, paymentFrequency: 'biweekly' },
+                  { sourceType: 'contract', name: 'Example Side Client', grossAmount: 300, paymentFrequency: 'monthly' }
+                ]
               })
             });
             const browserDocumentBody = await browserDocument.json();
             assert(browserDocument.status === 200, `browser document returned ${browserDocument.status}`);
             assert(browserDocumentBody?.ok === true, 'browser document response not ok');
             assert(browserDocumentBody.document.includes('Live Browser Draft'), 'browser document lost borrower fact');
-            assert(browserDocumentBody.document.includes('Example Agency'), 'browser document lost payer fact');
+            assert(browserDocumentBody.document.includes('Example Employer'), 'browser document lost first payer fact');
+            assert(browserDocumentBody.document.includes('Example Side Client'), 'browser document lost second payer fact');
+            assert(browserDocumentBody.document.includes('Income source 2'), 'browser document did not preserve source separation');
             assert(browserDocumentBody.document.includes('Supporting evidence checklist'), 'browser document missing evidence checklist');
             assert(browserDocument.headers.get('cache-control') === 'no-store', 'browser document cache policy mismatch');
 
@@ -440,7 +451,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.7.2', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.7.3', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -515,9 +526,9 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 36
+              checks: 42
             }));
-            console.log('::notice title=Live product acceptance::36 production checks passed');
+            console.log('::notice title=Live product acceptance::42 production checks passed');
           })().catch((error) => {
             console.error(error);
             const message = error instanceof Error ? error.message : String(error);
