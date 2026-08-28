@@ -15,7 +15,7 @@ V0.8.2 introduces the first authenticated, server-persistent advisor workspace. 
 V0.8.2 supports advisor registration and password login only.
 
 - Passwords must be 12–200 characters.
-- Password verifier data is stored as a random salt plus PBKDF2-SHA-256 output. The current Cloudflare Workers WebCrypto runtime caps PBKDF2 at 100,000 iterations, so V0.8.2 uses that runtime ceiling. Plaintext passwords are never stored. This ceiling is another reason this slice is an authentication foundation rather than the final production password-KDF boundary; a later accepted production-auth slice must migrate to a stronger supported KDF or reviewed external identity provider.
+- Password verifier data is stored as a random salt plus a Workers-native Node `crypto.scrypt` output. V0.8.2 uses `N=16384`, `r=8`, `p=1`, with a 32 MiB `maxmem` bound; the existing `password_iterations` persistence column records the scrypt `N` work factor for this bounded schema. Plaintext passwords are never stored. This remains an authentication foundation rather than the final production identity boundary; a later accepted production-auth slice should version the verifier schema and/or move to a reviewed external identity provider with recovery and MFA.
 - Successful authentication creates a cryptographically random server session token. Only the SHA-256 hash of that token is stored in D1.
 - The browser receives the session only as `sl_advisor_session` with `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and a 12-hour maximum age.
 - State-changing advisor requests require a separate random CSRF token. Only its SHA-256 hash is persisted. `GET /api/advisor/session` rotates and reissues the CSRF token for a valid resumed session.
