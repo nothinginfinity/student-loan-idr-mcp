@@ -5,6 +5,7 @@ import {
   calculateRepayment,
   evaluatePlanEligibility,
   getPolicyStatus,
+  ibrZeroPaymentAgiThreshold,
   icrIncomePercentageFactor,
   normalizeIncomeToAnnual,
   povertyGuideline
@@ -24,6 +25,35 @@ test("sums seasonal lump payments", () => {
 test("uses current contiguous-US poverty values and >8 increment", () => {
   assert.equal(povertyGuideline("contiguous_us", 1), 15960);
   assert.equal(povertyGuideline("contiguous_us", 9), 61400);
+});
+
+test("IBR zero-payment AGI thresholds equal 150% of the 2026 poverty guideline", () => {
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6].map((familySize) => ibrZeroPaymentAgiThreshold("contiguous_us", familySize)),
+    [23940, 32460, 40980, 49500, 58020, 66540]
+  );
+  assert.equal(ibrZeroPaymentAgiThreshold("alaska", 6), 83175);
+  assert.equal(ibrZeroPaymentAgiThreshold("hawaii", 6), 76515);
+});
+
+test("IBR estimates $0 at the threshold and positive payment immediately above it", () => {
+  const atThreshold = calculateRepayment({
+    income: [{ cadence: "annual", amount: 66540 }],
+    adjustedGrossIncomeOverride: 66540,
+    region: "contiguous_us",
+    familySize: 6,
+    plans: ["IBR"]
+  });
+  const aboveThreshold = calculateRepayment({
+    income: [{ cadence: "annual", amount: 66541 }],
+    adjustedGrossIncomeOverride: 66541,
+    region: "contiguous_us",
+    familySize: 6,
+    loan: { newBorrowerOnOrAfterJuly1_2014: true },
+    plans: ["IBR"]
+  });
+  assert.equal(atThreshold.planEstimates[0]?.monthlyPaymentEstimate, 0);
+  assert.equal(aboveThreshold.planEstimates[0]?.monthlyPaymentEstimate, 0.01);
 });
 
 test("computes RAP with dependent reduction and floor", () => {
@@ -398,6 +428,10 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(html, /id="guided-assistant"/);
   assert.match(html, /id="guide-answers"/);
   assert.match(html, /id="guide-input"/);
+  assert.match(html, /Could my IBR payment be \$0\?/);
+  assert.match(html, /Prepare stated income document/);
+  assert.match(html, /Prepare unemployment statement/);
+  assert.match(html, /\/api\/ibr-zero-payment/);
   assert.match(html, /Facts collected in this session/);
   assert.match(html, /No account is required/);
   assert.match(html, /guidedFacts/);
@@ -414,6 +448,23 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.doesNotMatch(html, /\/api\/import/);
   assert.match(html, /no analytics, no external assets, and no browser storage/i);
   assert.doesNotMatch(html, /<(?:img|script|link)[^>]+(?:src|href)="https?:\/\//i);
+});
+
+test("IBR zero-payment quick-info API returns deterministic 2026 family-size cutoffs", async () => {
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/ibr-zero-payment?region=contiguous_us"), {});
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.plan, "IBR");
+  assert.equal(body.policySnapshot, "2026-08-27");
+  assert.deepEqual(body.thresholds.map((row: { maxAgiForZeroPayment: number }) => row.maxAgiForZeroPayment), [23940, 32460, 40980, 49500, 58020, 66540]);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+
+  const hawaii = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/ibr-zero-payment?region=hawaii"), {});
+  assert.equal((await hawaii.json()).thresholds[5].maxAgiForZeroPayment, 76515);
+
+  const invalid = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/ibr-zero-payment?region=invalid"), {});
+  assert.equal(invalid.status, 400);
 });
 
 test("borrower calculator API uses the deterministic RAP engine", async () => {
