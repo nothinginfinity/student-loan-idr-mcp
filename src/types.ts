@@ -207,6 +207,7 @@ export interface AdvisorClientRecordV1 {
     familySize?: number;
     dependentsClaimedOnFederalTaxReturn?: number;
     taxFilingStatus?: TaxFilingStatus;
+    newBorrowerOnOrAfterJuly1_2014?: boolean;
   };
   consideredPlans?: RepaymentPlan[];
   retainedDraftIds?: string[];
