@@ -11,8 +11,8 @@ import {
   povertyGuideline
 } from "../src/formulas.ts";
 import { getDocumentationTemplate } from "../src/templates.ts";
-import worker from "../src/index.ts";
-import type { CalculatorRequest, EligibilityStatus, LoanType, RepaymentPlan } from "../src/types.ts";
+import worker, { advisorCanAccessClient, assertAdvisorClientAccess, clientDashboardSummary } from "../src/index.ts";
+import type { AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, EligibilityStatus, LoanType, RepaymentPlan } from "../src/types.ts";
 
 test("annualizes hourly income", () => {
   assert.equal(normalizeIncomeToAnnual({ cadence: "hourly", hourlyRate: 25, hoursPerWeek: 30, weeksPerYear: 50 }), 37500);
@@ -414,6 +414,62 @@ test("legacy single-source documentation fields remain supported and no-income s
     }),
     /cannot include current income sources/
   );
+});
+
+test("V0.8 advisor/client authority is exact-owner scoped and dashboard summaries do not leak client detail", () => {
+  const client = {
+    schemaVersion: 1,
+    clientId: "client-001",
+    ownerAdvisorId: "advisor-alpha",
+    createdAt: "2026-08-28T00:00:00Z",
+    updatedAt: "2026-08-28T01:00:00Z",
+    lifecycleState: "active",
+    readinessState: "needs_evidence",
+    contact: {
+      displayName: "Example Borrower",
+      email: "borrower-private@example.test",
+      phone: "555-0100"
+    },
+    normalizedLoanPortfolio: {
+      repaymentLoans: [{ principal: 25000, annualInterestRatePercent: 6.5 }]
+    },
+    confirmedFacts: {
+      income: [{ cadence: "annual", amount: 50000 }],
+      region: "contiguous_us",
+      familySize: 2
+    },
+    retainedDraftIds: ["draft-private-001"],
+    notes: "PRIVATE-CLIENT-NOTE",
+    studentAidImport: {
+      source: "studentaid_download",
+      importedAt: "2026-08-28T00:30:00Z",
+      rawFileRetained: false
+    }
+  } satisfies AdvisorClientRecordV1;
+  const owner = { advisorId: "advisor-alpha", status: "active" } satisfies AdvisorPrincipal;
+  const otherAdvisor = { advisorId: "advisor-beta", status: "active" } satisfies AdvisorPrincipal;
+  const suspendedOwner = { advisorId: "advisor-alpha", status: "suspended" } satisfies AdvisorPrincipal;
+
+  assert.equal(advisorCanAccessClient(owner, client), true);
+  assert.equal(advisorCanAccessClient(otherAdvisor, client), false);
+  assert.equal(advisorCanAccessClient(suspendedOwner, client), false);
+  assert.throws(() => assertAdvisorClientAccess(otherAdvisor, client), /Client not found or not accessible/);
+  assert.throws(() => assertAdvisorClientAccess(suspendedOwner, client), /Client not found or not accessible/);
+
+  const summary = clientDashboardSummary(owner, client);
+  assert.deepEqual(summary, {
+    clientId: "client-001",
+    displayName: "Example Borrower",
+    lifecycleState: "active",
+    readinessState: "needs_evidence",
+    updatedAt: "2026-08-28T01:00:00Z"
+  });
+  const serializedSummary = JSON.stringify(summary);
+  assert.doesNotMatch(serializedSummary, /borrower-private/);
+  assert.doesNotMatch(serializedSummary, /555-0100/);
+  assert.doesNotMatch(serializedSummary, /PRIVATE-CLIENT-NOTE/);
+  assert.doesNotMatch(serializedSummary, /draft-private-001/);
+  assert.equal(client.studentAidImport.rawFileRetained, false);
 });
 
 test("borrower UI serves a privacy-safe same-origin calculator shell", async () => {
