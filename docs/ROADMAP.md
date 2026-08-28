@@ -118,7 +118,7 @@ Acceptance evidence:
 - Live deploy + production acceptance run `33131163767` succeeded from that exact immutable source. All 18 live checks passed, including the borrower import/privacy shell, absence of a raw-file import endpoint, multi-loan portfolio calculation, original borrower calculation hardening, and the unchanged three-tool MCP contract.
 - Live borrower calculator remains `https://student-loan-idr-mcp.jaredtechfit.workers.dev/`.
 
-## V0.7 — Guided application facts + evidence/document packet — IN PROGRESS
+## V0.7 — Guided application facts + evidence/document packet — COMPLETE
 
 1. Add a conversational borrower entry point that asks one focused question at a time and accepts either answer bubbles or typed responses. The deterministic browser-local fact ledger remains authoritative: the guide may prefill calculator fields only from answers the borrower actually confirms.
 2. Keep Workers AI optional and subordinate to the fact ledger. A later language layer may interpret freer phrasing, explain why a question matters, or suggest the next question, but it must never silently invent or overwrite family size, income, employer/payer, loan, evidence, or signature facts.
@@ -158,7 +158,7 @@ Acceptance evidence:
 - Normal CI run `33137744700` passed on that final exact source commit. Exact-SHA deployment run `33137753929` then passed the immutable-source guard, strict TypeScript, the complete deterministic suite, Cloudflare credential gate, Wrangler deployment, and all 36 live production acceptance checks.
 - Live acceptance covers the document-review UI, review-before-sign acknowledgement, print / Save PDF and local HTML download controls, same-origin `/api/document`, trusted-template rendering, caller-markup escaping, `Cache-Control: no-store`, cross-origin rejection, and the unchanged three-tool MCP contract.
 
-### V0.7.3 — Source-by-source evidence and application readiness — NEXT
+### V0.7.3 — Source-by-source evidence and application readiness — COMPLETE
 
 - Extend the guided fact ledger from one current-income path to multiple taxable income sources without collapsing employer, self-employment, unemployment, and other taxable income into one ambiguous fact.
 - Track provenance and evidence readiness per source: borrower-stated, documented/identified evidence, imported fact where applicable, derived estimate, or still missing/needs review.
@@ -166,7 +166,14 @@ Acceptance evidence:
 - Reuse the existing multi-source documentation engine to create combined or source-specific drafts from confirmed facts only; never invent payer names, amounts, dates, evidence, attestations, or signatures.
 - Keep the workflow account-free and browser-local where possible. V0.8 remains the boundary where an authenticated advisor can save multiple borrower clients, their normalized facts, evidence/readiness state, and retained drafts.
 
-## V0.8 — Advisor/manager accounts + multi-client workspace — PLANNED
+Acceptance evidence:
+
+- Final V0.7.3 runtime source commit `86be2218533a39c9e1764ef7fbcd39a2ffa7f4d8` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in normal CI run `33173349529`.
+- Exact-SHA live deployment run `33173463078` succeeded from that immutable source. The `deploy-live` job passed the immutable-source guard, strict TypeScript, the complete deterministic suite, Cloudflare credential gate, Wrangler deployment, and the full 42-check live production acceptance step.
+- Live acceptance covers the browser-local source-by-source income ledger, borrower-stated evidence-readiness boundary, source-specific evidence guidance, separate `Document-ready` / `Application-ready` / `Needs review` states, combined and source-specific drafts through the trusted multi-source documentation engine, preservation of two distinct income sources, and reuse of all confirmed guided sources by the deterministic calculator.
+- The raw StudentAid.gov file remains browser-local; evidence files are not uploaded or verified by this slice; no borrower account or server persistence was introduced; and the existing three-tool MCP contract remains unchanged.
+
+## V0.8 — Advisor/manager accounts + multi-client workspace — NEXT / PLANNED
 
 1. Make the persistent account an **advisor/manager account**, not a one-borrower account. One authenticated advisor can create, search, open, and manage many borrower **client records** from a single workspace.
 2. Give each client a structured profile for contact information, normalized StudentAid loan portfolio, confirmed application facts, income sources, family-size facts, evidence/readiness state, servicer information, generated document drafts, selected/considered repayment programs, notes, and repeat calculations. Client records must remain logically isolated from one another and scoped to the owning/authorized advisor account.
