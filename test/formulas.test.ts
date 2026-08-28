@@ -746,6 +746,8 @@ Loan Status Description:IN REPAYMENT
   assert.equal(parsed.borrower.city, "Denver");
   assert.equal(parsed.borrower.provenance.displayName, "imported_studentaid");
   assert.equal(parsed.loans.length, 2);
+  assert.equal(parsed.loans[0]?.maskedAwardId, "••••AN-1");
+  assert.equal(parsed.loans[0]?.provenance.maskedAwardId, "derived_studentaid");
   assert.equal(parsed.loans[0]?.mappedLoanType, "direct_unsubsidized");
   assert.equal(parsed.loans[0]?.disbursementPeriod, "before_2026_07_01");
   assert.equal(parsed.loans[0]?.provenance.mappedLoanType, "derived_studentaid");
