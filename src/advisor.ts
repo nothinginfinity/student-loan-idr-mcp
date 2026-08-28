@@ -312,7 +312,7 @@ function updateRecord(existing: AdvisorClientRecordV1, b: JsonObject): AdvisorCl
     const em=optionalText(c.email,"Client email",254), ph=optionalText(c.phone,"Client phone",80), streetAddress1=optionalText(c.streetAddress1,"Client street address",200), streetAddress2=optionalText(c.streetAddress2,"Client street address 2",200), city=optionalText(c.city,"Client city",120), stateCode=optionalText(c.stateCode,"Client state code",40), countryCode=optionalText(c.countryCode,"Client country code",40), zipCode=optionalText(c.zipCode,"Client ZIP code",40);
     next.contact={displayName:displayName(c.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{}),...(streetAddress1?{streetAddress1}:{}),...(streetAddress2?{streetAddress2}:{}),...(city?{city}:{}),...(stateCode?{stateCode}:{}),...(countryCode?{countryCode}:{}),...(zipCode?{zipCode}:{})};
   }
-  if (b.fieldProvenance!==undefined) next.fieldProvenance=safeJson(b.fieldProvenance) as AdvisorClientRecordV1["fieldProvenance"];
+  if (b.fieldProvenance!==undefined) next.fieldProvenance=safeJson(b.fieldProvenance) as NonNullable<AdvisorClientRecordV1["fieldProvenance"]>;
   if (b.servicerName!==undefined) { const value=optionalText(b.servicerName,"Servicer name",200); if (value===undefined) delete next.servicerName; else next.servicerName=value; }
   if (b.lifecycleState!==undefined) next.lifecycleState=lifecycle(b.lifecycleState);
   if (b.readinessState!==undefined) next.readinessState=readiness(b.readinessState);
