@@ -105,12 +105,12 @@ function updateRecord(existing: AdvisorClientRecordV1, b: JsonObject): AdvisorCl
   if (b.expectedUpdatedAt!==existing.updatedAt) throw new ApiError(409,"Client record has changed; reload before saving.");
   const next=structuredClone(existing) as AdvisorClientRecordV1;
   if (b.contact!==undefined) { const c=bodyObject(b.contact); const allowedContact=new Set(["displayName","email","phone"]); for (const k of Object.keys(c)) if (!allowedContact.has(k)) throw new ApiError(400,`Unexpected contact field: ${k}.`); const em=optionalText(c.email,"Client email",254), ph=optionalText(c.phone,"Client phone",80); next.contact={displayName:displayName(c.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{})}; }
-  if (b.servicerName!==undefined) next.servicerName=optionalText(b.servicerName,"Servicer name",200);
+  if (b.servicerName!==undefined) { const value=optionalText(b.servicerName,"Servicer name",200); if (value===undefined) delete next.servicerName; else next.servicerName=value; }
   if (b.lifecycleState!==undefined) next.lifecycleState=lifecycle(b.lifecycleState);
   if (b.readinessState!==undefined) next.readinessState=readiness(b.readinessState);
   for (const key of ["normalizedLoanPortfolio","confirmedFacts","consideredPlans","retainedDraftIds"] as const) if (b[key]!==undefined) (next as unknown as JsonObject)[key]=safeJson(b[key]);
-  if (b.notes!==undefined) next.notes=optionalText(b.notes,"Advisor notes",10_000);
-  if (b.studentAidImport!==undefined) { const s=bodyObject(b.studentAidImport); if (s.source!=="studentaid_download" || s.rawFileRetained!==false) throw new ApiError(400,"Raw StudentAid files cannot be retained."); next.studentAidImport={source:"studentaid_download",...(optionalText(s.importedAt,"StudentAid import date",80)?{importedAt:optionalText(s.importedAt,"StudentAid import date",80)}:{}),rawFileRetained:false}; }
+  if (b.notes!==undefined) { const value=optionalText(b.notes,"Advisor notes",10_000); if (value===undefined) delete next.notes; else next.notes=value; }
+  if (b.studentAidImport!==undefined) { const s=bodyObject(b.studentAidImport); if (s.source!=="studentaid_download" || s.rawFileRetained!==false) throw new ApiError(400,"Raw StudentAid files cannot be retained."); const importedAt=optionalText(s.importedAt,"StudentAid import date",80); next.studentAidImport={source:"studentaid_download",...(importedAt?{importedAt}:{}),rawFileRetained:false}; }
   next.updatedAt=new Date().toISOString(); return next;
 }
 async function owned(database:D1DatabaseBinding,advisorId:string,clientId:string):Promise<ClientRow>{ const r=await database.prepare("SELECT owner_advisor_id,client_id,display_name,lifecycle_state,readiness_state,record_json,created_at,updated_at FROM advisor_clients WHERE owner_advisor_id=? AND client_id=?").bind(advisorId,clientId).first<ClientRow>(); if(!r) throw new ApiError(404,"Client not found or not accessible."); return r; }
