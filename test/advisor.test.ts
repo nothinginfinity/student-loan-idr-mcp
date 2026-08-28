@@ -111,6 +111,13 @@ test("V0.8.2 advisor sessions and D1 client CRUD are exact-owner scoped", async 
   assert.equal(rawRetention.status, 400);
   assert.match((await rawRetention.json()).error, /Raw StudentAid files cannot be retained/);
 
+  const rawTextRetention = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, {
+    method: "PUT",
+    body: JSON.stringify({ expectedUpdatedAt: created.client.updatedAt, normalizedLoanPortfolio: { repaymentLoans: [], loans: [{ rawText: "RAW-STUDENTAID-SHOULD-NEVER-PERSIST" }] } })
+  });
+  assert.equal(rawTextRetention.status, 400);
+  assert.match((await rawTextRetention.json()).error, /Forbidden persisted client field: rawText/);
+
   const update = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, {
     method: "PUT",
     body: JSON.stringify({ expectedUpdatedAt: created.client.updatedAt, notes: "Advisor-only workflow note", readinessState: "document_ready", studentAidImport: { source: "studentaid_download", importedAt: "2026-08-28T14:00:00Z", rawFileRetained: false } })
@@ -194,6 +201,8 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
     body: JSON.stringify({
       expectedUpdatedAt: created.client.updatedAt,
       readinessState: "application_ready",
+      contact: { displayName: "Saved Workflow Borrower", email: "borrower@example.test", phone: "555-0100", streetAddress1: "100 Example Way", city: "Denver", stateCode: "CO", countryCode: "US", zipCode: "80202" },
+      fieldProvenance: { displayName: "imported_studentaid", email: "advisor_entered", city: "imported_studentaid" },
       servicerName: "Example Servicer",
       confirmedFacts: {
         income: [{ cadence: "biweekly", amount: 1200 }],
@@ -204,9 +213,11 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
       },
       normalizedLoanPortfolio: {
         repaymentLoans: [{ principal: 25000, annualInterestRatePercent: 6.5 }],
-        eligibilityLoans: [{ loanType: "direct_unsubsidized", disbursementPeriod: "before_2026_07_01" }]
+        eligibilityLoans: [{ loanType: "direct_unsubsidized", disbursementPeriod: "before_2026_07_01" }],
+        loans: [{ loanIndex: 0, maskedAwardId: "MASKED-1", loanTypeCode: "D2", loanTypeDescription: "DIRECT UNSUBSIDIZED LOAN", mappedLoanType: "direct_unsubsidized", disbursementPeriod: "before_2026_07_01", outstandingPrincipal: 25000, outstandingInterest: 125, interestRatePercent: 6.5, currentLoanStatusDescription: "IN REPAYMENT", contacts: [{ type: "Current Servicer", name: "Example Servicer", mostRelevant: true }], provenance: { loanTypeCode: "imported_studentaid", mappedLoanType: "derived_studentaid", disbursementPeriod: "derived_studentaid", outstandingPrincipal: "imported_studentaid" } }],
+        summary: { loanCount: 1, activeLoanCount: 1, totalOutstandingPrincipal: 25000, totalOutstandingInterest: 125, repaymentLoanCount: 1, eligibilityMappedLoanCount: 1, ambiguousEligibilityLoanCount: 0, hasLoanDisbursedOnOrAfterJuly1_2026: false }
       },
-      studentAidImport: { source: "studentaid_download", importedAt: "2026-08-28T15:00:00Z", rawFileRetained: false }
+      studentAidImport: { source: "studentaid_download", importedAt: "2026-08-28T15:00:00Z", fileRequestDate: "08/28/2026", mappingVersion: "2026-08-28-v1", rawFileRetained: false }
     })
   });
   const saved = await save.json();
@@ -216,6 +227,12 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
   assert.equal(saved.client.confirmedFacts.incomeSources[0].name, "Example Employer");
   assert.equal(saved.client.normalizedLoanPortfolio.repaymentLoans[0].principal, 25000);
   assert.equal(saved.client.studentAidImport.rawFileRetained, false);
+  assert.equal(saved.client.studentAidImport.mappingVersion, "2026-08-28-v1");
+  assert.equal(saved.client.contact.streetAddress1, "100 Example Way");
+  assert.equal(saved.client.fieldProvenance.email, "advisor_entered");
+  assert.equal(saved.client.normalizedLoanPortfolio.loans[0].loanTypeCode, "D2");
+  assert.equal(saved.client.normalizedLoanPortfolio.loans[0].contacts[0].name, "Example Servicer");
+  assert.equal(saved.client.normalizedLoanPortfolio.summary.totalOutstandingInterest, 125);
 
   const resumed = await advisorFetch(`/api/advisor/clients/${created.client.clientId}`, advisor, env);
   const resumedBody = await resumed.json();
@@ -223,6 +240,8 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
   assert.equal(resumedBody.client.servicerName, "Example Servicer");
   assert.equal(resumedBody.client.confirmedFacts.dependentsClaimedOnFederalTaxReturn, 1);
   assert.equal(resumedBody.client.normalizedLoanPortfolio.eligibilityLoans[0].loanType, "direct_unsubsidized");
+  assert.equal(resumedBody.client.normalizedLoanPortfolio.loans[0].maskedAwardId, "MASKED-1");
+  assert.equal(resumedBody.client.studentAidImport.fileRequestDate, "08/28/2026");
 });
 
 test("V0.8.4 advisor comparison reuses saved facts, bounds forgiveness, and stays exact-owner scoped", async () => {
