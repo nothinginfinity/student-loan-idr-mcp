@@ -1,6 +1,13 @@
 import { calculateRepayment, getPolicyStatus, ibrZeroPaymentAgiThreshold } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
-import type { CalculatorRequest, Region, TemplateRequest } from "./types.ts";
+import type {
+  AdvisorClientDashboardSummary,
+  AdvisorClientRecordV1,
+  AdvisorPrincipal,
+  CalculatorRequest,
+  Region,
+  TemplateRequest
+} from "./types.ts";
 
 const SERVER_VERSION = "0.7.3";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
@@ -20,6 +27,29 @@ interface Env {
   MCP_BEARER_TOKEN?: string;
   MCP_ALLOWED_ORIGINS?: string;
   MCP_RATE_LIMITER?: RateLimiterBinding;
+}
+
+export function advisorCanAccessClient(principal: AdvisorPrincipal, client: AdvisorClientRecordV1): boolean {
+  return principal.status === "active"
+    && principal.advisorId.length > 0
+    && client.ownerAdvisorId.length > 0
+    && principal.advisorId === client.ownerAdvisorId;
+}
+
+export function assertAdvisorClientAccess(principal: AdvisorPrincipal, client: AdvisorClientRecordV1): AdvisorClientRecordV1 {
+  if (!advisorCanAccessClient(principal, client)) throw new Error("Client not found or not accessible.");
+  return client;
+}
+
+export function clientDashboardSummary(principal: AdvisorPrincipal, client: AdvisorClientRecordV1): AdvisorClientDashboardSummary {
+  const scopedClient = assertAdvisorClientAccess(principal, client);
+  return {
+    clientId: scopedClient.clientId,
+    displayName: scopedClient.contact.displayName,
+    lifecycleState: scopedClient.lifecycleState,
+    readinessState: scopedClient.readinessState,
+    updatedAt: scopedClient.updatedAt
+  };
 }
 
 type JsonObject = Record<string, unknown>;
