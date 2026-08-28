@@ -1,0 +1,37 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "student-loan-idr-mcp",
+    "branch": "main",
+    "path": "src/types.ts"
+  },
+  "source_sha": "8fa30fe47970cdb74ba0b9aabc05fd5af934e060",
+  "result_sha": "2eaff52d13e46f5029242b9634c98340b9975409",
+  "commit_sha": "56bc6b31513054d9d785856e58d7056fefca01a5",
+  "diff": {
+    "before_length": 4872,
+    "after_length": 6598,
+    "delta": 1726,
+    "common_prefix": 4756,
+    "common_suffix": 116,
+    "before_fingerprint": "33a8ccb5",
+    "after_fingerprint": "1683b317"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [],
+    "failed": []
+  },
+  "timestamp": "2026-08-28T13:25:38.362Z"
+}
