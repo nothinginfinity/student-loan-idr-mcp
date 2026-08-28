@@ -431,6 +431,12 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(html, /Could my IBR payment be \$0\?/);
   assert.match(html, /Prepare stated income document/);
   assert.match(html, /Prepare unemployment statement/);
+  assert.match(html, /id="document-workspace"/);
+  assert.match(html, /id="document-reviewed"/);
+  assert.match(html, /Print \/ Save PDF/);
+  assert.match(html, /Download HTML/);
+  assert.match(html, /must sign it myself/i);
+  assert.match(html, /\/api\/document/);
   assert.match(html, /\/api\/ibr-zero-payment/);
   assert.match(html, /Facts collected in this session/);
   assert.match(html, /No account is required/);
@@ -465,6 +471,72 @@ test("IBR zero-payment quick-info API returns deterministic 2026 family-size cut
 
   const invalid = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/ibr-zero-payment?region=invalid"), {});
   assert.equal(invalid.status, 400);
+});
+
+test("borrower document API reuses the truthful template engine for reviewable text and HTML drafts", async () => {
+  const requestBody = {
+    templateType: "current_income_statement",
+    outputFormat: "text",
+    borrowerName: "Browser Draft Borrower",
+    servicerName: "Example Servicer",
+    incomeSources: [{
+      sourceType: "employment",
+      name: "Example Employer",
+      grossAmount: 1200,
+      paymentFrequency: "biweekly"
+    }]
+  };
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/document", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(requestBody)
+  }), {});
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.format, "text");
+  assert.match(body.document, /Browser Draft Borrower/);
+  assert.match(body.document, /Example Employer/);
+  assert.match(body.document, /\$1200\.00/);
+  assert.match(body.document, /Supporting evidence checklist/);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+
+  const htmlResponse = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/document", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...requestBody, outputFormat: "html", borrowerName: "<script>unsafe</script>" })
+  }), {});
+  const htmlBody = await htmlResponse.json();
+  assert.equal(htmlResponse.status, 200);
+  assert.match(htmlBody.document, /^<!doctype html>/);
+  assert.match(htmlBody.document, /&lt;script&gt;unsafe&lt;\/script&gt;/);
+  assert.doesNotMatch(htmlBody.document, /<script>unsafe<\/script>/);
+});
+
+test("borrower document API is same-origin, schema-validated, and bounded", async () => {
+  const forbidden = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/document", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://evil.example" },
+    body: "{}"
+  }), {});
+  assert.equal(forbidden.status, 403);
+
+  const invalid = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/document", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ templateType: "current_income_statement", privateUnexpectedField: "VERY-SENSITIVE-DOCUMENT-VALUE" })
+  }), {});
+  const invalidText = await invalid.text();
+  assert.equal(invalid.status, 400);
+  assert.match(invalidText, /privateUnexpectedField/);
+  assert.doesNotMatch(invalidText, /VERY-SENSITIVE-DOCUMENT-VALUE/);
+
+  const oversized = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/document", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "x".repeat(70 * 1024)
+  }), {});
+  assert.equal(oversized.status, 413);
 });
 
 test("borrower calculator API uses the deterministic RAP engine", async () => {
@@ -575,7 +647,7 @@ test("MCP initialize negotiates the declared protocol revision and current serve
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.result.protocolVersion, "2025-03-26");
-  assert.equal(body.result.serverInfo.version, "0.7.1");
+  assert.equal(body.result.serverInfo.version, "0.7.2");
 });
 
 test("MCP notification-only requests return 202 with no response body", async () => {
