@@ -128,6 +128,14 @@ Acceptance evidence:
 6. Make completed drafts easy to print/download and suitable for normal email or later e-sign workflows, while preserving a clear review-before-sign boundary and never auto-submitting to Federal Student Aid or a servicer.
 7. Keep the guided workflow usable without a required account so a borrower can complete a private session before persistent identity/storage is introduced. V0.8 remains the boundary for saved profiles, retained drafts, and account-linked data.
 
+### V0.7.1 — IBR $0-payment quick info — IMPLEMENTING
+
+- Add a guided-assistant bubble for borrowers who want to know whether IBR could produce a $0 required monthly payment.
+- Derive the quick-info threshold from the same 2026 poverty-guideline constants used by the deterministic calculator: IBR discretionary income is AGI above 150% of the applicable poverty guideline.
+- Show family-size 1–6 AGI cutoffs by region, with a plain-language 48-states-plus-D.C. example showing that $60,000 with family size 6 is below the 2026 $66,540 $0-payment line, subject to borrower/loan IBR eligibility and the income actually used for the application.
+- Immediately offer the next workflow action: prepare a current/stated-income supporting statement, prepare an unemployment-compensation statement, or continue to the full calculator.
+- Keep the quick-info explanation explicit that a $0 formula result is not automatic plan eligibility, annual recertification still matters, spouse income can matter in applicable situations, and interest may still accrue.
+
 ## V0.8 — Borrower accounts + secure saved profile — PLANNED
 
 1. Add explicit account authentication and consent boundaries before persisting borrower-specific data.
