@@ -132,13 +132,14 @@ function allocatePrincipalReduction(loans: RepaymentLoanInput[], amount: number)
 function comparisonRequest(client: AdvisorClientRecordV1): CalculatorRequest {
   const facts = client.confirmedFacts;
   const portfolio = client.normalizedLoanPortfolio;
+  const familySize = facts?.familySize;
   if (!facts?.income?.length) throw new ApiError(422, "Save at least one normalized income input before comparing repayment programs.");
-  if (!facts.region || !Number.isInteger(facts.familySize) || facts.familySize < 1) throw new ApiError(422, "Save region and family size before comparing repayment programs.");
+  if (!facts.region || typeof familySize !== "number" || !Number.isInteger(familySize) || familySize < 1) throw new ApiError(422, "Save region and family size before comparing repayment programs.");
   if (!portfolio?.repaymentLoans?.length) throw new ApiError(422, "Save a normalized loan portfolio with balance and interest-rate facts before comparing repayment programs.");
   return {
     income: facts.income,
     region: facts.region,
-    familySize: facts.familySize,
+    familySize,
     ...(typeof facts.dependentsClaimedOnFederalTaxReturn === "number" ? { dependentsClaimedOnFederalTaxReturn: facts.dependentsClaimedOnFederalTaxReturn } : {}),
     ...(facts.taxFilingStatus ? { taxFilingStatus: facts.taxFilingStatus } : {}),
     loan: {
