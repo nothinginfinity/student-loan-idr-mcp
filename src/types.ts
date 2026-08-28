@@ -46,9 +46,15 @@ export interface EligibilityLoanInput {
   madeIcrPaymentBeforeJuly1_2028?: boolean;
 }
 
+export interface RepaymentLoanInput {
+  principal: number;
+  annualInterestRatePercent: number;
+}
+
 export interface LoanInputs {
   principal?: number;
   annualInterestRatePercent?: number;
+  repaymentLoans?: RepaymentLoanInput[];
   newBorrowerOnOrAfterJuly1_2014?: boolean;
   hasLoanDisbursedOnOrAfterJuly1_2026?: boolean;
   icrIncomePercentageFactor?: number;
