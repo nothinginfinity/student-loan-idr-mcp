@@ -247,6 +247,12 @@ jobs:
           set -euo pipefail
           test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing CLOUDFLARE_ACCOUNT_ID repository secret." >&2; exit 1; }
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing CLOUDFLARE_API_TOKEN repository secret." >&2; exit 1; }
+      - name: Apply advisor workspace D1 migrations
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler d1 migrations apply student-loan-idr-mcp-db --remote
       - name: Deploy exact tested commit with Wrangler
         shell: bash
         env:
@@ -315,17 +321,105 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.7.3') break;
+              if (healthResponse.status === 200 && health?.version === '0.8.2') break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.7.3', `unexpected live version ${health.version}`);
+            assert(health.version === '0.8.2', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
             assert(health.hardening?.max_request_bytes === 65536, 'request ceiling mismatch');
             assert(health.hardening?.sensitive_payload_logging === false, 'sensitive logging hardening mismatch');
+            assert(health.advisor_workspace?.persistence === 'd1', 'advisor D1 binding missing');
+            assert(health.advisor_workspace?.authentication === 'server_session_cookie', 'advisor auth mode mismatch');
+            assert(health.advisor_workspace?.owner_scoped_client_crud === true, 'advisor owner-scoped CRUD not active');
+            assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
+
+            const livePassword = `Live-v082-${Date.now()}-Strong!`;
+            const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const advisorRequest = async (path, init = {}, auth = null) => {
+              const headers = new Headers(init.headers || {});
+              headers.set('origin', base);
+              if (init.body !== undefined) headers.set('content-type', 'application/json');
+              if (auth) {
+                headers.set('cookie', auth.cookie);
+                if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(init.method || 'GET')) headers.set('x-csrf-token', auth.csrf);
+              }
+              const response = await fetchChecked(`${base}${path}`, { ...init, headers });
+              const text = await response.text();
+              let body = null;
+              try { body = text ? JSON.parse(text) : null; } catch { throw new Error(`Advisor endpoint ${path} returned non-JSON: ${response.status} ${text.slice(0, 200)}`); }
+              return { response, body, text };
+            };
+            const registerAdvisor = async (label) => {
+              const email = `live-v082-${label}-${nonce}@example.test`;
+              const result = await advisorRequest('/api/advisor/register', {
+                method: 'POST',
+                body: JSON.stringify({ email, displayName: `Live Advisor ${label}`, password: livePassword })
+              });
+              assert(result.response.status === 201 && result.body?.ok === true, `advisor ${label} registration failed: ${result.response.status} ${result.text}`);
+              const setCookie = result.response.headers.get('set-cookie') || '';
+              assert(setCookie.includes('HttpOnly') && setCookie.includes('Secure') && setCookie.includes('SameSite=Strict'), 'advisor session cookie hardening mismatch');
+              return { cookie: setCookie.split(';', 1)[0], csrf: result.body.csrfToken, advisor: result.body.advisor };
+            };
+            const alpha = await registerAdvisor('alpha');
+            const beta = await registerAdvisor('beta');
+            assert(alpha.advisor.advisorId !== beta.advisor.advisorId, 'advisor identities must be distinct');
+
+            const createdClient = await advisorRequest('/api/advisor/clients', {
+              method: 'POST',
+              body: JSON.stringify({ displayName: 'Live Private Borrower', email: 'private-borrower@example.test', phone: '555-0199' })
+            }, alpha);
+            assert(createdClient.response.status === 201 && createdClient.body?.client?.ownerAdvisorId === alpha.advisor.advisorId, 'advisor client creation/ownership failed');
+            const liveClient = createdClient.body.client;
+
+            const alphaList = await advisorRequest('/api/advisor/clients', {}, alpha);
+            assert(alphaList.response.status === 200 && alphaList.body?.clients?.length === 1, 'advisor client list failed');
+            const listText = JSON.stringify(alphaList.body);
+            assert(!listText.includes('private-borrower@example.test') && !listText.includes('555-0199'), 'advisor dashboard list leaked private contact detail');
+
+            const betaRead = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {}, beta);
+            assert(betaRead.response.status === 404 && betaRead.body?.error === 'Client not found or not accessible.', 'cross-advisor read must fail generically');
+            const betaWrite = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
+              method: 'PUT', body: JSON.stringify({ expectedUpdatedAt: liveClient.updatedAt, notes: 'cross-owner write' })
+            }, beta);
+            assert(betaWrite.response.status === 404 && betaWrite.body?.error === 'Client not found or not accessible.', 'cross-advisor write must fail generically');
+
+            const rawRetention = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
+              method: 'PUT', body: JSON.stringify({ expectedUpdatedAt: liveClient.updatedAt, studentAidImport: { source: 'studentaid_download', rawFileRetained: true } })
+            }, alpha);
+            assert(rawRetention.response.status === 400, 'raw StudentAid retention must be rejected');
+
+            const updatedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
+              method: 'PUT', body: JSON.stringify({ expectedUpdatedAt: liveClient.updatedAt, readinessState: 'document_ready', notes: 'live acceptance note', studentAidImport: { source: 'studentaid_download', rawFileRetained: false } })
+            }, alpha);
+            assert(updatedClient.response.status === 200 && updatedClient.body?.client?.readinessState === 'document_ready', 'advisor client update failed');
+            assert(updatedClient.body?.client?.studentAidImport?.rawFileRetained === false, 'normalized StudentAid metadata boundary mismatch');
+
+            const exportedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/export`, {}, alpha);
+            assert(exportedClient.response.status === 200 && exportedClient.body?.schema === 'student-loan-idr-advisor-client-export-v1', 'advisor client export failed');
+
+            const archivedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/archive`, {
+              method: 'POST', body: JSON.stringify({ expectedUpdatedAt: updatedClient.body.client.updatedAt })
+            }, alpha);
+            assert(archivedClient.response.status === 200 && archivedClient.body?.client?.lifecycleState === 'archived', 'advisor client archive failed');
+
+            const badCsrf = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
+              method: 'DELETE', headers: { 'x-csrf-token': 'wrong-token' }, body: JSON.stringify({ confirm: 'delete', expectedUpdatedAt: archivedClient.body.client.updatedAt })
+            }, { ...alpha, csrf: 'wrong-token' });
+            assert(badCsrf.response.status === 403, 'advisor mutation with bad CSRF must fail');
+
+            const deletedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
+              method: 'DELETE', body: JSON.stringify({ confirm: 'delete', expectedUpdatedAt: archivedClient.body.client.updatedAt })
+            }, alpha);
+            assert(deletedClient.response.status === 200, 'advisor client deletion failed');
+
+            for (const auth of [alpha, beta]) {
+              const deletedAccount = await advisorRequest('/api/advisor/account', { method: 'DELETE', body: JSON.stringify({ password: livePassword }) }, auth);
+              assert(deletedAccount.response.status === 200, `advisor acceptance account cleanup failed: ${deletedAccount.response.status} ${deletedAccount.text}`);
+            }
 
             const uiResponse = await fetchChecked(`${base}/`);
             const uiHtml = await uiResponse.text();
@@ -451,7 +545,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.7.3', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.8.2', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -526,9 +620,9 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 42
+              checks: 61
             }));
-            console.log('::notice title=Live product acceptance::42 production checks passed');
+            console.log('::notice title=Live product acceptance::61 production checks passed');
           })().catch((error) => {
             console.error(error);
             const message = error instanceof Error ? error.message : String(error);
