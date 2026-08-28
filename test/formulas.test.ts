@@ -432,6 +432,16 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(html, /Prepare stated income document/);
   assert.match(html, /Prepare unemployment statement/);
   assert.match(html, /id="document-workspace"/);
+  assert.match(html, /id="income-readiness-panel"/);
+  assert.match(html, /id="readiness-summary"/);
+  assert.match(html, /id="income-source-readiness"/);
+  assert.match(html, /id="document-scope"/);
+  assert.match(html, /Source-by-source income readiness/);
+  assert.match(html, /Application-ready/);
+  assert.match(html, /Document-ready/);
+  assert.match(html, /Evidence in hand \(borrower-stated\)/);
+  assert.match(html, /Combined confirmed income sources/);
+  assert.match(html, /guidedCalculatorIncome/);
   assert.match(html, /id="document-reviewed"/);
   assert.match(html, /Print \/ Save PDF/);
   assert.match(html, /Download HTML/);
@@ -479,12 +489,20 @@ test("borrower document API reuses the truthful template engine for reviewable t
     outputFormat: "text",
     borrowerName: "Browser Draft Borrower",
     servicerName: "Example Servicer",
-    incomeSources: [{
-      sourceType: "employment",
-      name: "Example Employer",
-      grossAmount: 1200,
-      paymentFrequency: "biweekly"
-    }]
+    incomeSources: [
+      {
+        sourceType: "employment",
+        name: "Example Employer",
+        grossAmount: 1200,
+        paymentFrequency: "biweekly"
+      },
+      {
+        sourceType: "contract",
+        name: "Example Side Client",
+        grossAmount: 300,
+        paymentFrequency: "monthly"
+      }
+    ]
   };
   const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/document", {
     method: "POST",
@@ -497,6 +515,8 @@ test("borrower document API reuses the truthful template engine for reviewable t
   assert.equal(body.format, "text");
   assert.match(body.document, /Browser Draft Borrower/);
   assert.match(body.document, /Example Employer/);
+  assert.match(body.document, /Example Side Client/);
+  assert.match(body.document, /Income source 2/);
   assert.match(body.document, /\$1200\.00/);
   assert.match(body.document, /Supporting evidence checklist/);
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -647,7 +667,7 @@ test("MCP initialize negotiates the declared protocol revision and current serve
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.result.protocolVersion, "2025-03-26");
-  assert.equal(body.result.serverInfo.version, "0.7.2");
+  assert.equal(body.result.serverInfo.version, "0.7.3");
 });
 
 test("MCP notification-only requests return 202 with no response body", async () => {
