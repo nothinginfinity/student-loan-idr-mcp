@@ -87,6 +87,10 @@ export function povertyGuideline(region: Region, familySize: number): number {
   return table[7]! + (familySize - 8) * POVERTY_ADDITIONAL_PERSON_2026[region];
 }
 
+export function ibrZeroPaymentAgiThreshold(region: Region, familySize: number): number {
+  return povertyGuideline(region, familySize) * 1.5;
+}
+
 export function amortizedMonthlyPayment(principal: number, annualInterestRatePercent: number, years: number): number {
   assertFiniteNonNegative(principal, "principal");
   assertFiniteNonNegative(annualInterestRatePercent, "annualInterestRatePercent");
