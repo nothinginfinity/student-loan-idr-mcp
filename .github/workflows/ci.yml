@@ -323,12 +323,12 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.8.5') break;
+              if (healthResponse.status === 200 && health?.version === '0.8.6') break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.8.5', `unexpected live version ${health.version}`);
+            assert(health.version === '0.8.6', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -655,7 +655,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.8.5', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.8.6', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
