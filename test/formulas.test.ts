@@ -575,7 +575,7 @@ test("MCP initialize negotiates the declared protocol revision and current serve
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.result.protocolVersion, "2025-03-26");
-  assert.equal(body.result.serverInfo.version, "0.7.0");
+  assert.equal(body.result.serverInfo.version, "0.7.1");
 });
 
 test("MCP notification-only requests return 202 with no response body", async () => {
