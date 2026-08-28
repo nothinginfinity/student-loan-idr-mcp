@@ -5,7 +5,7 @@ import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClient
 
 const COOKIE = "sl_advisor_session";
 const TTL_SECONDS = 12 * 60 * 60;
-const ENGINE_VERSION = "0.8.5";
+const ENGINE_VERSION = "0.8.6";
 // V0.8.2 uses the Workers-native Node crypto scrypt implementation.
 // The persisted password_iterations column stores the scrypt N work factor for this bounded schema.
 const PASSWORD_WORK_FACTOR = 16_384;
@@ -291,21 +291,40 @@ function lifecycle(value: unknown): AdvisorClientLifecycleState { if (["active",
 function readiness(value: unknown): AdvisorClientReadinessState { if (["needs_evidence","document_ready","application_ready"].includes(String(value))) return value as AdvisorClientReadinessState; throw new ApiError(400,"Invalid client readiness state."); }
 function safeJson(value: unknown): unknown {
   if (value === null || ["string","number","boolean"].includes(typeof value)) return value;
-  if (Array.isArray(value)) { if (value.length > 250) throw new ApiError(400,"Client data array is too large."); return value.map(safeJson); }
+  if (Array.isArray(value)) { if (value.length > 500) throw new ApiError(400,"Client data array is too large."); return value.map(safeJson); }
   if (typeof value !== "object") throw new ApiError(400,"Unsupported client data value.");
-  const out: JsonObject = {}; for (const [k,v] of Object.entries(value as JsonObject)) { if (["ownerAdvisorId","clientId","schemaVersion","createdAt","updatedAt","rawFile","rawStudentAid","rawEvidence","ssn","fsaId","password","sessionToken"].includes(k)) throw new ApiError(400,`Forbidden persisted client field: ${k}.`); out[k]=safeJson(v); } return out;
+  const forbidden = new Set(["owneradvisorid","clientid","schemaversion","createdat","updatedat","rawfile","rawstudentaid","rawevidence","rawtext","rawcontent","filecontent","filetext","studentaidrawtext","ssn","socialsecuritynumber","fsaid","password","sessiontoken"]);
+  const out: JsonObject = {};
+  for (const [k,v] of Object.entries(value as JsonObject)) {
+    if (forbidden.has(k.toLowerCase())) throw new ApiError(400,`Forbidden persisted client field: ${k}.`);
+    out[k]=safeJson(v);
+  }
+  return out;
 }
 function updateRecord(existing: AdvisorClientRecordV1, b: JsonObject): AdvisorClientRecordV1 {
-  const allowed=new Set(["expectedUpdatedAt","contact","servicerName","lifecycleState","readinessState","normalizedLoanPortfolio","confirmedFacts","consideredPlans","retainedDraftIds","notes","studentAidImport"]); for (const k of Object.keys(b)) if (!allowed.has(k)) throw new ApiError(400,`Unexpected client field: ${k}.`);
+  const allowed=new Set(["expectedUpdatedAt","contact","fieldProvenance","servicerName","lifecycleState","readinessState","normalizedLoanPortfolio","confirmedFacts","consideredPlans","retainedDraftIds","notes","studentAidImport"]); for (const k of Object.keys(b)) if (!allowed.has(k)) throw new ApiError(400,`Unexpected client field: ${k}.`);
   if (b.expectedUpdatedAt!==existing.updatedAt) throw new ApiError(409,"Client record has changed; reload before saving.");
   const next=structuredClone(existing) as AdvisorClientRecordV1;
-  if (b.contact!==undefined) { const c=bodyObject(b.contact); const allowedContact=new Set(["displayName","email","phone"]); for (const k of Object.keys(c)) if (!allowedContact.has(k)) throw new ApiError(400,`Unexpected contact field: ${k}.`); const em=optionalText(c.email,"Client email",254), ph=optionalText(c.phone,"Client phone",80); next.contact={displayName:displayName(c.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{})}; }
+  if (b.contact!==undefined) {
+    const c=bodyObject(b.contact);
+    const allowedContact=new Set(["displayName","email","phone","streetAddress1","streetAddress2","city","stateCode","countryCode","zipCode"]);
+    for (const k of Object.keys(c)) if (!allowedContact.has(k)) throw new ApiError(400,`Unexpected contact field: ${k}.`);
+    const em=optionalText(c.email,"Client email",254), ph=optionalText(c.phone,"Client phone",80), streetAddress1=optionalText(c.streetAddress1,"Client street address",200), streetAddress2=optionalText(c.streetAddress2,"Client street address 2",200), city=optionalText(c.city,"Client city",120), stateCode=optionalText(c.stateCode,"Client state code",40), countryCode=optionalText(c.countryCode,"Client country code",40), zipCode=optionalText(c.zipCode,"Client ZIP code",40);
+    next.contact={displayName:displayName(c.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{}),...(streetAddress1?{streetAddress1}:{}),...(streetAddress2?{streetAddress2}:{}),...(city?{city}:{}),...(stateCode?{stateCode}:{}),...(countryCode?{countryCode}:{}),...(zipCode?{zipCode}:{})};
+  }
+  if (b.fieldProvenance!==undefined) next.fieldProvenance=safeJson(b.fieldProvenance) as AdvisorClientRecordV1["fieldProvenance"];
   if (b.servicerName!==undefined) { const value=optionalText(b.servicerName,"Servicer name",200); if (value===undefined) delete next.servicerName; else next.servicerName=value; }
   if (b.lifecycleState!==undefined) next.lifecycleState=lifecycle(b.lifecycleState);
   if (b.readinessState!==undefined) next.readinessState=readiness(b.readinessState);
   for (const key of ["normalizedLoanPortfolio","confirmedFacts","consideredPlans","retainedDraftIds"] as const) if (b[key]!==undefined) (next as unknown as JsonObject)[key]=safeJson(b[key]);
   if (b.notes!==undefined) { const value=optionalText(b.notes,"Advisor notes",10_000); if (value===undefined) delete next.notes; else next.notes=value; }
-  if (b.studentAidImport!==undefined) { const s=bodyObject(b.studentAidImport); if (s.source!=="studentaid_download" || s.rawFileRetained!==false) throw new ApiError(400,"Raw StudentAid files cannot be retained."); const importedAt=optionalText(s.importedAt,"StudentAid import date",80); next.studentAidImport={source:"studentaid_download",...(importedAt?{importedAt}:{}),rawFileRetained:false}; }
+  if (b.studentAidImport!==undefined) {
+    const s=bodyObject(b.studentAidImport), allowedStudentAid=new Set(["source","importedAt","fileRequestDate","mappingVersion","rawFileRetained"]);
+    for (const k of Object.keys(s)) if (!allowedStudentAid.has(k)) throw new ApiError(400,`Unexpected StudentAid import field: ${k}.`);
+    if (s.source!=="studentaid_download" || s.rawFileRetained!==false) throw new ApiError(400,"Raw StudentAid files cannot be retained.");
+    const importedAt=optionalText(s.importedAt,"StudentAid import date",80), fileRequestDate=optionalText(s.fileRequestDate,"StudentAid file request date",80), mappingVersion=optionalText(s.mappingVersion,"StudentAid mapping version",80);
+    next.studentAidImport={source:"studentaid_download",...(importedAt?{importedAt}:{}),...(fileRequestDate?{fileRequestDate}:{}),...(mappingVersion?{mappingVersion}:{}),rawFileRetained:false};
+  }
   next.updatedAt=new Date().toISOString(); return next;
 }
 async function owned(database:D1DatabaseBinding,advisorId:string,clientId:string):Promise<ClientRow>{ const r=await database.prepare("SELECT owner_advisor_id,client_id,display_name,lifecycle_state,readiness_state,record_json,created_at,updated_at FROM advisor_clients WHERE owner_advisor_id=? AND client_id=?").bind(advisorId,clientId).first<ClientRow>(); if(!r) throw new ApiError(404,"Client not found or not accessible."); return r; }
