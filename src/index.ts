@@ -11,7 +11,7 @@ import type {
   TemplateRequest
 } from "./types.ts";
 
-const SERVER_VERSION = "0.8.2";
+const SERVER_VERSION = "0.8.3";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -247,6 +247,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .payment { font-size: 1.35rem; font-weight: 800; }
     .badge { display: inline-flex; padding: 3px 9px; border: 1px solid currentColor; border-radius: 999px; font-size: .82rem; text-transform: capitalize; }
     .muted { color: color-mix(in srgb, CanvasText 66%, transparent); }
+    .advisor-savebar { border: 2px solid color-mix(in srgb, CanvasText 28%, transparent); border-radius: 16px; padding: 16px; margin: 20px 0 24px; background: color-mix(in srgb, CanvasText 6%, Canvas); }
+    .advisor-savebar[hidden] { display: none; }
+    .advisor-savebar-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+    .advisor-savebar .actions { margin-top: 0; }
+    .link-button { display: inline-flex; align-items: center; border: 1px solid currentColor; border-radius: 999px; padding: 10px 15px; text-decoration: none; font-weight: 750; }
     .workspace { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 16px; padding: 18px; margin: 24px 0; }
     .guide-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
     .guide-transcript { display: grid; gap: 10px; margin: 16px 0; max-height: 360px; overflow: auto; padding-right: 4px; }
@@ -289,6 +294,23 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   <h1>Turn your real loan facts into a repayment estimate.</h1>
   <p class="lede">This calculator annualizes the income facts you enter and applies the same deterministic RAP, IBR, PAYE, and ICR formulas exposed by this Worker’s MCP tools. It is an estimate—not an official eligibility or billing decision.</p>
   <div class="notice"><strong>Privacy:</strong> this page has no analytics, no external assets, and no browser storage. Calculation inputs are sent only to this same Worker for the current request. A StudentAid.gov loan-data file is parsed locally in your browser and the raw file is never uploaded. Do not enter SSNs, account numbers, or fabricated facts.</div>
+  <p class="muted">Working with multiple borrowers? <a href="/advisor">Open the advisor / manager workspace</a>. The direct borrower workflow remains available without an account.</p>
+
+  <section class="advisor-savebar" id="advisor-client-bar" hidden aria-labelledby="advisor-client-title">
+    <div class="advisor-savebar-head">
+      <div>
+        <span class="basis">Advisor client</span>
+        <strong id="advisor-client-title">Saved client workflow</strong>
+        <div id="advisor-client-name" class="muted"></div>
+      </div>
+      <div class="actions">
+        <button type="button" id="advisor-save-progress">Save progress</button>
+        <button type="button" id="advisor-regenerate-document">Regenerate document</button>
+        <a class="link-button" href="/advisor">Client dashboard</a>
+      </div>
+    </div>
+    <p id="advisor-save-status" class="muted" role="status" aria-live="polite">Loading saved client facts…</p>
+  </section>
 
   <section class="workspace" id="guided-assistant" aria-labelledby="guided-assistant-title">
     <div class="guide-head">
@@ -528,6 +550,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const readinessSummary = document.getElementById("readiness-summary");
   const incomeSourceReadiness = document.getElementById("income-source-readiness");
   const addIncomeSource = document.getElementById("add-income-source");
+  const advisorClientBar = document.getElementById("advisor-client-bar");
+  const advisorClientName = document.getElementById("advisor-client-name");
+  const advisorSaveProgress = document.getElementById("advisor-save-progress");
+  const advisorRegenerateDocument = document.getElementById("advisor-regenerate-document");
+  const advisorSaveStatus = document.getElementById("advisor-save-status");
+  const advisorClientId = new URLSearchParams(window.location.search).get("advisorClient");
   const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   const numberOrUndefined = (value) => value === "" ? undefined : Number(value);
   let importedPortfolio = null;
@@ -539,6 +567,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   let guidedIncomeSources = [];
   let pendingIncomeSource = null;
   let collectMultipleSources = false;
+  let advisorClient = null;
+  let advisorCsrfToken = null;
+  let advisorIdentity = null;
+  let advisorSavedIncome = null;
 
   function numericValue(value) {
     if (!value) return undefined;
@@ -770,6 +802,214 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 
   function sourceApplicationReady(source) {
     return sourceDocumentReady(source) && Boolean(source.name) && ["documented", "identified"].includes(source.evidenceStatus);
+  }
+
+  function savedEvidenceToGuide(value) {
+    if (value === "evidence_in_hand") return "documented";
+    if (value === "evidence_identified") return "identified";
+    return "missing";
+  }
+
+  function guideEvidenceToSaved(value) {
+    if (value === "documented") return "evidence_in_hand";
+    if (value === "identified") return "evidence_identified";
+    return "needs_evidence_review";
+  }
+
+  async function advisorApi(path, init = {}) {
+    const headers = new Headers(init.headers || {});
+    if (init.body !== undefined) headers.set("content-type", "application/json");
+    if (advisorCsrfToken && ["POST", "PUT", "PATCH", "DELETE"].includes(init.method || "GET")) headers.set("x-csrf-token", advisorCsrfToken);
+    const response = await fetch(path, { ...init, headers });
+    const text = await response.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch { throw new Error("Advisor workspace returned an invalid response."); }
+    if (!response.ok || !body?.ok) {
+      const error = new Error(body?.error || "Advisor workspace request failed.");
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  }
+
+  function guidedIncomeForPersistence() {
+    if (guidedIncomeSources.length) {
+      const data = new FormData(form);
+      return guidedIncomeSources.map((source) => source.paymentFrequency === "hourly"
+        ? { cadence: "hourly", hourlyRate: source.grossAmount, hoursPerWeek: Number(data.get("hoursPerWeek")), weeksPerYear: Number(data.get("weeksPerYear")) }
+        : { cadence: source.paymentFrequency, amount: source.grossAmount });
+    }
+    if (guideIncomeSituation === "none") return [{ cadence: "annual", amount: 0 }];
+    return Array.isArray(advisorSavedIncome) ? advisorSavedIncome : [];
+  }
+
+  function advisorReadinessForPersistence() {
+    if (guideIncomeSituation === "none") return "document_ready";
+    if (!guidedIncomeSources.length) return advisorClient?.readinessState || "needs_evidence";
+    if (guidedIncomeSources.every(sourceApplicationReady)) return "application_ready";
+    if (guidedIncomeSources.every(sourceDocumentReady)) return "document_ready";
+    return "needs_evidence";
+  }
+
+  function hydrateAdvisorClient(client) {
+    advisorClient = client;
+    advisorClientBar.hidden = false;
+    advisorClientName.textContent = client.contact.displayName + (advisorIdentity?.displayName ? " · advisor: " + advisorIdentity.displayName : "");
+    advisorSaveStatus.textContent = "Saved client loaded. Continue the guided workflow and save when you want to persist confirmed normalized facts.";
+    setDocumentValue("borrowerName", client.contact.displayName);
+    if (client.servicerName) setDocumentValue("servicerName", client.servicerName);
+
+    guidedFacts.clear();
+    guidedFactsList.replaceChildren(addText("li", "No guided facts confirmed yet.", "muted"));
+    const facts = client.confirmedFacts || {};
+    advisorSavedIncome = Array.isArray(facts.income) ? facts.income : null;
+    guidedIncomeSources = Array.isArray(facts.incomeSources) ? facts.incomeSources.map((source) => ({
+      sourceType: source.sourceType || "other",
+      ...(source.name ? { name: source.name } : {}),
+      ...(source.address ? { address: source.address } : {}),
+      ...(typeof source.grossAmount === "number" ? { grossAmount: source.grossAmount } : {}),
+      ...(source.paymentFrequency ? { paymentFrequency: source.paymentFrequency } : {}),
+      evidenceStatus: savedEvidenceToGuide(source.evidenceState)
+    })).filter((source) => typeof source.grossAmount === "number" && source.paymentFrequency) : [];
+
+    if (guidedIncomeSources.length) {
+      guideIncomeSituation = guidedIncomeSources.length > 1 ? "multiple" : guidedIncomeSources[0].sourceType;
+      guidedIncomeSources.forEach((source, index) => recordGuidedFact(
+        "income_source_" + (index + 1),
+        "Taxable income source " + (index + 1),
+        sourceTypeLabel(source.sourceType) + " · " + money.format(source.grossAmount) + " · " + source.paymentFrequency + " · " + evidenceStatusLabel(source.evidenceStatus)
+      ));
+      const first = guidedIncomeSources[0];
+      guideIncomeCadence = first.paymentFrequency;
+      guideIncomeAmount = first.grossAmount;
+      cadence.value = first.paymentFrequency;
+      setCalculatorValue("incomeAmount", first.grossAmount);
+      syncHourlyFields();
+    } else if (advisorSavedIncome?.length) {
+      const first = advisorSavedIncome[0];
+      recordGuidedFact("saved_income", "Saved taxable income inputs", String(advisorSavedIncome.length) + " source(s)", "Stated fact");
+      if (first.cadence) cadence.value = first.cadence;
+      const firstAmount = typeof first.amount === "number" ? first.amount : first.hourlyRate;
+      if (typeof firstAmount === "number") setCalculatorValue("incomeAmount", firstAmount);
+      syncHourlyFields();
+    }
+
+    if (facts.region) {
+      setCalculatorValue("region", facts.region);
+      recordGuidedFact("region", "Poverty-guideline region", facts.region === "contiguous_us" ? "48 states + D.C." : facts.region === "alaska" ? "Alaska" : "Hawaii");
+    }
+    if (typeof facts.familySize === "number") {
+      setCalculatorValue("familySize", facts.familySize);
+      recordGuidedFact("family_size", "Legacy IDR family size", String(facts.familySize));
+    }
+    if (typeof facts.dependentsClaimedOnFederalTaxReturn === "number") {
+      setCalculatorValue("dependents", facts.dependentsClaimedOnFederalTaxReturn);
+      recordGuidedFact("dependents", "Federal tax-return dependents for RAP", String(facts.dependentsClaimedOnFederalTaxReturn));
+    }
+    if (facts.taxFilingStatus) setCalculatorValue("taxFilingStatus", facts.taxFilingStatus);
+
+    if (client.normalizedLoanPortfolio?.repaymentLoans?.length) {
+      const repaymentLoans = client.normalizedLoanPortfolio.repaymentLoans;
+      const eligibilityLoans = client.normalizedLoanPortfolio.eligibilityLoans;
+      importedPortfolio = {
+        loans: repaymentLoans.map((loan) => ({ principal: loan.principal, interestRate: loan.annualInterestRatePercent })),
+        repaymentLoans,
+        ...(eligibilityLoans ? { eligibilityLoans } : {}),
+        totalPrincipal: repaymentLoans.reduce((sum, loan) => sum + loan.principal, 0),
+        ambiguousCount: eligibilityLoans ? 0 : repaymentLoans.length
+      };
+      renderPortfolio(importedPortfolio);
+      importStatus.textContent = "Saved normalized loan portfolio loaded. No raw StudentAid.gov file is stored on the server.";
+    }
+
+    renderIncomeReadiness();
+    guideTranscript.replaceChildren();
+    guideAnswers.replaceChildren();
+    guideSay("Resumed " + client.contact.displayName + " from the advisor workspace. Only previously saved normalized facts were loaded; raw StudentAid files and evidence files are not stored here.");
+    const hasIncome = guidedIncomeSources.length > 0 || Boolean(advisorSavedIncome?.length) || guideIncomeSituation === "none";
+    guideStep = !hasIncome ? "income_situation"
+      : typeof facts.familySize !== "number" ? "family_size"
+      : typeof facts.dependentsClaimedOnFederalTaxReturn !== "number" ? "dependents"
+      : !facts.region ? "region"
+      : "done";
+    if (guideStep === "done") guideSay("Saved application facts are loaded. Review them, update anything that changed, import a fresh StudentAid file locally if needed, calculate, regenerate documents, then save progress.");
+    else showGuideStep();
+  }
+
+  async function initializeAdvisorClientMode() {
+    advisorClientBar.hidden = false;
+    advisorSaveStatus.textContent = "Loading authenticated advisor session and saved client facts…";
+    try {
+      const session = await fetch("/api/advisor/session", { headers: { accept: "application/json" } });
+      if (session.status === 401) {
+        window.location.replace("/advisor");
+        return;
+      }
+      const sessionBody = await session.json();
+      if (!session.ok || !sessionBody.ok) throw new Error(sessionBody.error || "Unable to resume advisor session.");
+      advisorCsrfToken = sessionBody.csrfToken;
+      advisorIdentity = sessionBody.advisor;
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClientId));
+      hydrateAdvisorClient(body.client);
+    } catch (error) {
+      advisorSaveStatus.textContent = error instanceof Error ? error.message : "Unable to load the saved client.";
+      guideTranscript.replaceChildren();
+      guideAnswers.replaceChildren();
+      guideSay("This saved client could not be loaded. Return to the advisor dashboard and reopen the client.");
+    }
+  }
+
+  async function saveAdvisorClientProgress() {
+    if (!advisorClient || !advisorCsrfToken) return;
+    advisorSaveProgress.disabled = true;
+    advisorSaveStatus.textContent = "Saving normalized client facts…";
+    try {
+      const facts = { ...(advisorClient.confirmedFacts || {}) };
+      const income = guidedIncomeForPersistence();
+      if (income.length) facts.income = income;
+      if (guidedIncomeSources.length) facts.incomeSources = guidedIncomeSources.map((source) => ({
+        sourceType: source.sourceType,
+        ...(source.name ? { name: source.name } : {}),
+        ...(source.address ? { address: source.address } : {}),
+        grossAmount: source.grossAmount,
+        paymentFrequency: source.paymentFrequency,
+        evidenceState: guideEvidenceToSaved(source.evidenceStatus)
+      }));
+      const formData = new FormData(form);
+      if (guidedFacts.has("region")) facts.region = String(formData.get("region"));
+      if (guidedFacts.has("family_size")) facts.familySize = Number(formData.get("familySize"));
+      if (guidedFacts.has("dependents")) facts.dependentsClaimedOnFederalTaxReturn = Number(formData.get("dependents"));
+      const taxFilingStatus = String(formData.get("taxFilingStatus") || "");
+      if (taxFilingStatus) facts.taxFilingStatus = taxFilingStatus;
+
+      const body = {
+        expectedUpdatedAt: advisorClient.updatedAt,
+        confirmedFacts: facts,
+        readinessState: advisorReadinessForPersistence()
+      };
+      const servicerControl = documentForm.elements.namedItem("servicerName");
+      if (servicerControl && "value" in servicerControl) body.servicerName = String(servicerControl.value).trim();
+      if (importedPortfolio?.repaymentLoans?.length) {
+        body.normalizedLoanPortfolio = {
+          repaymentLoans: importedPortfolio.repaymentLoans,
+          ...(importedPortfolio.eligibilityLoans ? { eligibilityLoans: importedPortfolio.eligibilityLoans } : {})
+        };
+      }
+      if ((loanFile.files && loanFile.files[0]) || advisorClient.studentAidImport) {
+        body.studentAidImport = {
+          source: "studentaid_download",
+          importedAt: loanFile.files && loanFile.files[0] ? new Date().toISOString() : advisorClient.studentAidImport?.importedAt,
+          rawFileRetained: false
+        };
+      }
+      const saved = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId), { method: "PUT", body: JSON.stringify(body) });
+      advisorClient = saved.client;
+      advisorSaveStatus.textContent = "Saved " + new Date(saved.client.updatedAt).toLocaleString() + ". Raw StudentAid data and evidence files were not retained.";
+    } catch (error) {
+      advisorSaveStatus.textContent = error instanceof Error ? error.message : "Unable to save client progress.";
+    } finally {
+      advisorSaveProgress.disabled = false;
+    }
   }
 
   function refreshDocumentScopeOptions() {
@@ -1322,6 +1562,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     documentDraftArea.hidden = true;
     syncDocumentActions();
   });
+  advisorSaveProgress.addEventListener("click", () => { void saveAdvisorClientProgress(); });
+  advisorRegenerateDocument.addEventListener("click", () => {
+    if (!advisorClient) return;
+    guideDocumentGoal = guideIncomeSituation === "none" ? "no_current_taxable_income_statement" : "auto";
+    openGuidedDocumentWorkspace();
+  });
   addIncomeSource.addEventListener("click", () => {
     collectMultipleSources = true;
     pendingIncomeSource = null;
@@ -1357,8 +1603,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 
   cadence.addEventListener("change", syncHourlyFields);
   syncHourlyFields();
-  guideSay("I can help turn your answers into clearly labeled application facts and a repayment estimate. You can use the bubbles or type.");
-  showGuideStep();
+  if (advisorClientId) void initializeAdvisorClientMode();
+  else {
+    guideSay("I can help turn your answers into clearly labeled application facts and a repayment estimate. You can use the bubbles or type.");
+    showGuideStep();
+  }
 
   loanFile.addEventListener("change", async () => {
     importedPortfolio = null;
@@ -1465,6 +1714,288 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 </script>
 </body>
 </html>`;
+
+const ADVISOR_UI_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Advisor Workspace · Student Loan IDR</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: Canvas; color: CanvasText; line-height: 1.5; }
+    main { width: min(1100px, calc(100% - 28px)); margin: 0 auto; padding: 32px 0 60px; }
+    h1 { font-size: clamp(2rem, 6vw, 3.8rem); line-height: 1; letter-spacing: -.04em; margin: 8px 0 14px; }
+    h2, h3 { margin-top: 0; }
+    .muted { color: color-mix(in srgb, CanvasText 66%, transparent); }
+    .notice, .panel, .client-card { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 16px; padding: 16px; background: color-mix(in srgb, CanvasText 3%, Canvas); }
+    .notice { margin: 20px 0; }
+    .panel { margin: 18px 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    label { display: grid; gap: 7px; font-weight: 650; }
+    input, button { font: inherit; }
+    input { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, CanvasText 24%, transparent); background: Canvas; color: CanvasText; }
+    button, .button-link { border: 0; border-radius: 999px; padding: 11px 16px; font-weight: 750; cursor: pointer; background: CanvasText; color: Canvas; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+    .secondary { background: color-mix(in srgb, CanvasText 8%, Canvas); color: CanvasText; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); }
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-top: 14px; }
+    .topbar { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .client-list { display: grid; gap: 12px; margin-top: 14px; }
+    .client-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .badges { display: flex; gap: 7px; flex-wrap: wrap; }
+    .badge { display: inline-flex; border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; font-size: .78rem; text-transform: capitalize; }
+    [hidden] { display: none !important; }
+    #status, #auth-status { min-height: 1.5em; }
+    a { color: inherit; }
+    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } main { width: min(100% - 20px, 1100px); padding-top: 22px; } }
+  </style>
+</head>
+<body>
+<main>
+  <p><strong>Student Loan IDR</strong> · advisor / manager workspace</p>
+  <h1>Manage many borrower clients without mixing their facts.</h1>
+  <p class="muted">Create a client, open that client’s guided workflow, save normalized application facts, resume later, and regenerate supporting documents. Client lists stay intentionally minimized.</p>
+  <div class="notice"><strong>Privacy boundary:</strong> do not store SSNs, FSA credentials, raw StudentAid.gov downloads, or raw evidence files here. StudentAid imports remain browser-local; only normalized loan facts can be saved to a client record.</div>
+
+  <section id="auth-panel" class="panel" aria-labelledby="auth-title">
+    <h2 id="auth-title">Advisor sign in</h2>
+    <div class="grid">
+      <form id="login-form">
+        <h3>Sign in</h3>
+        <label>Email<input name="email" type="email" autocomplete="username" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" minlength="12" required></label>
+        <div class="actions"><button type="submit">Sign in</button></div>
+      </form>
+      <form id="register-form">
+        <h3>Create advisor account</h3>
+        <label>Advisor display name<input name="displayName" autocomplete="name" maxlength="120" required></label>
+        <label>Email<input name="email" type="email" autocomplete="username" required></label>
+        <label>Password<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+        <div class="actions"><button type="submit">Create account</button></div>
+      </form>
+    </div>
+    <p id="auth-status" class="muted" role="status" aria-live="polite"></p>
+  </section>
+
+  <section id="workspace" hidden>
+    <div class="panel">
+      <div class="topbar">
+        <div><h2 id="advisor-name">Advisor workspace</h2><p class="muted">Saved client facts are owner-scoped to this authenticated advisor account.</p></div>
+        <div class="actions"><a class="button-link secondary" href="/">Private borrower calculator</a><button type="button" id="logout" class="secondary">Sign out</button></div>
+      </div>
+    </div>
+
+    <section class="panel" aria-labelledby="new-client-title">
+      <h2 id="new-client-title">Add a client</h2>
+      <form id="create-client-form" class="grid">
+        <label>Client display name<input name="displayName" maxlength="120" required></label>
+        <label>Email <span class="muted">(optional)</span><input name="email" type="email" maxlength="254"></label>
+        <label>Phone <span class="muted">(optional)</span><input name="phone" maxlength="80"></label>
+        <div class="actions"><button type="submit">Create & open client</button></div>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="clients-title">
+      <div class="topbar">
+        <div><h2 id="clients-title">Clients</h2><p class="muted">Dashboard cards show only the minimum workflow summary, never private contact, income, loan, evidence, note, or draft details.</p></div>
+        <form id="search-form" class="actions"><input id="search" aria-label="Search clients" placeholder="Search client name"><button type="submit" class="secondary">Search</button></form>
+      </div>
+      <p id="status" class="muted" role="status" aria-live="polite"></p>
+      <div id="client-list" class="client-list"></div>
+    </section>
+  </section>
+</main>
+<script>
+(() => {
+  const authPanel = document.getElementById("auth-panel");
+  const workspace = document.getElementById("workspace");
+  const loginForm = document.getElementById("login-form");
+  const registerForm = document.getElementById("register-form");
+  const authStatus = document.getElementById("auth-status");
+  const advisorName = document.getElementById("advisor-name");
+  const logout = document.getElementById("logout");
+  const createClientForm = document.getElementById("create-client-form");
+  const searchForm = document.getElementById("search-form");
+  const search = document.getElementById("search");
+  const status = document.getElementById("status");
+  const clientList = document.getElementById("client-list");
+  let csrfToken = null;
+  let advisor = null;
+
+  async function api(path, init = {}) {
+    const headers = new Headers(init.headers || {});
+    if (init.body !== undefined) headers.set("content-type", "application/json");
+    if (csrfToken && ["POST", "PUT", "PATCH", "DELETE"].includes(init.method || "GET")) headers.set("x-csrf-token", csrfToken);
+    const response = await fetch(path, { ...init, headers });
+    const text = await response.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch { throw new Error("Advisor service returned an invalid response."); }
+    if (!response.ok || !body?.ok) {
+      const error = new Error(body?.error || "Advisor request failed.");
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  }
+
+  function showAuth(message = "") {
+    advisor = null;
+    csrfToken = null;
+    authPanel.hidden = false;
+    workspace.hidden = true;
+    authStatus.textContent = message;
+  }
+
+  function showWorkspace(session) {
+    advisor = session.advisor;
+    csrfToken = session.csrfToken;
+    authPanel.hidden = true;
+    workspace.hidden = false;
+    advisorName.textContent = session.advisor.displayName + " · clients";
+  }
+
+  function addText(tag, text, className) {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  async function downloadClient(clientId) {
+    try {
+      const body = await api("/api/advisor/clients/" + encodeURIComponent(clientId) + "/export");
+      const blob = new Blob([JSON.stringify(body, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "advisor-client-" + clientId + ".json";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) { status.textContent = error instanceof Error ? error.message : "Unable to export client."; }
+  }
+
+  async function archiveClient(client) {
+    if (!window.confirm("Archive " + client.displayName + "? The record remains saved and can still be exported.")) return;
+    try {
+      await api("/api/advisor/clients/" + encodeURIComponent(client.clientId) + "/archive", { method: "POST", body: JSON.stringify({ expectedUpdatedAt: client.updatedAt }) });
+      await loadClients();
+    } catch (error) { status.textContent = error instanceof Error ? error.message : "Unable to archive client."; }
+  }
+
+  function renderClients(clients) {
+    clientList.replaceChildren();
+    if (!clients.length) {
+      clientList.appendChild(addText("p", "No matching clients yet.", "muted"));
+      return;
+    }
+    clients.forEach((client) => {
+      const card = document.createElement("article");
+      card.className = "client-card";
+      const head = document.createElement("div");
+      head.className = "client-head";
+      const title = document.createElement("div");
+      title.appendChild(addText("strong", client.displayName));
+      title.appendChild(addText("div", "Updated " + new Date(client.updatedAt).toLocaleString(), "muted"));
+      const badges = document.createElement("div");
+      badges.className = "badges";
+      badges.append(addText("span", client.lifecycleState.replace(/_/g, " "), "badge"), addText("span", client.readinessState.replace(/_/g, " "), "badge"));
+      head.append(title, badges);
+      card.appendChild(head);
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const open = addText("button", "Open guided workflow");
+      open.type = "button";
+      open.addEventListener("click", () => { window.location.href = "/?advisorClient=" + encodeURIComponent(client.clientId); });
+      const exportButton = addText("button", "Export", "secondary");
+      exportButton.type = "button";
+      exportButton.addEventListener("click", () => { void downloadClient(client.clientId); });
+      const archiveButton = addText("button", "Archive", "secondary");
+      archiveButton.type = "button";
+      archiveButton.disabled = client.lifecycleState === "archived";
+      archiveButton.addEventListener("click", () => { void archiveClient(client); });
+      actions.append(open, exportButton, archiveButton);
+      card.appendChild(actions);
+      clientList.appendChild(card);
+    });
+  }
+
+  async function loadClients() {
+    status.textContent = "Loading clients…";
+    try {
+      const query = search.value.trim();
+      const body = await api("/api/advisor/clients" + (query ? "?search=" + encodeURIComponent(query) : ""));
+      renderClients(body.clients || []);
+      status.textContent = String((body.clients || []).length) + " client(s) shown.";
+    } catch (error) {
+      if (error?.status === 401) { showAuth("Your advisor session expired. Sign in again."); return; }
+      status.textContent = error instanceof Error ? error.message : "Unable to load clients.";
+    }
+  }
+
+  async function authenticateWith(path, form) {
+    authStatus.textContent = "Working…";
+    const data = new FormData(form);
+    const payload = { email: String(data.get("email") || ""), password: String(data.get("password") || "") };
+    if (path.endsWith("register")) payload.displayName = String(data.get("displayName") || "");
+    try {
+      const body = await api(path, { method: "POST", body: JSON.stringify(payload) });
+      showWorkspace(body);
+      form.reset();
+      await loadClients();
+    } catch (error) { authStatus.textContent = error instanceof Error ? error.message : "Unable to authenticate."; }
+  }
+
+  loginForm.addEventListener("submit", (event) => { event.preventDefault(); void authenticateWith("/api/advisor/login", loginForm); });
+  registerForm.addEventListener("submit", (event) => { event.preventDefault(); void authenticateWith("/api/advisor/register", registerForm); });
+  searchForm.addEventListener("submit", (event) => { event.preventDefault(); void loadClients(); });
+  createClientForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(createClientForm);
+    const payload = { displayName: String(data.get("displayName") || "") };
+    const email = String(data.get("email") || "").trim();
+    const phone = String(data.get("phone") || "").trim();
+    if (email) payload.email = email;
+    if (phone) payload.phone = phone;
+    status.textContent = "Creating client…";
+    try {
+      const body = await api("/api/advisor/clients", { method: "POST", body: JSON.stringify(payload) });
+      window.location.href = "/?advisorClient=" + encodeURIComponent(body.client.clientId);
+    } catch (error) { status.textContent = error instanceof Error ? error.message : "Unable to create client."; }
+  });
+  logout.addEventListener("click", async () => {
+    try { await api("/api/advisor/logout", { method: "POST", body: "{}" }); } catch {}
+    showAuth("Signed out.");
+  });
+
+  (async () => {
+    try {
+      const response = await fetch("/api/advisor/session", { headers: { accept: "application/json" } });
+      if (response.status === 401) { showAuth(); return; }
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error(body.error || "Unable to resume advisor session.");
+      showWorkspace(body);
+      await loadClients();
+    } catch (error) { showAuth(error instanceof Error ? error.message : "Unable to resume advisor session."); }
+  })();
+})();
+</script>
+</body>
+</html>`;
+
+function advisorUiResponse(): Response {
+  return new Response(ADVISOR_UI_HTML, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    }
+  });
+}
 
 function ibrZeroPaymentResponse(request: Request, env: Env): Response {
   const origin = request.headers.get("origin");
@@ -1912,11 +2443,13 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
       owner_scoped_client_crud: Boolean(env.ADVISOR_DB),
+      browser_workspace: "/advisor",
+      saved_guided_client_workflow: true,
       raw_student_aid_retention: false
     },
     hardening: {
@@ -1937,6 +2470,7 @@ export default {
       return new Response(null, { status: 204, headers: responseHeaders(request, env) });
     }
     if (request.method === "GET" && url.pathname === "/") return uiResponse();
+    if (request.method === "GET" && url.pathname === "/advisor") return advisorUiResponse();
     if (request.method === "GET" && url.pathname === "/health") return home(request, env);
     if (request.method === "GET" && url.pathname === "/api/ibr-zero-payment") return ibrZeroPaymentResponse(request, env);
     if (url.pathname.startsWith("/api/advisor/")) return handleAdvisorApi(request, env);
