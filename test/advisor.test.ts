@@ -6,7 +6,9 @@ import worker from "../src/index.ts";
 import type { D1DatabaseBinding, D1PreparedStatement } from "../src/advisor.ts";
 
 class SqliteD1Statement implements D1PreparedStatement {
-  constructor(private readonly statement: any, private readonly values: unknown[] = []) {}
+  statement: any;
+  values: unknown[];
+  constructor(statement: any, values: unknown[] = []) { this.statement = statement; this.values = values; }
   bind(...values: unknown[]): D1PreparedStatement { return new SqliteD1Statement(this.statement, values); }
   async first<T = Record<string, unknown>>(): Promise<T | null> {
     return (this.statement.get(...this.values) as T | undefined) ?? null;
