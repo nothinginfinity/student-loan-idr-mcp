@@ -237,11 +237,24 @@ export function evaluatePlanEligibility(plan: RepaymentPlan, request: Calculator
   };
 }
 
-function standard10YearCap(request: CalculatorRequest): number | null {
+function repaymentPortfolioPayment(request: CalculatorRequest, years: number): number | null {
+  const repaymentLoans = request.loan?.repaymentLoans;
+  if (repaymentLoans && repaymentLoans.length > 0) {
+    return repaymentLoans.reduce((sum, loan, index) => {
+      assertFiniteNonNegative(loan.principal, `repaymentLoans[${index}].principal`);
+      assertFiniteNonNegative(loan.annualInterestRatePercent, `repaymentLoans[${index}].annualInterestRatePercent`);
+      return sum + amortizedMonthlyPayment(loan.principal, loan.annualInterestRatePercent, years);
+    }, 0);
+  }
+
   const principal = request.loan?.principal;
   const rate = request.loan?.annualInterestRatePercent;
   if (principal === undefined || rate === undefined) return null;
-  return amortizedMonthlyPayment(principal, rate, 10);
+  return amortizedMonthlyPayment(principal, rate, years);
+}
+
+function standard10YearCap(request: CalculatorRequest): number | null {
+  return repaymentPortfolioPayment(request, 10);
 }
 
 function eligibilityNote(plan: RepaymentPlan, request: CalculatorRequest, eligibility: PlanEligibility): string {
@@ -325,8 +338,7 @@ function categoryFromTaxFilingStatus(status: TaxFilingStatus | undefined): IcrIn
 function icrEstimate(agi: number, poverty: number, request: CalculatorRequest): PlanEstimate {
   const discretionaryIncome = Math.max(0, agi - poverty);
   const incomeArm = discretionaryIncome * 0.20 / 12;
-  const principal = request.loan?.principal;
-  const interestRate = request.loan?.annualInterestRatePercent;
+  const twelveYearBase = repaymentPortfolioPayment(request, 12);
   const suppliedFactor = request.loan?.icrIncomePercentageFactor;
   const factorCategory = request.loan?.icrIncomeFactorCategory ?? categoryFromTaxFilingStatus(request.taxFilingStatus);
   const warnings: string[] = [];
@@ -344,12 +356,12 @@ function icrEstimate(agi: number, poverty: number, request: CalculatorRequest): 
     factorSource = "2026_table";
   }
 
-  if (principal !== undefined && interestRate !== undefined && factor !== undefined) {
-    const twelveYearAdjusted = amortizedMonthlyPayment(principal, interestRate, 12) * factor;
+  if (twelveYearBase !== null && factor !== undefined) {
+    const twelveYearAdjusted = twelveYearBase * factor;
     monthly = Math.min(incomeArm, twelveYearAdjusted);
     completeness = "estimate";
   } else {
-    if (principal === undefined || interestRate === undefined) warnings.push("ICR's 12-year adjusted arm requires loan principal and annual interest rate.");
+    if (twelveYearBase === null) warnings.push("ICR's 12-year adjusted arm requires either loan.repaymentLoans or a single loan principal and annual interest rate.");
     if (factor === undefined) warnings.push("ICR's 12-year adjusted arm requires taxFilingStatus or loan.icrIncomeFactorCategory so the built-in 2026 income-percentage factor table can be applied.");
   }
 
@@ -459,7 +471,8 @@ export function calculateRepayment(request: CalculatorRequest): CalculatorResult
       "Income cadence normalization annualizes the amounts supplied by the caller.",
       "The calculator does not invent a tax return. Estimated AGI equals the explicit AGI override when supplied; otherwise it equals annualized taxable gross income minus caller-supplied estimated above-the-line adjustments.",
       "2026 HHS poverty guidelines are used for legacy discretionary-income estimates.",
-      "Eligibility objects are deterministic screening results for the supplied loan-type/disbursement facts; official eligibility and billing remain with the U.S. Department of Education and the loan servicer."
+      "Eligibility objects are deterministic screening results for the supplied loan-type/disbursement facts; official eligibility and billing remain with the U.S. Department of Education and the loan servicer.",
+      "When loan.repaymentLoans is supplied, Standard-payment and ICR fixed-payment arms are modeled as the sum of per-loan amortized payments rather than a blended interest-rate approximation."
     ],
     warnings: [
       "Do not use this tool to fabricate income, deductions, dependents, loan details, or supporting documentation.",
