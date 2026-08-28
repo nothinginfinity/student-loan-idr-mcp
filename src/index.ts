@@ -2,7 +2,7 @@ import { calculateRepayment, getPolicyStatus } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
 import type { CalculatorRequest, TemplateRequest } from "./types.ts";
 
-const SERVER_VERSION = "0.6.0";
+const SERVER_VERSION = "0.7.0";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -214,6 +214,17 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .badge { display: inline-flex; padding: 3px 9px; border: 1px solid currentColor; border-radius: 999px; font-size: .82rem; text-transform: capitalize; }
     .muted { color: color-mix(in srgb, CanvasText 66%, transparent); }
     .workspace { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 16px; padding: 18px; margin: 24px 0; }
+    .guide-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .guide-transcript { display: grid; gap: 10px; margin: 16px 0; max-height: 360px; overflow: auto; padding-right: 4px; }
+    .message { max-width: min(720px, 92%); padding: 10px 13px; border-radius: 14px; border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
+    .message.guide { justify-self: start; background: color-mix(in srgb, CanvasText 4%, Canvas); }
+    .message.user { justify-self: end; background: CanvasText; color: Canvas; }
+    .answer-bubbles { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+    .answer-bubbles button { padding: 9px 13px; background: color-mix(in srgb, CanvasText 8%, Canvas); color: CanvasText; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); }
+    .guide-entry { display: flex; gap: 8px; align-items: center; }
+    .guide-entry input { flex: 1; }
+    .fact-ledger { margin-top: 16px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
+    .fact-ledger ul { margin-bottom: 0; }
     .basis { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: .78rem; font-weight: 750; border: 1px solid currentColor; margin-right: 6px; }
     .fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
     .fact { border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 12px; padding: 12px; }
@@ -231,6 +242,27 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   <h1>Turn your real loan facts into a repayment estimate.</h1>
   <p class="lede">This calculator annualizes the income facts you enter and applies the same deterministic RAP, IBR, PAYE, and ICR formulas exposed by this Worker’s MCP tools. It is an estimate—not an official eligibility or billing decision.</p>
   <div class="notice"><strong>Privacy:</strong> this page has no analytics, no external assets, and no browser storage. Calculation inputs are sent only to this same Worker for the current request. A StudentAid.gov loan-data file is parsed locally in your browser and the raw file is never uploaded. Do not enter SSNs, account numbers, or fabricated facts.</div>
+
+  <section class="workspace" id="guided-assistant" aria-labelledby="guided-assistant-title">
+    <div class="guide-head">
+      <div>
+        <h2 id="guided-assistant-title">Guided IDR assistant</h2>
+        <p class="muted">Answer by tapping a bubble or typing. This first version is deterministic: it records only what you confirm, labels the fact source, and prefills the calculator below. No account is required.</p>
+      </div>
+      <span class="badge">Private session</span>
+    </div>
+    <div id="guide-transcript" class="guide-transcript" role="log" aria-live="polite"></div>
+    <div id="guide-answers" class="answer-bubbles" aria-label="Suggested answers"></div>
+    <form id="guide-form" class="guide-entry">
+      <input id="guide-input" autocomplete="off" placeholder="Type your answer" aria-label="Type your answer">
+      <button type="submit">Send</button>
+    </form>
+    <div class="fact-ledger">
+      <strong>Facts collected in this session</strong>
+      <p class="muted">These remain browser-local until you choose to calculate. Imported loan facts and deterministic results are labeled separately.</p>
+      <ul id="guided-facts"><li class="muted">No guided facts confirmed yet.</li></ul>
+    </div>
+  </section>
 
   <section class="workspace" aria-labelledby="loan-import-title">
     <h2 id="loan-import-title">Import your federal loan portfolio</h2>
@@ -371,6 +403,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const loanFile = document.getElementById("loan-file");
   const importStatus = document.getElementById("import-status");
   const portfolioSummary = document.getElementById("portfolio-summary");
+  const guideTranscript = document.getElementById("guide-transcript");
+  const guideAnswers = document.getElementById("guide-answers");
+  const guideForm = document.getElementById("guide-form");
+  const guideInput = document.getElementById("guide-input");
+  const guidedFactsList = document.getElementById("guided-facts");
   const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   const numberOrUndefined = (value) => value === "" ? undefined : Number(value);
   let importedPortfolio = null;
@@ -537,8 +574,179 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     results.appendChild(caveats);
   }
 
+  const guidedFacts = new Map();
+  let guideStep = "goal";
+  let guideIncomeSituation = null;
+
+  function guideSay(text, role = "guide") {
+    const node = addText("div", text, "message " + role);
+    guideTranscript.appendChild(node);
+    guideTranscript.scrollTop = guideTranscript.scrollHeight;
+  }
+
+  function recordGuidedFact(key, label, value, basis = "Stated fact") {
+    guidedFacts.set(key, { label, value, basis });
+    guidedFactsList.replaceChildren();
+    guidedFacts.forEach((fact) => {
+      const item = document.createElement("li");
+      const tag = addText("span", fact.basis, "basis");
+      item.append(tag, document.createTextNode(fact.label + ": " + fact.value));
+      guidedFactsList.appendChild(item);
+    });
+  }
+
+  function setCalculatorValue(name, value) {
+    const control = form.elements.namedItem(name);
+    if (control && "value" in control) control.value = String(value);
+  }
+
+  const guidePrompts = {
+    goal: {
+      text: "What would you like help with first?",
+      options: [["Estimate my payment", "estimate"], ["Prepare income documents", "documents"], ["Both", "both"]]
+    },
+    income_situation: {
+      text: "Which best describes your current taxable income situation?",
+      options: [["Employment", "employment"], ["Self-employed / contract", "self_employment"], ["Unemployment compensation", "unemployment"], ["Multiple taxable sources", "multiple"], ["No current taxable income", "none"]]
+    },
+    income_cadence: {
+      text: "How often is the income amount you want to use paid or received?",
+      options: [["Annual", "annual"], ["Monthly", "monthly"], ["Twice monthly", "semimonthly"], ["Every two weeks", "biweekly"], ["Weekly", "weekly"], ["Hourly", "hourly"]]
+    },
+    income_amount: { text: "What is the gross taxable income amount for that cadence? Type a number, without an SSN or account number.", options: [] },
+    family_size: { text: "What is your current legacy IDR family size under the support-based definition? You can tap 1–6 or type any valid whole number; there is no six-person cap.", options: [["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"], ["5", "5"], ["6", "6"]] },
+    dependents: { text: "How many dependents do you claim on your federal tax return for the RAP dependent reduction? This is intentionally separate from legacy IDR family size.", options: [["0", "0"], ["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"]] },
+    region: { text: "Which poverty-guideline region applies to you?", options: [["48 states + D.C.", "contiguous_us"], ["Alaska", "alaska"], ["Hawaii", "hawaii"]] }
+  };
+
+  function showGuideStep() {
+    guideAnswers.replaceChildren();
+    const prompt = guidePrompts[guideStep];
+    if (!prompt) return;
+    guideSay(prompt.text);
+    prompt.options.forEach(([label, value]) => {
+      const button = addText("button", label);
+      button.type = "button";
+      button.addEventListener("click", () => handleGuideAnswer(value, label));
+      guideAnswers.appendChild(button);
+    });
+    guideInput.placeholder = prompt.options.length ? "Or type one of these answers" : "Type your answer";
+    guideInput.focus();
+  }
+
+  function normalizedChoice(value) {
+    return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  }
+
+  function resolveTypedChoice(step, rawValue) {
+    const normalized = normalizedChoice(rawValue);
+    const aliases = {
+      goal: { estimate: "estimate", estimate_my_payment: "estimate", payment: "estimate", documents: "documents", prepare_income_documents: "documents", document: "documents", both: "both" },
+      income_situation: { employment: "employment", employed: "employment", job: "employment", self_employed: "self_employment", self_employment: "self_employment", contract: "self_employment", contractor: "self_employment", unemployment: "unemployment", unemployment_compensation: "unemployment", multiple: "multiple", multiple_taxable_sources: "multiple", none: "none", no_income: "none", no_current_taxable_income: "none" },
+      income_cadence: { annual: "annual", annually: "annual", yearly: "annual", monthly: "monthly", semimonthly: "semimonthly", twice_monthly: "semimonthly", biweekly: "biweekly", every_two_weeks: "biweekly", weekly: "weekly", hourly: "hourly" },
+      region: { contiguous_us: "contiguous_us", us: "contiguous_us", mainland: "contiguous_us", _48_states_dc: "contiguous_us", alaska: "alaska", hawaii: "hawaii" }
+    };
+    return aliases[step] ? aliases[step][normalized] : rawValue;
+  }
+
+  function handleGuideAnswer(rawValue, displayValue) {
+    const value = resolveTypedChoice(guideStep, rawValue);
+    const shown = displayValue || String(rawValue).trim();
+    if (!shown) return;
+
+    if (guideStep === "income_amount") {
+      const amount = numericValue(shown);
+      if (amount === undefined || amount < 0) {
+        guideSay("Please enter a valid non-negative gross income amount.");
+        return;
+      }
+      guideSay(shown, "user");
+      setCalculatorValue("incomeAmount", amount);
+      recordGuidedFact("income_amount", "Current gross taxable income amount", money.format(amount));
+      guideStep = "family_size";
+    } else if (guideStep === "family_size" || guideStep === "dependents") {
+      const count = Number(value);
+      const minimum = guideStep === "family_size" ? 1 : 0;
+      if (!Number.isInteger(count) || count < minimum) {
+        guideSay("Please enter a valid whole number" + (minimum ? " of at least 1." : " of 0 or more."));
+        return;
+      }
+      guideSay(shown, "user");
+      if (guideStep === "family_size") {
+        setCalculatorValue("familySize", count);
+        recordGuidedFact("family_size", "Legacy IDR family size", String(count));
+        guideStep = "dependents";
+      } else {
+        setCalculatorValue("dependents", count);
+        recordGuidedFact("dependents", "Federal tax-return dependents for RAP", String(count));
+        guideStep = "region";
+      }
+    } else if (guideStep === "goal") {
+      if (!["estimate", "documents", "both"].includes(value)) {
+        guideSay("Choose estimate, documents, or both.");
+        return;
+      }
+      guideSay(shown, "user");
+      recordGuidedFact("goal", "Requested help", value === "both" ? "Payment estimate and income-document help" : value === "documents" ? "Income-document help" : "Payment estimate");
+      guideStep = "income_situation";
+    } else if (guideStep === "income_situation") {
+      if (!["employment", "self_employment", "unemployment", "multiple", "none"].includes(value)) {
+        guideSay("Choose employment, self-employed/contract, unemployment compensation, multiple taxable sources, or no current taxable income.");
+        return;
+      }
+      guideSay(shown, "user");
+      guideIncomeSituation = value;
+      const labels = { employment: "Employment", self_employment: "Self-employment / contract", unemployment: "Unemployment compensation", multiple: "Multiple taxable sources", none: "No current taxable income" };
+      recordGuidedFact("income_situation", "Current income situation", labels[value]);
+      if (value === "none") {
+        setCalculatorValue("cadence", "annual");
+        setCalculatorValue("incomeAmount", 0);
+        recordGuidedFact("income_amount", "Current gross taxable income", money.format(0));
+        cadence.value = "annual";
+        syncHourlyFields();
+        guideStep = "family_size";
+      } else {
+        guideStep = "income_cadence";
+      }
+    } else if (guideStep === "income_cadence") {
+      if (!["annual", "monthly", "semimonthly", "biweekly", "weekly", "hourly"].includes(value)) {
+        guideSay("Choose annual, monthly, twice monthly, every two weeks, weekly, or hourly.");
+        return;
+      }
+      guideSay(shown, "user");
+      cadence.value = value;
+      syncHourlyFields();
+      recordGuidedFact("income_cadence", "Income cadence", shown);
+      guideStep = "income_amount";
+    } else if (guideStep === "region") {
+      if (!["contiguous_us", "alaska", "hawaii"].includes(value)) {
+        guideSay("Choose 48 states + D.C., Alaska, or Hawaii.");
+        return;
+      }
+      guideSay(shown, "user");
+      setCalculatorValue("region", value);
+      recordGuidedFact("region", "Poverty-guideline region", shown);
+      guideStep = "done";
+    }
+
+    guideInput.value = "";
+    if (guideStep === "done") {
+      guideAnswers.replaceChildren();
+      guideSay("Your confirmed facts are now prefilled in the calculator. Review them, add or import your loan facts, then calculate. If you chose document help, the next V0.7 slice will turn this same fact ledger into source-by-source evidence and editable supporting documents without inventing missing facts.");
+      return;
+    }
+    showGuideStep();
+  }
+
+  guideForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    handleGuideAnswer(guideInput.value);
+  });
+
   cadence.addEventListener("change", syncHourlyFields);
   syncHourlyFields();
+  guideSay("I can help turn your answers into clearly labeled application facts and a repayment estimate. You can use the bubbles or type.");
+  showGuideStep();
 
   loanFile.addEventListener("change", async () => {
     importedPortfolio = null;
