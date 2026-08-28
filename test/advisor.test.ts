@@ -146,3 +146,76 @@ test("V0.8.2 advisor sessions and D1 client CRUD are exact-owner scoped", async 
   assert.ok(resumeBody.csrfToken);
   assert.notEqual(resumeBody.csrfToken, alpha.csrf, "session resume must rotate CSRF token");
 });
+
+test("V0.8.3 advisor dashboard and saved guided client workflow are wired to normalized persistence", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  const env = { ADVISOR_DB: d1 };
+
+  const advisorUi = await worker.fetch(new Request(`${BASE}/advisor`), env);
+  const advisorHtml = await advisorUi.text();
+  assert.equal(advisorUi.status, 200);
+  assert.match(advisorUi.headers.get("content-type") ?? "", /text\/html/);
+  assert.match(advisorUi.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+  assert.match(advisorHtml, /advisor \/ manager workspace/i);
+  assert.match(advisorHtml, /id="login-form"/);
+  assert.match(advisorHtml, /id="register-form"/);
+  assert.match(advisorHtml, /id="create-client-form"/);
+  assert.match(advisorHtml, /id="client-list"/);
+  assert.match(advisorHtml, /Open guided workflow/);
+  assert.match(advisorHtml, /raw StudentAid\.gov downloads/i);
+  assert.doesNotMatch(advisorHtml, /localStorage|sessionStorage/);
+
+  const guidedUi = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
+  const guidedHtml = await guidedUi.text();
+  assert.equal(guidedUi.status, 200);
+  assert.match(guidedHtml, /id="advisor-client-bar"/);
+  assert.match(guidedHtml, /id="advisor-save-progress"/);
+  assert.match(guidedHtml, /id="advisor-regenerate-document"/);
+  assert.match(guidedHtml, /\/api\/advisor\/session/);
+  assert.match(guidedHtml, /saveAdvisorClientProgress/);
+  assert.match(guidedHtml, /Raw StudentAid data and evidence files were not retained/i);
+
+  const advisor = await register(env, "workspace@example.test", "Workspace Advisor");
+  const create = await advisorFetch("/api/advisor/clients", advisor, env, {
+    method: "POST",
+    body: JSON.stringify({ displayName: "Saved Workflow Borrower" })
+  });
+  const created = await create.json();
+  assert.equal(create.status, 201);
+
+  const save = await advisorFetch(`/api/advisor/clients/${created.client.clientId}`, advisor, env, {
+    method: "PUT",
+    body: JSON.stringify({
+      expectedUpdatedAt: created.client.updatedAt,
+      readinessState: "application_ready",
+      servicerName: "Example Servicer",
+      confirmedFacts: {
+        income: [{ cadence: "biweekly", amount: 1200 }],
+        incomeSources: [{ sourceType: "employment", name: "Example Employer", grossAmount: 1200, paymentFrequency: "biweekly", evidenceState: "evidence_in_hand" }],
+        region: "contiguous_us",
+        familySize: 2,
+        dependentsClaimedOnFederalTaxReturn: 1
+      },
+      normalizedLoanPortfolio: {
+        repaymentLoans: [{ principal: 25000, annualInterestRatePercent: 6.5 }],
+        eligibilityLoans: [{ loanType: "direct_unsubsidized", disbursementPeriod: "before_2026_07_01" }]
+      },
+      studentAidImport: { source: "studentaid_download", importedAt: "2026-08-28T15:00:00Z", rawFileRetained: false }
+    })
+  });
+  const saved = await save.json();
+  assert.equal(save.status, 200);
+  assert.equal(saved.client.readinessState, "application_ready");
+  assert.equal(saved.client.confirmedFacts.familySize, 2);
+  assert.equal(saved.client.confirmedFacts.incomeSources[0].name, "Example Employer");
+  assert.equal(saved.client.normalizedLoanPortfolio.repaymentLoans[0].principal, 25000);
+  assert.equal(saved.client.studentAidImport.rawFileRetained, false);
+
+  const resumed = await advisorFetch(`/api/advisor/clients/${created.client.clientId}`, advisor, env);
+  const resumedBody = await resumed.json();
+  assert.equal(resumed.status, 200);
+  assert.equal(resumedBody.client.servicerName, "Example Servicer");
+  assert.equal(resumedBody.client.confirmedFacts.dependentsClaimedOnFederalTaxReturn, 1);
+  assert.equal(resumedBody.client.normalizedLoanPortfolio.eligibilityLoans[0].loanType, "direct_unsubsidized");
+});
