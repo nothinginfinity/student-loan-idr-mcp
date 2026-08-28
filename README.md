@@ -88,6 +88,16 @@ The browser surface has no analytics, external assets, or browser storage. Respo
 
 Live borrower calculator: `https://student-loan-idr-mcp.jaredtechfit.workers.dev/`
 
+## V0.6 borrower portfolio import + fact provenance
+
+The borrower page can now read the StudentAid.gov **Download My Aid Data** text file directly in the browser. The raw file never goes to the Worker, there is no raw-file import API, and nothing from the file is stored by the page. The local parser extracts only loan facts used to improve the current session: active outstanding principal, interest rate, loan description/type when confidently mappable, disbursement date/period, default/status hints, and servicer/contact name.
+
+Imported portfolios can supply `loan.repaymentLoans`, an array of `{ principal, annualInterestRatePercent }` records. Standard-payment caps and ICR fixed-payment estimates sum the per-loan amortized payments instead of pretending that a multi-rate portfolio is one blended loan. If loan type or consolidation history is ambiguous, eligibility remains unresolved rather than being guessed.
+
+The borrower UI also distinguishes **Stated fact**, **Documented fact**, **Imported fact**, and **Derived estimate**. Family-size guidance is intentionally separate from RAP tax-return dependents, and the page warns against an arbitrary six-person cap. Current-income guidance calls out recent gross-pay evidence, pay frequency, source-by-source documentation, and signed explanatory statements when standard documentation is unavailable or incomplete.
+
+V0.7 is planned as a guided application/evidence workflow that turns those facts into fast, editable supporting statements and checklists. Borrower accounts and secure saved profiles are planned after that. x402 is deliberately deferred until an account-linked signup-minted token/asset contract, anti-abuse model, wallet binding, and economic/legal boundaries are explicitly designed and accepted.
+
 ## MCP
 
 Endpoint: `POST /mcp`
