@@ -395,6 +395,12 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
   assert.match(response.headers.get("cache-control") ?? "", /no-store/);
   assert.match(html, /id="calculator-form"/);
+  assert.match(html, /id="guided-assistant"/);
+  assert.match(html, /id="guide-answers"/);
+  assert.match(html, /id="guide-input"/);
+  assert.match(html, /Facts collected in this session/);
+  assert.match(html, /No account is required/);
+  assert.match(html, /guidedFacts/);
   assert.match(html, /id="loan-file"/);
   assert.match(html, /Download My Aid Data/);
   assert.match(html, /raw file is never uploaded/i);
@@ -518,7 +524,7 @@ test("MCP initialize negotiates the declared protocol revision and current serve
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.result.protocolVersion, "2025-03-26");
-  assert.equal(body.result.serverInfo.version, "0.6.0");
+  assert.equal(body.result.serverInfo.version, "0.7.0");
 });
 
 test("MCP notification-only requests return 202 with no response body", async () => {
