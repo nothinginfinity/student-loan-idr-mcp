@@ -96,7 +96,15 @@ Imported portfolios can supply `loan.repaymentLoans`, an array of `{ principal, 
 
 The borrower UI also distinguishes **Stated fact**, **Documented fact**, **Imported fact**, and **Derived estimate**. Family-size guidance is intentionally separate from RAP tax-return dependents, and the page warns against an arbitrary six-person cap. Current-income guidance calls out recent gross-pay evidence, pay frequency, source-by-source documentation, and signed explanatory statements when standard documentation is unavailable or incomplete.
 
-V0.7 is planned as a guided application/evidence workflow that turns those facts into fast, editable supporting statements and checklists. Borrower accounts and secure saved profiles are planned after that. x402 is deliberately deferred until an account-linked signup-minted token/asset contract, anti-abuse model, wallet binding, and economic/legal boundaries are explicitly designed and accepted.
+## V0.7 guided application + fast document workflow
+
+The borrower page now includes a deterministic guided assistant that records only facts the borrower confirms. The V0.7.1 quick-info path can show the 2026 IBR $0-payment AGI thresholds for family sizes 1–6 by poverty-guideline region, including the contiguous-U.S. family-size-6 threshold of $66,540. The quick table is derived from the same poverty constants as the calculator and is explicitly an estimate, not an automatic eligibility promise.
+
+V0.7.2 turns the guided stated-income and unemployment follow-ups into a real document-review workflow. Confirmed income amount/cadence facts are reused; the borrower can supply or intentionally leave placeholders for their name, payer/employer/agency, servicer, address, and explanation. The browser calls a same-origin `POST /api/document` route that validates the request against the existing documentation-tool schema and renders through the same trusted template engine used by MCP.
+
+The draft stays review-before-sign: print / Save PDF and local HTML download remain disabled until the borrower explicitly acknowledges reviewing the facts. The service does not create signatures, fabricate employer records or evidence, persist the draft, or auto-submit anything. The three-tool MCP contract remains unchanged.
+
+Borrower accounts and secure saved profiles are planned after the guided workflow. x402 is deliberately deferred until an account-linked signup-minted token/asset contract, anti-abuse model, wallet binding, and economic/legal boundaries are explicitly designed and accepted.
 
 ## MCP
 

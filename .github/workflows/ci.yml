@@ -314,7 +314,7 @@ jobs:
             const health = await healthResponse.json();
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.7.1', `unexpected live version ${health.version}`);
+            assert(health.version === '0.7.2', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -335,6 +335,12 @@ jobs:
             assert(uiHtml.includes('Could my IBR payment be $0?'), 'UI IBR zero-payment quick-info bubble missing');
             assert(uiHtml.includes('Prepare stated income document'), 'UI stated-income follow-up action missing');
             assert(uiHtml.includes('Prepare unemployment statement'), 'UI unemployment follow-up action missing');
+            assert(uiHtml.includes('id="document-workspace"'), 'UI document review workspace missing');
+            assert(uiHtml.includes('id="document-reviewed"'), 'UI document review acknowledgement missing');
+            assert(uiHtml.includes('Print / Save PDF'), 'UI document print action missing');
+            assert(uiHtml.includes('Download HTML'), 'UI document download action missing');
+            assert(uiHtml.includes('/api/document'), 'UI document API integration missing');
+            assert(uiHtml.includes('must sign it myself'), 'UI review-before-sign boundary missing');
             assert(uiHtml.includes('id="loan-file"'), 'UI local loan-file import missing');
             assert(uiHtml.includes('Download My Aid Data'), 'UI StudentAid import guidance missing');
             assert(/raw file is never uploaded/i.test(uiHtml), 'UI raw-file privacy boundary missing');
@@ -351,6 +357,45 @@ jobs:
 
             const rawImportEndpoint = await fetchChecked(`${base}/api/import`);
             assert(rawImportEndpoint.status === 404, `raw import endpoint must not exist, got ${rawImportEndpoint.status}`);
+
+            const browserDocument = await fetchChecked(`${base}/api/document`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                templateType: 'unemployment_income_statement',
+                outputFormat: 'text',
+                borrowerName: 'Live Browser Draft',
+                servicerName: 'Example Servicer',
+                incomeSources: [{ sourceType: 'unemployment', name: 'Example Agency', grossAmount: 450, paymentFrequency: 'weekly' }]
+              })
+            });
+            const browserDocumentBody = await browserDocument.json();
+            assert(browserDocument.status === 200, `browser document returned ${browserDocument.status}`);
+            assert(browserDocumentBody?.ok === true, 'browser document response not ok');
+            assert(browserDocumentBody.document.includes('Live Browser Draft'), 'browser document lost borrower fact');
+            assert(browserDocumentBody.document.includes('Example Agency'), 'browser document lost payer fact');
+            assert(browserDocumentBody.document.includes('Supporting evidence checklist'), 'browser document missing evidence checklist');
+            assert(browserDocument.headers.get('cache-control') === 'no-store', 'browser document cache policy mismatch');
+
+            const browserDocumentHtml = await fetchChecked(`${base}/api/document`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                templateType: 'current_income_statement', outputFormat: 'html', borrowerName: '<script>unsafe</script>'
+              })
+            });
+            const browserDocumentHtmlBody = await browserDocumentHtml.json();
+            assert(browserDocumentHtml.status === 200, `browser HTML document returned ${browserDocumentHtml.status}`);
+            assert(browserDocumentHtmlBody.document.startsWith('<!doctype html>'), 'browser HTML document format mismatch');
+            assert(browserDocumentHtmlBody.document.includes('&lt;script&gt;unsafe&lt;/script&gt;'), 'browser HTML document did not escape caller markup');
+            assert(!browserDocumentHtmlBody.document.includes('<script>unsafe</script>'), 'browser HTML document contains unescaped caller markup');
+
+            const browserDocumentForbidden = await fetchChecked(`${base}/api/document`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+              body: '{}'
+            });
+            assert(browserDocumentForbidden.status === 403, `browser document cross-origin request expected 403, got ${browserDocumentForbidden.status}`);
 
             const uiCalculator = await fetchChecked(`${base}/api/calculate`, {
               method: 'POST',
@@ -389,7 +434,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.7.1', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.7.2', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -464,9 +509,9 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 29
+              checks: 36
             }));
-            console.log('::notice title=Live product acceptance::29 production checks passed');
+            console.log('::notice title=Live product acceptance::36 production checks passed');
           })().catch((error) => {
             console.error(error);
             process.exit(1);
