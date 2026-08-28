@@ -1,8 +1,8 @@
-import { calculateRepayment, getPolicyStatus } from "./formulas.ts";
+import { calculateRepayment, getPolicyStatus, ibrZeroPaymentAgiThreshold } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
-import type { CalculatorRequest, TemplateRequest } from "./types.ts";
+import type { CalculatorRequest, Region, TemplateRequest } from "./types.ts";
 
-const SERVER_VERSION = "0.7.0";
+const SERVER_VERSION = "0.7.1";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -225,6 +225,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .guide-entry input { flex: 1; }
     .fact-ledger { margin-top: 16px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
     .fact-ledger ul { margin-bottom: 0; }
+    .quick-info { width: 100%; border-collapse: collapse; margin: 10px 0; font-variant-numeric: tabular-nums; }
+    .quick-info th, .quick-info td { padding: 8px 10px; text-align: left; border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
+    .quick-info th:last-child, .quick-info td:last-child { text-align: right; }
+    .quick-callout { border-left: 4px solid currentColor; padding: 10px 12px; margin: 10px 0; background: color-mix(in srgb, CanvasText 4%, Canvas); border-radius: 0 10px 10px 0; }
     .basis { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: .78rem; font-weight: 750; border: 1px solid currentColor; margin-right: 6px; }
     .fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
     .fact { border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 12px; padding: 12px; }
@@ -603,7 +607,15 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const guidePrompts = {
     goal: {
       text: "What would you like help with first?",
-      options: [["Estimate my payment", "estimate"], ["Prepare income documents", "documents"], ["Both", "both"]]
+      options: [["Could my IBR payment be $0?", "ibr_zero"], ["Estimate my payment", "estimate"], ["Prepare income documents", "documents"], ["Both", "both"]]
+    },
+    ibr_zero_region: {
+      text: "Which poverty-guideline region applies to you? I’ll show the 2026 IBR $0-payment AGI line for family sizes 1–6.",
+      options: [["48 states + D.C.", "contiguous_us"], ["Alaska", "alaska"], ["Hawaii", "hawaii"]]
+    },
+    ibr_zero_followup: {
+      text: "Want help preparing the income documentation next?",
+      options: [["Prepare stated income document", "current_income_doc"], ["Prepare unemployment statement", "unemployment_doc"], ["Continue to calculator", "calculator"]]
     },
     income_situation: {
       text: "Which best describes your current taxable income situation?",
@@ -641,12 +653,53 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   function resolveTypedChoice(step, rawValue) {
     const normalized = normalizedChoice(rawValue);
     const aliases = {
-      goal: { estimate: "estimate", estimate_my_payment: "estimate", payment: "estimate", documents: "documents", prepare_income_documents: "documents", document: "documents", both: "both" },
+      goal: { ibr_zero: "ibr_zero", could_my_ibr_payment_be_0: "ibr_zero", zero_payment: "ibr_zero", estimate: "estimate", estimate_my_payment: "estimate", payment: "estimate", documents: "documents", prepare_income_documents: "documents", document: "documents", both: "both" },
+      ibr_zero_region: { contiguous_us: "contiguous_us", us: "contiguous_us", mainland: "contiguous_us", _48_states_dc: "contiguous_us", alaska: "alaska", hawaii: "hawaii" },
+      ibr_zero_followup: { current_income_doc: "current_income_doc", stated_income: "current_income_doc", prepare_stated_income_document: "current_income_doc", unemployment_doc: "unemployment_doc", unemployment_statement: "unemployment_doc", prepare_unemployment_statement: "unemployment_doc", calculator: "calculator", continue_to_calculator: "calculator" },
       income_situation: { employment: "employment", employed: "employment", job: "employment", self_employed: "self_employment", self_employment: "self_employment", contract: "self_employment", contractor: "self_employment", unemployment: "unemployment", unemployment_compensation: "unemployment", multiple: "multiple", multiple_taxable_sources: "multiple", none: "none", no_income: "none", no_current_taxable_income: "none" },
       income_cadence: { annual: "annual", annually: "annual", yearly: "annual", monthly: "monthly", semimonthly: "semimonthly", twice_monthly: "semimonthly", biweekly: "biweekly", every_two_weeks: "biweekly", weekly: "weekly", hourly: "hourly" },
       region: { contiguous_us: "contiguous_us", us: "contiguous_us", mainland: "contiguous_us", _48_states_dc: "contiguous_us", alaska: "alaska", hawaii: "hawaii" }
     };
     return aliases[step] ? aliases[step][normalized] : rawValue;
+  }
+
+  async function showIbrZeroInfo(region) {
+    guideAnswers.replaceChildren();
+    guideInput.disabled = true;
+    try {
+      const response = await fetch("/api/ibr-zero-payment?region=" + encodeURIComponent(region));
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error(body.error || "Unable to load IBR quick info.");
+      guideSay("For IBR, the estimated payment is $0 when the AGI used for the calculation is at or below 150% of the poverty guideline. Here are the 2026 cutoffs for " + body.regionLabel + ".");
+      const table = document.createElement("table");
+      table.className = "quick-info";
+      const headerRow = document.createElement("tr");
+      ["Family size", "$0 IBR AGI cutoff"].forEach((text) => headerRow.appendChild(addText("th", text)));
+      const head = document.createElement("thead");
+      head.appendChild(headerRow);
+      table.appendChild(head);
+      const tableBody = document.createElement("tbody");
+      body.thresholds.forEach((row) => {
+        const tr = document.createElement("tr");
+        tr.append(addText("td", String(row.familySize)), addText("td", money.format(row.maxAgiForZeroPayment)));
+        tableBody.appendChild(tr);
+      });
+      table.appendChild(tableBody);
+      guideTranscript.appendChild(table);
+      if (region === "contiguous_us") {
+        const example = addText("div", "$60,000 example: with family size 6, $60,000 is below the 2026 $66,540 IBR $0-payment AGI cutoff, so the formula estimates a $0 monthly IBR payment if the borrower and loans are otherwise IBR-eligible.", "quick-callout");
+        guideTranscript.appendChild(example);
+      }
+      guideSay("Important: these are AGI thresholds, not automatic eligibility guarantees. Loan type/date rules still matter, spouse income can matter depending on the borrower’s situation, annual recertification still applies, and interest may still accrue.");
+      guideTranscript.scrollTop = guideTranscript.scrollHeight;
+      guideStep = "ibr_zero_followup";
+    } catch (error) {
+      guideSay(error instanceof Error ? error.message : "Unable to load IBR quick info.");
+      guideStep = "goal";
+    } finally {
+      guideInput.disabled = false;
+      showGuideStep();
+    }
   }
 
   function handleGuideAnswer(rawValue, displayValue) {
@@ -682,13 +735,45 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
         guideStep = "region";
       }
     } else if (guideStep === "goal") {
-      if (!["estimate", "documents", "both"].includes(value)) {
-        guideSay("Choose estimate, documents, or both.");
+      if (!["ibr_zero", "estimate", "documents", "both"].includes(value)) {
+        guideSay("Choose the IBR $0 quick check, estimate, documents, or both.");
         return;
       }
       guideSay(shown, "user");
-      recordGuidedFact("goal", "Requested help", value === "both" ? "Payment estimate and income-document help" : value === "documents" ? "Income-document help" : "Payment estimate");
-      guideStep = "income_situation";
+      if (value === "ibr_zero") {
+        recordGuidedFact("goal", "Requested help", "IBR $0-payment quick check");
+        guideStep = "ibr_zero_region";
+      } else {
+        recordGuidedFact("goal", "Requested help", value === "both" ? "Payment estimate and income-document help" : value === "documents" ? "Income-document help" : "Payment estimate");
+        guideStep = "income_situation";
+      }
+    } else if (guideStep === "ibr_zero_region") {
+      if (!["contiguous_us", "alaska", "hawaii"].includes(value)) {
+        guideSay("Choose 48 states + D.C., Alaska, or Hawaii.");
+        return;
+      }
+      guideSay(shown, "user");
+      setCalculatorValue("region", value);
+      recordGuidedFact("region", "Poverty-guideline region", shown);
+      void showIbrZeroInfo(value);
+      return;
+    } else if (guideStep === "ibr_zero_followup") {
+      if (!["current_income_doc", "unemployment_doc", "calculator"].includes(value)) {
+        guideSay("Choose stated income document, unemployment statement, or continue to calculator.");
+        return;
+      }
+      guideSay(shown, "user");
+      if (value === "current_income_doc") {
+        recordGuidedFact("document_goal", "Requested document", "Current / stated income supporting statement");
+        guideStep = "income_situation";
+      } else if (value === "unemployment_doc") {
+        guideIncomeSituation = "unemployment";
+        recordGuidedFact("document_goal", "Requested document", "Unemployment compensation income statement");
+        recordGuidedFact("income_situation", "Current income situation", "Unemployment compensation");
+        guideStep = "income_cadence";
+      } else {
+        guideStep = "income_situation";
+      }
     } else if (guideStep === "income_situation") {
       if (!["employment", "self_employment", "unemployment", "multiple", "none"].includes(value)) {
         guideSay("Choose employment, self-employed/contract, unemployment compensation, multiple taxable sources, or no current taxable income.");
@@ -846,6 +931,32 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 </script>
 </body>
 </html>`;
+
+function ibrZeroPaymentResponse(request: Request, env: Env): Response {
+  const origin = request.headers.get("origin");
+  if (origin !== null && origin !== new URL(request.url).origin) {
+    return jsonResponse({ ok: false, error: "Cross-origin quick-info requests are not allowed." }, 403, request, env, { "cache-control": "no-store" });
+  }
+  const region = new URL(request.url).searchParams.get("region") ?? "contiguous_us";
+  if (!(["contiguous_us", "alaska", "hawaii"] as const).includes(region as Region)) {
+    return jsonResponse({ ok: false, error: "Unknown poverty-guideline region." }, 400, request, env, { "cache-control": "no-store" });
+  }
+  const typedRegion = region as Region;
+  const regionLabel = typedRegion === "contiguous_us" ? "48 states + D.C." : typedRegion === "alaska" ? "Alaska" : "Hawaii";
+  const thresholds = Array.from({ length: 6 }, (_, index) => ({
+    familySize: index + 1,
+    maxAgiForZeroPayment: ibrZeroPaymentAgiThreshold(typedRegion, index + 1)
+  }));
+  return jsonResponse({
+    ok: true,
+    plan: "IBR",
+    policySnapshot: "2026-08-27",
+    region: typedRegion,
+    regionLabel,
+    rule: "Estimated IBR payment is $0 when the AGI used for IBR is at or below 150% of the applicable poverty guideline.",
+    thresholds
+  }, 200, request, env, { "cache-control": "no-store" });
+}
 
 function uiResponse(): Response {
   return new Response(BORROWER_UI_HTML, {
@@ -1216,7 +1327,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /health", "POST /api/calculate", "POST /mcp"],
+    endpoints: ["GET /", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /mcp"],
     hardening: {
       max_request_bytes: MAX_REQUEST_BYTES,
       bearer_auth_configured: Boolean(env.MCP_BEARER_TOKEN),
@@ -1236,6 +1347,7 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/") return uiResponse();
     if (request.method === "GET" && url.pathname === "/health") return home(request, env);
+    if (request.method === "GET" && url.pathname === "/api/ibr-zero-payment") return ibrZeroPaymentResponse(request, env);
     if (request.method === "POST" && url.pathname === "/api/calculate") return handleCalculatorApi(request, env);
     if (url.pathname === "/mcp" && request.method === "GET") {
       if (!allowedOrigin(request, env)) return jsonResponse(jsonRpcErrorObject(null, -32600, "Forbidden Origin"), 403, request, env);
