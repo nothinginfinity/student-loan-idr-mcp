@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS advisor_accounts (
 
 CREATE TABLE IF NOT EXISTS advisor_sessions (
   session_hash TEXT PRIMARY KEY,
+  csrf_token_hash TEXT NOT NULL,
   advisor_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
