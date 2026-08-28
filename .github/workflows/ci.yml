@@ -314,7 +314,7 @@ jobs:
             const health = await healthResponse.json();
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.6.0', `unexpected live version ${health.version}`);
+            assert(health.version === '0.7.0', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -327,6 +327,11 @@ jobs:
             assert((uiResponse.headers.get('content-type') || '').includes('text/html'), 'UI content type mismatch');
             assert((uiResponse.headers.get('content-security-policy') || '').includes("default-src 'none'"), 'UI CSP missing default-src none');
             assert(uiHtml.includes('id="calculator-form"'), 'UI calculator form missing');
+            assert(uiHtml.includes('id="guided-assistant"'), 'UI guided assistant missing');
+            assert(uiHtml.includes('id="guide-answers"'), 'UI guided answer bubbles missing');
+            assert(uiHtml.includes('id="guide-input"'), 'UI guided typed-answer input missing');
+            assert(uiHtml.includes('Facts collected in this session'), 'UI guided fact ledger missing');
+            assert(uiHtml.includes('No account is required'), 'UI private no-account guided boundary missing');
             assert(uiHtml.includes('id="loan-file"'), 'UI local loan-file import missing');
             assert(uiHtml.includes('Download My Aid Data'), 'UI StudentAid import guidance missing');
             assert(/raw file is never uploaded/i.test(uiHtml), 'UI raw-file privacy boundary missing');
@@ -374,7 +379,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.6.0', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.7.0', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -449,9 +454,9 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 18
+              checks: 23
             }));
-            console.log('::notice title=Live product acceptance::18 production checks passed');
+            console.log('::notice title=Live product acceptance::23 production checks passed');
           })().catch((error) => {
             console.error(error);
             process.exit(1);
