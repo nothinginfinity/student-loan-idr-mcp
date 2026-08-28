@@ -342,6 +342,10 @@ jobs:
             assert(health.advisor_workspace?.repayment_comparison_visualizations === true, 'advisor repayment comparison flag missing');
             assert(health.advisor_workspace?.retained_client_artifacts === true, 'retained client artifact flag missing');
             assert(health.advisor_workspace?.calculation_history === true, 'calculation history flag missing');
+            assert(health.advisor_workspace?.student_aid_dual_mode_import === true, 'dual-mode StudentAid import flag missing');
+            assert(health.advisor_workspace?.student_aid_normalized_prefill === true, 'StudentAid normalized prefill flag missing');
+            assert(health.advisor_workspace?.student_aid_per_loan_facts === true, 'StudentAid per-loan fact flag missing');
+            assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
 
             const livePassword = `Live-v082-${Date.now()}-Strong!`;
@@ -398,11 +402,17 @@ jobs:
               method: 'PUT', body: JSON.stringify({ expectedUpdatedAt: liveClient.updatedAt, studentAidImport: { source: 'studentaid_download', rawFileRetained: true } })
             }, alpha);
             assert(rawRetention.response.status === 400, 'raw StudentAid retention must be rejected');
+            const rawTextRetention = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
+              method: 'PUT', body: JSON.stringify({ expectedUpdatedAt: liveClient.updatedAt, normalizedLoanPortfolio: { repaymentLoans: [], loans: [{ rawText: 'RAW-STUDENTAID-LIVE-SHOULD-NEVER-PERSIST' }] } })
+            }, alpha);
+            assert(rawTextRetention.response.status === 400 && /Forbidden persisted client field: rawText/.test(rawTextRetention.body?.error || ''), 'raw StudentAid text field must be rejected');
 
             const updatedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
               method: 'PUT', body: JSON.stringify({
                 expectedUpdatedAt: liveClient.updatedAt,
                 readinessState: 'application_ready',
+                contact: { displayName: 'Live Private Borrower', email: 'private-borrower@example.test', phone: '555-0199', streetAddress1: '100 Example Way', city: 'Denver', stateCode: 'CO', countryCode: 'US', zipCode: '80202' },
+                fieldProvenance: { displayName: 'imported_studentaid', email: 'advisor_entered', streetAddress1: 'imported_studentaid', city: 'imported_studentaid' },
                 servicerName: 'Example Servicer',
                 notes: 'live acceptance note',
                 confirmedFacts: {
@@ -411,22 +421,38 @@ jobs:
                   region: 'contiguous_us', familySize: 2, dependentsClaimedOnFederalTaxReturn: 1, newBorrowerOnOrAfterJuly1_2014: true
                 },
                 normalizedLoanPortfolio: {
-                  repaymentLoans: [{ principal: 25000, annualInterestRatePercent: 6.5 }],
-                  eligibilityLoans: [{ loanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01' }]
+                  repaymentLoans: [{ principal: 12500, annualInterestRatePercent: 6.5 }, { principal: 5000, annualInterestRatePercent: 7.25 }],
+                  eligibilityLoans: [{ loanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01' }, { loanType: 'direct_parent_plus', disbursementPeriod: 'on_or_after_2026_07_01' }],
+                  loans: [
+                    { loanIndex: 0, maskedAwardId: '••••0001', loanTypeCode: 'D2', loanTypeDescription: 'DIRECT UNSUBSIDIZED LOAN', mappedLoanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01', outstandingPrincipal: 12500, outstandingInterest: 125, interestRatePercent: 6.5, currentLoanStatusDescription: 'IN REPAYMENT', statuses: [{ code: 'RP', description: 'IN REPAYMENT', effectiveDate: '01/01/2025' }], disbursements: [{ date: '08/15/2024', amount: 15000 }], contacts: [{ type: 'Current Servicer', name: 'Example Servicer', mostRelevant: true }], provenance: { maskedAwardId: 'derived_studentaid', loanTypeCode: 'imported_studentaid', mappedLoanType: 'derived_studentaid', disbursementPeriod: 'derived_studentaid', outstandingPrincipal: 'imported_studentaid', interestRatePercent: 'imported_studentaid' } },
+                    { loanIndex: 1, maskedAwardId: '••••0002', loanTypeCode: 'D4', loanTypeDescription: 'DIRECT PARENT PLUS LOAN', mappedLoanType: 'direct_parent_plus', disbursementPeriod: 'on_or_after_2026_07_01', outstandingPrincipal: 5000, outstandingInterest: 50, interestRatePercent: 7.25, currentLoanStatusDescription: 'IN REPAYMENT', statuses: [{ code: 'RP', description: 'IN REPAYMENT' }], disbursements: [{ date: '08/15/2026', amount: 5000 }], provenance: { maskedAwardId: 'derived_studentaid', loanTypeCode: 'imported_studentaid', mappedLoanType: 'derived_studentaid', disbursementPeriod: 'derived_studentaid', outstandingPrincipal: 'imported_studentaid', interestRatePercent: 'imported_studentaid' } }
+                  ],
+                  summary: { loanCount: 2, activeLoanCount: 2, totalOutstandingPrincipal: 17500, totalOutstandingInterest: 175, repaymentLoanCount: 2, eligibilityMappedLoanCount: 2, ambiguousEligibilityLoanCount: 0, hasLoanDisbursedOnOrAfterJuly1_2026: true }
                 },
-                studentAidImport: { source: 'studentaid_download', importedAt: new Date().toISOString(), rawFileRetained: false }
+                studentAidImport: { source: 'studentaid_download', importedAt: new Date().toISOString(), fileRequestDate: '08/28/2026', mappingVersion: '2026-08-28-v1', rawFileRetained: false }
               })
             }, alpha);
             assert(updatedClient.response.status === 200 && updatedClient.body?.client?.readinessState === 'application_ready', 'advisor client saved-workflow update failed');
             assert(updatedClient.body?.client?.confirmedFacts?.familySize === 2, 'advisor saved family-size fact missing');
             assert(updatedClient.body?.client?.confirmedFacts?.incomeSources?.[0]?.name === 'Example Employer', 'advisor saved income source missing');
-            assert(updatedClient.body?.client?.normalizedLoanPortfolio?.repaymentLoans?.[0]?.principal === 25000, 'advisor saved normalized loan portfolio missing');
+            assert(updatedClient.body?.client?.normalizedLoanPortfolio?.repaymentLoans?.length === 2, 'advisor saved mixed repayment portfolio missing');
+            assert(updatedClient.body?.client?.normalizedLoanPortfolio?.loans?.[0]?.loanTypeCode === 'D2', 'advisor saved first normalized loan fact missing');
+            assert(updatedClient.body?.client?.normalizedLoanPortfolio?.loans?.[1]?.loanTypeCode === 'D4', 'advisor saved second normalized loan fact missing');
+            assert(updatedClient.body?.client?.normalizedLoanPortfolio?.summary?.totalOutstandingPrincipal === 17500, 'advisor saved StudentAid portfolio summary missing');
+            assert(updatedClient.body?.client?.normalizedLoanPortfolio?.summary?.totalOutstandingInterest === 175, 'advisor saved StudentAid interest summary missing');
+            assert(updatedClient.body?.client?.fieldProvenance?.email === 'advisor_entered', 'advisor edit provenance missing');
+            assert(updatedClient.body?.client?.contact?.streetAddress1 === '100 Example Way', 'advisor StudentAid contact prefill persistence missing');
+            assert(updatedClient.body?.client?.studentAidImport?.mappingVersion === '2026-08-28-v1', 'StudentAid mapping version missing');
+            assert(updatedClient.body?.client?.studentAidImport?.fileRequestDate === '08/28/2026', 'StudentAid file request date missing');
             assert(updatedClient.body?.client?.studentAidImport?.rawFileRetained === false, 'normalized StudentAid metadata boundary mismatch');
 
             const resumedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {}, alpha);
             assert(resumedClient.response.status === 200, 'advisor saved client resume read failed');
             assert(resumedClient.body?.client?.servicerName === 'Example Servicer', 'advisor resumed servicer fact missing');
             assert(resumedClient.body?.client?.confirmedFacts?.dependentsClaimedOnFederalTaxReturn === 1, 'advisor resumed application fact missing');
+            assert(resumedClient.body?.client?.normalizedLoanPortfolio?.loans?.length === 2, 'advisor resumed per-loan StudentAid facts missing');
+            assert(resumedClient.body?.client?.normalizedLoanPortfolio?.loans?.[0]?.maskedAwardId === '••••0001', 'advisor resumed masked loan row identity missing');
+            assert(resumedClient.body?.client?.studentAidImport?.mappingVersion === '2026-08-28-v1', 'advisor resumed StudentAid mapping metadata missing');
 
             const comparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparison`, {}, alpha);
             assert(comparison.response.status === 200 && comparison.body?.ok === true, 'advisor comparison endpoint failed');
@@ -558,6 +584,11 @@ jobs:
             assert(uiHtml.includes('/api/document'), 'UI document API integration missing');
             assert(uiHtml.includes('must sign it myself'), 'UI review-before-sign boundary missing');
             assert(uiHtml.includes('id="loan-file"'), 'UI local loan-file import missing');
+            assert(uiHtml.includes('id="studentaid-review"'), 'UI StudentAid normalized review surface missing');
+            assert(uiHtml.includes('Imported StudentAid facts'), 'UI StudentAid prefill heading missing');
+            assert(uiHtml.includes('Imported from StudentAid') && uiHtml.includes('Derived from StudentAid') && uiHtml.includes('Advisor entered') && uiHtml.includes('Borrower confirmed') && uiHtml.includes('Missing / needs review'), 'UI StudentAid provenance states missing');
+            assert(uiHtml.includes('Individual loan facts'), 'UI per-loan StudentAid review missing');
+            assert(uiHtml.includes('Client facts prefilled locally') && uiHtml.includes('Borrower facts and loan details prefilled locally'), 'UI dual-mode StudentAid prefill status missing');
             assert(uiHtml.includes('Download My Aid Data'), 'UI StudentAid import guidance missing');
             assert(/raw file is never uploaded/i.test(uiHtml), 'UI raw-file privacy boundary missing');
             assert(/no six-person cap/i.test(uiHtml), 'UI family-size correction missing');
@@ -630,6 +661,24 @@ jobs:
             const uiCalculatorBody = await uiCalculator.json();
             assert(uiCalculator.status === 200, `UI calculator returned ${uiCalculator.status}`);
             assert(uiCalculatorBody?.result?.planEstimates?.[0]?.monthlyPaymentEstimate === 116.67, 'UI calculator fixture mismatch');
+
+            const mixedPortfolioCalculator = await fetchChecked(`${base}/api/calculate`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                income: [{ cadence: 'annual', amount: 50000 }],
+                region: 'contiguous_us', familySize: 2,
+                dependentsClaimedOnFederalTaxReturn: 1,
+                loan: {
+                  repaymentLoans: [{ principal: 12500, annualInterestRatePercent: 6.5 }, { principal: 5000, annualInterestRatePercent: 7.25 }],
+                  eligibilityLoans: [{ loanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01' }, { loanType: 'direct_parent_plus', disbursementPeriod: 'on_or_after_2026_07_01' }]
+                },
+                plans: ['RAP']
+              })
+            });
+            const mixedPortfolioBody = await mixedPortfolioCalculator.json();
+            assert(mixedPortfolioCalculator.status === 200, `mixed portfolio calculator returned ${mixedPortfolioCalculator.status}`);
+            assert(mixedPortfolioBody?.result?.planEstimates?.[0]?.eligibility?.status === 'mixed', 'mixed StudentAid portfolio eligibility was flattened or misclassified');
 
             const uiForbiddenOrigin = await fetchChecked(`${base}/api/calculate`, {
               method: 'POST',
