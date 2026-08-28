@@ -262,7 +262,7 @@ Acceptance evidence:
 
 V0.8.5 is closed. V0.8 remains **IN PROGRESS**. The next bounded advisor-workspace slice is now selected below; x402 remains deferred behind its separate token/economic design gate.
 
-### V0.8.6 — Dual-mode StudentAid import + advisor client prefill — NEXT / PLANNED
+### V0.8.6 — Dual-mode StudentAid import + advisor client prefill — COMPLETE
 
 - Make StudentAid.gov **Download My Aid Data** import explicitly mode-aware. **Borrower/private mode** remains account-free and browser-local for a one-session calculation. **Advisor/client mode** runs inside an authenticated saved client record and uses the same local parser to prefill that client's workflow.
 - In advisor/client mode, populate **every reliable fact available in the StudentAid file** into visible reviewable fields and normalized client facts rather than keeping most imported values only inside an internal portfolio object. This includes borrower/contact fields when actually present and safe to use, servicer/contact name, individual outstanding principal balances, individual interest rates, loan type/description when safely mappable, disbursement dates/periods, loan status/default facts, portfolio totals, and deterministic cutoff facts derivable from the imported loan records.
@@ -273,6 +273,15 @@ V0.8.5 is closed. V0.8 remains **IN PROGRESS**. The next bounded advisor-workspa
 - Do not infer facts that the StudentAid file does not establish. Current income, family size, RAP tax-return dependents, tax filing status, employer/payer facts, evidence readiness, signatures, and similar borrower-specific application facts remain advisor-entered or borrower-confirmed unless a trustworthy source explicitly supplies them.
 - Build the parser field map against a representative current StudentAid **My Aid Data** sample, preferably sanitized while preserving exact field labels. Add deterministic fixtures for supported labels/variants, mixed portfolios, ambiguous records, and save/resume behavior so future StudentAid export changes fail visibly instead of silently dropping facts.
 - Acceptance should prove both modes end to end: browser-local borrower import/prefill, authenticated advisor client import/prefill/save/resume, exact cross-advisor isolation, no raw-file server retention or import endpoint, correct mixed-loan calculations, visible provenance, and the unchanged three-tool MCP contract.
+
+Acceptance evidence:
+
+- Exact V0.8.6 production runtime source commit `db6196a0ad51a4594144248e29040b3d0c84a85b` passed strict TypeScript, the expanded deterministic regression suite, and Wrangler dry-run in normal CI run `33203821214`.
+- Exact-SHA live deployment + production acceptance run `33203904245` succeeded from that immutable source. The deploy-live job reverified the requested commit, reran typecheck/tests, applied D1 migrations, deployed with Wrangler, and passed **189 dynamically counted production checks**.
+- Production acceptance proves the dual-mode browser-local import surface, advisor normalized save/resume, exact cross-advisor denial, recursive rejection of raw StudentAid text/file-shaped persistence, per-loan mixed portfolio preservation, contact/address prefill, import/edit provenance, mapping metadata, mixed-plan eligibility behavior, and the unchanged three-tool MCP contract.
+- StudentAid mapping version `2026-08-28-v1` preserves individual loan balance/rate/type/date/status/disbursement/contact facts and borrower contact fields when present. `Loan Award ID` is deliberately normalized to a masked row hint rather than retained as a raw identifier. Ambiguous consolidation/Parent PLUS history remains unresolved rather than guessed.
+- Borrower/private mode remains account-free and non-persistent. Advisor/client mode persists only explicit normalized facts on **Save progress**; the raw StudentAid `.txt` is never uploaded, has no raw import endpoint, and is not retained in D1/history.
+- A sanitized current My Aid Data sample remains useful as a future compatibility fixture for newly observed StudentAid label variants; it is not required to retain or upload a real borrower file to the service.
 
 1. Make the persistent account an **advisor/manager account**, not a one-borrower account. One authenticated advisor can create, search, open, and manage many borrower **client records** from a single workspace.
 2. Give each client a structured profile for contact information, normalized StudentAid loan portfolio, confirmed application facts, income sources, family-size facts, evidence/readiness state, servicer information, generated document drafts, selected/considered repayment programs, notes, and repeat calculations. Client records must remain logically isolated from one another and scoped to the owning/authorized advisor account.
