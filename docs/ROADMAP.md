@@ -142,7 +142,7 @@ Acceptance evidence:
 - Live deploy + production acceptance run `33133417016` succeeded from that exact immutable source. The deployment passed the immutable-source guard, tests, Wrangler deployment, and live checks for the guided bubble, both document follow-ups, the quick-info endpoint, and the $23,940 / $66,540 boundary values.
 - CairnStone canonical closure is `4337549bfac4cec26fac20c3f88009ea2039b0c16cd3891a2970677b97790a93`.
 
-### V0.7.2 — Browser document review, print, and local download — IMPLEMENTING
+### V0.7.2 — Browser document review, print, and local download — COMPLETE
 
 - Turn the stated-income and unemployment follow-up actions into an actual borrower document workflow without requiring an account.
 - Reuse confirmed guided facts and ask only for the remaining borrower, payer/agency, and servicer names needed for the draft; every skipped item remains an explicit placeholder.
@@ -150,6 +150,21 @@ Acceptance evidence:
 - Keep the generated preview editable through its source fields and require an explicit review acknowledgement before enabling print / Save PDF or local HTML download.
 - Keep raw borrower facts out of server persistence and application logs. Do not auto-submit, invent evidence, create employer records, or create a borrower/employer signature.
 - Preserve the existing three-tool MCP contract; this is a borrower-facing workflow layered on the same template engine.
+
+Acceptance evidence:
+
+- Core V0.7.2 implementation was pre-merge accepted in PR #2 by CI run `33137440831`, then merged as source commit `29b12f3231ee205aef4746043845f84d2fbb648e`; post-merge CI run `33137466470` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run.
+- The live deployment workflow exposed a short Cloudflare propagation race after the first successful Wrangler publish. CI was hardened to emit exact live-assertion failures and to wait for `/health` to report the expected deployed version before production assertions. Those workflow hardenings are included in final runtime source commit `6a5df45d901cfb3d411878a42df1e77f8f5063a0`.
+- Normal CI run `33137744700` passed on that final exact source commit. Exact-SHA deployment run `33137753929` then passed the immutable-source guard, strict TypeScript, the complete deterministic suite, Cloudflare credential gate, Wrangler deployment, and all 36 live production acceptance checks.
+- Live acceptance covers the document-review UI, review-before-sign acknowledgement, print / Save PDF and local HTML download controls, same-origin `/api/document`, trusted-template rendering, caller-markup escaping, `Cache-Control: no-store`, cross-origin rejection, and the unchanged three-tool MCP contract.
+
+### V0.7.3 — Source-by-source evidence and application readiness — NEXT
+
+- Extend the guided fact ledger from one current-income path to multiple taxable income sources without collapsing employer, self-employment, unemployment, and other taxable income into one ambiguous fact.
+- Track provenance and evidence readiness per source: borrower-stated, documented/identified evidence, imported fact where applicable, derived estimate, or still missing/needs review.
+- Build a source-specific evidence checklist and distinguish `document-ready` from `application-ready` so the borrower can immediately see what is complete and what still needs evidence or review.
+- Reuse the existing multi-source documentation engine to create combined or source-specific drafts from confirmed facts only; never invent payer names, amounts, dates, evidence, attestations, or signatures.
+- Keep the workflow account-free and browser-local where possible. V0.8 remains the boundary for saved profiles and retained drafts.
 
 ## V0.8 — Borrower accounts + secure saved profile — PLANNED
 
