@@ -2,7 +2,7 @@ import { calculateRepayment, getPolicyStatus } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
 import type { CalculatorRequest, TemplateRequest } from "./types.ts";
 
-const SERVER_VERSION = "0.5.0";
+const SERVER_VERSION = "0.6.0";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -90,6 +90,19 @@ const toolDefinitions = [
           properties: {
             principal: { type: "number", minimum: 0 },
             annualInterestRatePercent: { type: "number", minimum: 0 },
+            repaymentLoans: {
+              type: "array",
+              minItems: 1,
+              maxItems: 200,
+              items: {
+                type: "object",
+                required: ["principal", "annualInterestRatePercent"],
+                properties: {
+                  principal: { type: "number", minimum: 0 },
+                  annualInterestRatePercent: { type: "number", minimum: 0 }
+                }
+              }
+            },
             newBorrowerOnOrAfterJuly1_2014: { type: "boolean" },
             hasLoanDisbursedOnOrAfterJuly1_2026: { type: "boolean", description: "Legacy V0.1 compatibility hint. Prefer eligibilityLoans for V0.2 eligibility assessment." },
             icrIncomePercentageFactor: { type: "number", exclusiveMinimum: 0, description: "Optional explicit override. Usually unnecessary in V0.2 because the 2026 official table is built in." },
@@ -200,18 +213,44 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .payment { font-size: 1.35rem; font-weight: 800; }
     .badge { display: inline-flex; padding: 3px 9px; border: 1px solid currentColor; border-radius: 999px; font-size: .82rem; text-transform: capitalize; }
     .muted { color: color-mix(in srgb, CanvasText 66%, transparent); }
+    .workspace { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 16px; padding: 18px; margin: 24px 0; }
+    .basis { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: .78rem; font-weight: 750; border: 1px solid currentColor; margin-right: 6px; }
+    .fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .fact { border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 12px; padding: 12px; }
+    .fact strong { display: block; margin-bottom: 4px; }
+    #portfolio-summary { margin-top: 12px; }
     ul { padding-left: 22px; }
     a { color: inherit; }
     footer { margin-top: 36px; font-size: .9rem; color: color-mix(in srgb, CanvasText 65%, transparent); }
-    @media (max-width: 700px) { .grid, .summary { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } }
+    @media (max-width: 700px) { .grid, .summary, .fact-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } }
   </style>
 </head>
 <body>
 <main>
   <p><strong>Student Loan IDR Estimate</strong> · policy snapshot 2026-08-27</p>
-  <h1>Estimate a monthly federal student-loan payment.</h1>
+  <h1>Turn your real loan facts into a repayment estimate.</h1>
   <p class="lede">This calculator annualizes the income facts you enter and applies the same deterministic RAP, IBR, PAYE, and ICR formulas exposed by this Worker’s MCP tools. It is an estimate—not an official eligibility or billing decision.</p>
-  <div class="notice"><strong>Privacy:</strong> this page has no analytics, no external assets, and no browser storage. Calculation inputs are sent only to this same Worker for the current request. Do not enter SSNs, account numbers, or fabricated facts.</div>
+  <div class="notice"><strong>Privacy:</strong> this page has no analytics, no external assets, and no browser storage. Calculation inputs are sent only to this same Worker for the current request. A StudentAid.gov loan-data file is parsed locally in your browser and the raw file is never uploaded. Do not enter SSNs, account numbers, or fabricated facts.</div>
+
+  <section class="workspace" aria-labelledby="loan-import-title">
+    <h2 id="loan-import-title">Import your federal loan portfolio</h2>
+    <p><span class="basis">Imported fact</span>Choose the <strong>Download My Aid Data</strong> text file from StudentAid.gov. The raw file can contain personal contact information, so this page reads it only on this device, extracts active loan balance/rate/type/date facts, and never uploads the raw text.</p>
+    <label>StudentAid.gov My Aid Data file
+      <input id="loan-file" type="file" accept=".txt,text/plain">
+    </label>
+    <p id="import-status" role="status" aria-live="polite" class="muted">No loan file loaded. Manual loan fields remain available below.</p>
+    <div id="portfolio-summary"></div>
+  </section>
+
+  <section class="workspace" aria-labelledby="fact-basis-title">
+    <h2 id="fact-basis-title">Know what each answer is based on</h2>
+    <div class="fact-grid">
+      <div class="fact"><strong><span class="basis">Stated fact</span>Family size</strong>Use the current IDR definition, not a guessed tax-household count. It includes you; a spouse when appropriate; supported children (including qualifying unborn children); and other people only when the current support/living requirements are met. There is no six-person cap in the current IDR form.</div>
+      <div class="fact"><strong><span class="basis">Documented fact</span>Current taxable income</strong>If current income must be documented instead of using tax information, current Federal Student Aid instructions generally require documentation no older than 90 days, gross pay and pay frequency, and at least one item for each taxable income source. A signed source-by-source statement is the fallback when documentation is unavailable or needs explanation.</div>
+      <div class="fact"><strong><span class="basis">Imported fact</span>Loan portfolio</strong>Balances, interest rates, loan descriptions, dates, status, and servicer fields can come from your StudentAid.gov data file. Ambiguous consolidation history is not guessed.</div>
+      <div class="fact"><strong><span class="basis">Derived estimate</span>Payment result</strong>Plan amounts are deterministic calculations from the facts above and the versioned policy snapshot. They are not official approval, certification, or a servicer bill.</div>
+    </div>
+  </section>
 
   <form id="calculator-form">
     <div class="grid">
@@ -225,7 +264,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
           <option value="hourly">Hourly</option>
         </select>
       </label>
-      <label>Gross taxable income amount for that cadence
+      <label><span><span class="basis">Stated fact</span>Gross taxable income amount for that cadence</span>
         <input name="incomeAmount" type="number" min="0" step="0.01" value="50000" required>
       </label>
       <label id="hours-field" hidden>Hours per week
@@ -241,11 +280,13 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
           <option value="hawaii">Hawaii</option>
         </select>
       </label>
-      <label>Family size
-        <input name="familySize" type="number" min="1" step="1" value="1" required>
+      <label><span><span class="basis">Stated fact</span>Legacy IDR family size</span>
+        <input name="familySize" type="number" min="1" step="1" value="1" required aria-describedby="family-size-help">
+        <span id="family-size-help" class="muted">Use the current Federal Student Aid support-based definition above; do not cap the value at 6.</span>
       </label>
-      <label>Dependents claimed on federal tax return
+      <label><span><span class="basis">Stated fact</span>Dependents claimed on federal tax return</span>
         <input name="dependents" type="number" min="0" step="1" value="0" required>
+        <span class="muted">Used by RAP and intentionally separate from legacy IDR family size.</span>
       </label>
       <label>Estimated above-the-line adjustments <span class="muted">(optional)</span>
         <input name="adjustments" type="number" min="0" step="0.01" placeholder="0">
@@ -327,8 +368,112 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const status = document.getElementById("status");
   const results = document.getElementById("results");
   const submit = document.getElementById("submit");
+  const loanFile = document.getElementById("loan-file");
+  const importStatus = document.getElementById("import-status");
+  const portfolioSummary = document.getElementById("portfolio-summary");
   const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   const numberOrUndefined = (value) => value === "" ? undefined : Number(value);
+  let importedPortfolio = null;
+
+  function numericValue(value) {
+    if (!value) return undefined;
+    const normalized = value.replace(/[$,%]/g, "").replace(/,/g, "").trim();
+    if (!normalized) return undefined;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  function mapLoanType(description) {
+    const value = String(description || "").toUpperCase();
+    if (!value) return null;
+    if (value.includes("PERKINS")) return "perkins";
+    const isDirect = value.includes("DIRECT");
+    const isFfel = value.includes("FFEL") || value.includes("FEDERAL STAFFORD");
+    if (value.includes("CONSOLIDAT")) return null;
+    if (isDirect) {
+      if (value.includes("PARENT") && value.includes("PLUS")) return "direct_parent_plus";
+      if ((value.includes("GRAD") || value.includes("PROFESSIONAL")) && value.includes("PLUS")) return "direct_grad_plus";
+      if (value.includes("UNSUBSID")) return "direct_unsubsidized";
+      if (value.includes("SUBSID")) return "direct_subsidized";
+      return null;
+    }
+    if (isFfel) {
+      if (value.includes("PARENT") && value.includes("PLUS")) return "ffel_parent_plus";
+      if ((value.includes("GRAD") || value.includes("PROFESSIONAL")) && value.includes("PLUS")) return "ffel_grad_plus";
+      if (value.includes("UNSUBSID")) return "ffel_unsubsidized_stafford";
+      if (value.includes("SUBSID")) return "ffel_subsidized_stafford";
+    }
+    return null;
+  }
+
+  function disbursementPeriod(value) {
+    const timestamp = Date.parse(value || "");
+    if (!Number.isFinite(timestamp)) return null;
+    return timestamp >= Date.UTC(2026, 6, 1) ? "on_or_after_2026_07_01" : "before_2026_07_01";
+  }
+
+  function parseStudentAidData(text) {
+    const records = [];
+    let current = null;
+    const pushCurrent = () => { if (current) records.push(current); };
+    for (const rawLine of text.split(/\r?\n/)) {
+      const separator = rawLine.indexOf(":");
+      if (separator < 0) continue;
+      const key = rawLine.slice(0, separator).trim();
+      const value = rawLine.slice(separator + 1).trim();
+      if (key === "Loan Type Code" || key === "Loan Type") {
+        pushCurrent();
+        current = { typeCode: key === "Loan Type Code" ? value : "", typeDescription: key === "Loan Type" ? value : "" };
+        continue;
+      }
+      if (!current) continue;
+      if (key === "Loan Type Description" && !current.typeDescription) current.typeDescription = value;
+      else if (key === "Loan Outstanding Principal Balance" && current.principal === undefined) current.principal = numericValue(value);
+      else if (key === "Loan Interest Rate" && current.interestRate === undefined) current.interestRate = numericValue(value);
+      else if (key === "Loan Disbursement Date" && !current.disbursementDate) current.disbursementDate = value;
+      else if (key === "Loan Status Description" && !current.statusDescription) current.statusDescription = value;
+      else if (key === "Loan Contact Name" && !current.servicer) current.servicer = value;
+    }
+    pushCurrent();
+
+    const active = records.filter((loan) => typeof loan.principal === "number" && loan.principal > 0);
+    const normalized = active.map((loan) => {
+      const loanType = mapLoanType(loan.typeDescription);
+      const period = disbursementPeriod(loan.disbursementDate);
+      const status = String(loan.statusDescription || "").toUpperCase();
+      const inDefault = status.includes("DEFAULT") && !status.includes("NON-DEFAULT");
+      return { ...loan, loanType, period, inDefault };
+    });
+    const repaymentLoans = normalized
+      .filter((loan) => typeof loan.interestRate === "number")
+      .map((loan) => ({ principal: loan.principal, annualInterestRatePercent: loan.interestRate }));
+    const fullyMappedForEligibility = normalized.length > 0 && normalized.every((loan) => loan.loanType && loan.period);
+    const eligibilityLoans = fullyMappedForEligibility
+      ? normalized.map((loan) => ({ loanType: loan.loanType, disbursementPeriod: loan.period, ...(loan.inDefault ? { inDefault: true } : {}) }))
+      : undefined;
+    return {
+      loans: normalized,
+      repaymentLoans,
+      eligibilityLoans,
+      totalPrincipal: normalized.reduce((sum, loan) => sum + loan.principal, 0),
+      ambiguousCount: normalized.filter((loan) => !loan.loanType || !loan.period).length
+    };
+  }
+
+  function renderPortfolio(portfolio) {
+    portfolioSummary.replaceChildren();
+    if (!portfolio.loans.length) return;
+    const summary = document.createElement("div");
+    summary.className = "summary";
+    [["Active loans found", String(portfolio.loans.length)], ["Outstanding principal", money.format(portfolio.totalPrincipal)], ["Loans with balance + rate", String(portfolio.repaymentLoans.length)]].forEach(([label, value]) => {
+      const metric = document.createElement("div");
+      metric.className = "metric";
+      metric.append(addText("span", label, "muted"), addText("strong", value));
+      summary.appendChild(metric);
+    });
+    portfolioSummary.appendChild(summary);
+    if (portfolio.ambiguousCount) portfolioSummary.appendChild(addText("p", String(portfolio.ambiguousCount) + " active loan record(s) have an ambiguous type/date for eligibility screening. Their balances can still be modeled when an interest rate is present, but this calculator will not guess consolidation/Parent PLUS history.", "muted"));
+  }
 
   function syncHourlyFields() {
     const hourly = cadence.value === "hourly";
@@ -395,6 +540,32 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   cadence.addEventListener("change", syncHourlyFields);
   syncHourlyFields();
 
+  loanFile.addEventListener("change", async () => {
+    importedPortfolio = null;
+    portfolioSummary.replaceChildren();
+    const file = loanFile.files && loanFile.files[0];
+    if (!file) {
+      importStatus.textContent = "No loan file loaded. Manual loan fields remain available below.";
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      importStatus.textContent = "That file is larger than the 2 MiB local-import limit.";
+      loanFile.value = "";
+      return;
+    }
+    try {
+      const text = await file.text();
+      const portfolio = parseStudentAidData(text);
+      if (!portfolio.loans.length) throw new Error("No active loan records with an outstanding principal balance were found.");
+      importedPortfolio = portfolio;
+      renderPortfolio(portfolio);
+      importStatus.textContent = "Portfolio loaded locally. The raw StudentAid.gov file has not been uploaded.";
+    } catch (error) {
+      importStatus.textContent = error instanceof Error ? error.message : "Unable to read that loan-data file.";
+      loanFile.value = "";
+    }
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     submit.disabled = true;
@@ -432,13 +603,18 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       const interestRate = numberOrUndefined(String(data.get("interestRate")));
       const loanType = String(data.get("loanType"));
       const ibrNewBorrower = String(data.get("ibrNewBorrower"));
-      if (principal !== undefined) loan.principal = principal;
-      if (interestRate !== undefined) loan.annualInterestRatePercent = interestRate;
-      if (loanType) {
-        loan.eligibilityLoans = [{
-          loanType,
-          disbursementPeriod: String(data.get("disbursementPeriod"))
-        }];
+      if (importedPortfolio) {
+        if (importedPortfolio.repaymentLoans.length) loan.repaymentLoans = importedPortfolio.repaymentLoans;
+        if (importedPortfolio.eligibilityLoans) loan.eligibilityLoans = importedPortfolio.eligibilityLoans;
+      } else {
+        if (principal !== undefined) loan.principal = principal;
+        if (interestRate !== undefined) loan.annualInterestRatePercent = interestRate;
+        if (loanType) {
+          loan.eligibilityLoans = [{
+            loanType,
+            disbursementPeriod: String(data.get("disbursementPeriod"))
+          }];
+        }
       }
       if (ibrNewBorrower) loan.newBorrowerOnOrAfterJuly1_2014 = ibrNewBorrower === "true";
       if (Object.keys(loan).length) payload.loan = loan;
