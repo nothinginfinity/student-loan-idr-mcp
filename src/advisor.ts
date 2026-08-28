@@ -30,7 +30,7 @@ type ClientRow = {
 };
 type Auth = { principal: AdvisorPrincipal; account: AccountRow; session: SessionRow };
 
-class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
+class ApiError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 const enc = new TextEncoder();
 
 function json(payload: unknown, status = 200, extra: Record<string, string> = {}): Response {
