@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  amortizedMonthlyPayment,
   calculateRepayment,
   evaluatePlanEligibility,
   getPolicyStatus,
@@ -374,7 +375,17 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
   assert.match(response.headers.get("cache-control") ?? "", /no-store/);
   assert.match(html, /id="calculator-form"/);
+  assert.match(html, /id="loan-file"/);
+  assert.match(html, /Download My Aid Data/);
+  assert.match(html, /raw file is never uploaded/i);
+  assert.match(html, /no six-person cap/i);
+  assert.match(html, /90 days/i);
+  assert.match(html, /Stated fact/);
+  assert.match(html, /Documented fact/);
+  assert.match(html, /Imported fact/);
+  assert.match(html, /Derived estimate/);
   assert.match(html, /\/api\/calculate/);
+  assert.doesNotMatch(html, /\/api\/import/);
   assert.match(html, /no analytics, no external assets, and no browser storage/i);
   assert.doesNotMatch(html, /<(?:img|script|link)[^>]+(?:src|href)="https?:\/\//i);
 });
@@ -447,7 +458,7 @@ async function mcpCall(payload: unknown, env: Record<string, unknown> = {}, extr
   }), env);
 }
 
-test("MCP initialize negotiates the declared protocol revision and V0.4 server version", async () => {
+test("MCP initialize negotiates the declared protocol revision and current server version", async () => {
   const response = await mcpCall({
     jsonrpc: "2.0",
     id: 1,
@@ -461,7 +472,7 @@ test("MCP initialize negotiates the declared protocol revision and V0.4 server v
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.result.protocolVersion, "2025-03-26");
-  assert.equal(body.result.serverInfo.version, "0.5.0");
+  assert.equal(body.result.serverInfo.version, "0.6.0");
 });
 
 test("MCP notification-only requests return 202 with no response body", async () => {
