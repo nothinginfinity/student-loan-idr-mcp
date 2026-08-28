@@ -294,7 +294,9 @@ jobs:
             'content-type': 'application/json',
             'accept': 'application/json, text/event-stream'
           };
+          let checks = 0;
           const assert = (condition, message) => {
+            checks += 1;
             if (!condition) throw new Error(message);
           };
           const fetchChecked = async (url, init = {}) => {
@@ -321,12 +323,12 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.8.4') break;
+              if (healthResponse.status === 200 && health?.version === '0.8.5') break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.8.4', `unexpected live version ${health.version}`);
+            assert(health.version === '0.8.5', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -338,6 +340,8 @@ jobs:
             assert(health.advisor_workspace?.browser_workspace === '/advisor', 'advisor browser workspace route missing');
             assert(health.advisor_workspace?.saved_guided_client_workflow === true, 'saved guided client workflow flag missing');
             assert(health.advisor_workspace?.repayment_comparison_visualizations === true, 'advisor repayment comparison flag missing');
+            assert(health.advisor_workspace?.retained_client_artifacts === true, 'retained client artifact flag missing');
+            assert(health.advisor_workspace?.calculation_history === true, 'calculation history flag missing');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
 
             const livePassword = `Live-v082-${Date.now()}-Strong!`;
@@ -445,8 +449,44 @@ jobs:
             const betaComparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparison`, {}, beta);
             assert(betaComparison.response.status === 404 && betaComparison.body?.error === 'Client not found or not accessible.', 'cross-advisor comparison must fail generically');
 
+            const retainedArtifact = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/artifacts`, {
+              method: 'POST', body: JSON.stringify({
+                name: 'Live retained income draft',
+                templateRequest: { templateType: 'current_income_statement', outputFormat: 'text', borrowerName: 'Live Private Borrower', servicerName: 'Example Servicer', incomeSources: [{ sourceType: 'employment', name: 'Example Employer', grossAmount: 1200, paymentFrequency: 'biweekly' }] }
+              })
+            }, alpha);
+            assert(retainedArtifact.response.status === 201 && retainedArtifact.body?.artifact?.artifactKind === 'document_draft', 'retained document artifact creation failed');
+            assert(retainedArtifact.body?.artifact?.documentText?.includes('Live Private Borrower'), 'retained document artifact lost borrower fact');
+            const retainedArtifactId = retainedArtifact.body.artifact.artifactId;
+            const artifactList = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/artifacts`, {}, alpha);
+            assert(artifactList.response.status === 200 && artifactList.body?.artifacts?.length === 1, 'retained artifact list failed');
+            assert(!JSON.stringify(artifactList.body).includes('Example Employer'), 'retained artifact list leaked document payload');
+            const betaArtifact = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/artifacts/${retainedArtifactId}`, {}, beta);
+            assert(betaArtifact.response.status === 404 && betaArtifact.body?.error === 'Client not found or not accessible.', 'cross-advisor retained artifact read must fail generically');
+            const regeneratedArtifact = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/artifacts/${retainedArtifactId}/regenerate`, { method: 'POST', body: '{}' }, alpha);
+            assert(regeneratedArtifact.response.status === 200 && regeneratedArtifact.body?.regenerated?.documentText?.includes('Example Employer'), 'retained artifact regeneration failed');
+
+            const retainedComparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots`, { method: 'POST', body: JSON.stringify({ name: 'Live forgiveness comparison', snapshotKind: 'comparison' }) }, alpha);
+            assert(retainedComparison.response.status === 201 && retainedComparison.body?.snapshot?.result?.projections?.length === 4, 'retained comparison snapshot failed');
+            const retainedSnapshotId = retainedComparison.body.snapshot.snapshotId;
+            const retainedCalculation = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots`, { method: 'POST', body: JSON.stringify({ name: 'Live repayment calculation', snapshotKind: 'calculation' }) }, alpha);
+            assert(retainedCalculation.response.status === 201 && retainedCalculation.body?.snapshot?.result?.planEstimates?.length === 4, 'retained calculation snapshot failed');
+            const snapshotList = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots`, {}, alpha);
+            assert(snapshotList.response.status === 200 && snapshotList.body?.snapshots?.length === 2, 'retained snapshot list failed');
+            assert(!JSON.stringify(snapshotList.body).includes('25000'), 'retained snapshot list leaked calculation basis/result payload');
+            const rerunSnapshot = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots/${retainedSnapshotId}/rerun`, { method: 'POST', body: '{}' }, alpha);
+            assert(rerunSnapshot.response.status === 200 && rerunSnapshot.body?.rerun?.basis === 'retained_snapshot_basis', 'retained snapshot rerun failed');
+            const betaSnapshot = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots/${retainedSnapshotId}`, {}, beta);
+            assert(betaSnapshot.response.status === 404 && betaSnapshot.body?.error === 'Client not found or not accessible.', 'cross-advisor retained snapshot read must fail generically');
+
             const exportedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/export`, {}, alpha);
-            assert(exportedClient.response.status === 200 && exportedClient.body?.schema === 'student-loan-idr-advisor-client-export-v1', 'advisor client export failed');
+            assert(exportedClient.response.status === 200 && exportedClient.body?.schema === 'student-loan-idr-advisor-client-export-v2', 'advisor client export failed');
+            assert(exportedClient.body?.retainedArtifacts?.length === 1 && exportedClient.body?.calculationSnapshots?.length === 2, 'advisor client export omitted retained history');
+
+            const deletedArtifact = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/artifacts/${retainedArtifactId}`, { method: 'DELETE', body: '{}' }, alpha);
+            assert(deletedArtifact.response.status === 200, 'retained artifact deletion failed');
+            const deletedSnapshot = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots/${retainedSnapshotId}`, { method: 'DELETE', body: '{}' }, alpha);
+            assert(deletedSnapshot.response.status === 200, 'retained snapshot deletion failed');
 
             const archivedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/archive`, {
               method: 'POST', body: JSON.stringify({ expectedUpdatedAt: updatedClient.body.client.updatedAt })
@@ -491,6 +531,9 @@ jobs:
             assert(uiHtml.includes('id="advisor-regenerate-document"'), 'advisor document-regeneration control missing');
             assert(uiHtml.includes('id="advisor-compare-plans"'), 'advisor repayment-comparison control missing');
             assert(uiHtml.includes('id="advisor-comparison-workspace"'), 'advisor comparison workspace missing');
+            assert(uiHtml.includes('id="advisor-history-workspace"'), 'advisor retained-history workspace missing');
+            assert(uiHtml.includes('id="advisor-retain-document"') && uiHtml.includes('id="advisor-retain-calculation"') && uiHtml.includes('id="advisor-retain-comparison"'), 'advisor explicit retention controls missing');
+            assert(uiHtml.includes('Rerun retained basis') && uiHtml.includes('Raw StudentAid downloads and evidence files are never retained.'), 'advisor retained-history privacy/rerun controls missing');
             assert(uiHtml.includes('id="advisor-payment-chart"') && uiHtml.includes('id="advisor-paid-chart"') && uiHtml.includes('id="advisor-balance-chart"') && uiHtml.includes('id="advisor-forgiveness-chart"'), 'advisor comparison chart surfaces missing');
             assert(uiHtml.includes('Modeled estimate'), 'advisor comparison non-guarantee label missing');
             assert(uiHtml.includes('saveAdvisorClientProgress'), 'advisor normalized save workflow missing');
@@ -612,7 +655,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.8.4', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.8.5', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -687,9 +730,9 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 91
+              checks
             }));
-            console.log('::notice title=Live product acceptance::91 production checks passed');
+            console.log(`::notice title=Live product acceptance::${checks} production checks passed`);
           })().catch((error) => {
             console.error(error);
             const message = error instanceof Error ? error.message : String(error);
