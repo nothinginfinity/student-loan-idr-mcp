@@ -551,6 +551,13 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     a { color: inherit; }
     footer { margin-top: 36px; font-size: .9rem; color: color-mix(in srgb, CanvasText 65%, transparent); }
     @media (max-width: 700px) { .grid, .summary, .fact-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } }
+    .field-color-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 4px 0 18px; }
+    .field-color-toggle input { width: auto; }
+    label[data-fill-state] { border-left: 4px solid transparent; border-radius: 6px; padding-left: 10px; margin-left: -14px; transition: border-color .15s ease, background-color .15s ease; }
+    label[data-fill-state].fill-red { border-left-color: #dc2626; background: color-mix(in srgb, #dc2626 9%, transparent); }
+    label[data-fill-state].fill-green { border-left-color: #16a34a; background: color-mix(in srgb, #16a34a 9%, transparent); }
+    label[data-fill-state].fill-purple { border-left-color: #9333ea; background: color-mix(in srgb, #9333ea 9%, transparent); }
+    body.field-colors-off label[data-fill-state] { border-left-color: transparent; background: transparent; padding-left: 0; margin-left: 0; }
   </style>
 </head>
 <body>
@@ -707,6 +714,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   </section>
 
   <form id="calculator-form">
+    <label class="field-color-toggle"><input type="checkbox" id="field-color-toggle" checked> Show field-status colors (green = filled, red = required &amp; missing, purple = optional)</label>
     <p id="calculator-income-note" class="muted">If you use the guided source-by-source workflow, calculation uses every confirmed guided taxable income source. The visible income controls remain the manual fallback and the first-source preview. Hourly guided sources use the displayed hours-per-week and weeks-per-year controls, so review those before calculating.</p>
     <div class="grid">
       <label>Income cadence
@@ -719,13 +727,13 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
           <option value="hourly">Hourly</option>
         </select>
       </label>
-      <label><span><span class="basis">Stated fact</span>Gross taxable income amount for that cadence</span>
+      <label data-fill-state="required"><span><span class="basis">Stated fact</span>Gross taxable income amount for that cadence</span>
         <input name="incomeAmount" type="number" min="0" step="0.01" value="50000" required>
       </label>
-      <label id="hours-field" hidden>Hours per week
+      <label id="hours-field" data-fill-state="optional" hidden>Hours per week
         <input name="hoursPerWeek" type="number" min="0" step="0.01" value="40">
       </label>
-      <label id="weeks-field" hidden>Weeks per year
+      <label id="weeks-field" data-fill-state="optional" hidden>Weeks per year
         <input name="weeksPerYear" type="number" min="0" step="0.01" value="52">
       </label>
       <label>Region
@@ -735,18 +743,18 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
           <option value="hawaii">Hawaii</option>
         </select>
       </label>
-      <label><span><span class="basis">Stated fact</span>Legacy IDR family size</span>
+      <label data-fill-state="required"><span><span class="basis">Stated fact</span>Legacy IDR family size</span>
         <input name="familySize" type="number" min="1" step="1" value="1" required aria-describedby="family-size-help">
         <span id="family-size-help" class="muted">Use the current Federal Student Aid support-based definition above; do not cap the value at 6.</span>
       </label>
-      <label><span><span class="basis">Stated fact</span>Dependents claimed on federal tax return</span>
+      <label data-fill-state="required"><span><span class="basis">Stated fact</span>Dependents claimed on federal tax return</span>
         <input name="dependents" type="number" min="0" step="1" value="0" required>
         <span class="muted">Used by RAP and intentionally separate from legacy IDR family size.</span>
       </label>
-      <label>Estimated above-the-line adjustments <span class="muted">(optional)</span>
+      <label data-fill-state="optional">Estimated above-the-line adjustments <span class="muted">(optional)</span>
         <input name="adjustments" type="number" min="0" step="0.01" placeholder="0">
       </label>
-      <label>AGI override <span class="muted">(optional)</span>
+      <label data-fill-state="optional">AGI override <span class="muted">(optional)</span>
         <input name="agiOverride" type="number" min="0" step="0.01" placeholder="Use calculated estimate">
       </label>
       <label>Tax filing status <span class="muted">(helps ICR)</span>
@@ -758,10 +766,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
           <option value="head_of_household">Head of household</option>
         </select>
       </label>
-      <label>Loan principal <span class="muted">(optional; improves caps/ICR)</span>
+      <label data-fill-state="optional">Loan principal <span class="muted">(optional; improves caps/ICR)</span>
         <input name="principal" type="number" min="0" step="0.01" placeholder="e.g. 30000">
       </label>
-      <label>Annual interest rate % <span class="muted">(optional)</span>
+      <label data-fill-state="optional">Annual interest rate % <span class="muted">(optional)</span>
         <input name="interestRate" type="number" min="0" step="0.001" placeholder="e.g. 6.5">
       </label>
       <label>Loan type <span class="muted">(optional eligibility screen)</span>
@@ -2370,6 +2378,43 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       submit.disabled = false;
     }
   });
+})();
+</script>
+<script>
+(() => {
+  var toggle = document.getElementById("field-color-toggle");
+  var fields = Array.prototype.slice.call(document.querySelectorAll("[data-fill-state]"));
+  function isFilled(input) {
+    if (!input) return false;
+    if (input.type === "checkbox" || input.type === "radio") return input.checked;
+    return String(input.value == null ? "" : input.value).trim().length > 0;
+  }
+  function updateField(label) {
+    var input = label.querySelector("input, select, textarea");
+    if (!input) return;
+    var state = label.getAttribute("data-fill-state");
+    label.classList.remove("fill-red", "fill-green", "fill-purple");
+    if (isFilled(input)) {
+      label.classList.add("fill-green");
+    } else if (state === "required") {
+      label.classList.add("fill-red");
+    } else {
+      label.classList.add("fill-purple");
+    }
+  }
+  function refreshAll() { fields.forEach(updateField); }
+  fields.forEach(function (label) {
+    var input = label.querySelector("input, select, textarea");
+    if (!input) return;
+    input.addEventListener("input", function () { updateField(label); });
+    input.addEventListener("change", function () { updateField(label); });
+  });
+  refreshAll();
+  if (toggle) {
+    toggle.addEventListener("change", function () {
+      document.body.classList.toggle("field-colors-off", !toggle.checked);
+    });
+  }
 })();
 </script>
 </body>
