@@ -11,7 +11,7 @@ import {
   povertyGuideline
 } from "../src/formulas.ts";
 import { getDocumentationTemplate } from "../src/templates.ts";
-import worker, { advisorCanAccessClient, assertAdvisorClientAccess, clientDashboardSummary } from "../src/index.ts";
+import worker, { advisorCanAccessClient, assertAdvisorClientAccess, clientDashboardSummary, parseStudentAidDataText, STUDENTAID_MAPPING_VERSION } from "../src/index.ts";
 import type { AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, EligibilityStatus, LoanType, RepaymentPlan } from "../src/types.ts";
 
 test("annualizes hourly income", () => {
@@ -696,6 +696,84 @@ test("borrower calculator API is same-origin and keeps the 64 KiB body ceiling",
   assert.equal(oversized.status, 413);
 });
 
+test("V0.8.6 StudentAid parser preserves borrower facts, mixed per-loan facts, derived cutoffs, and provenance", () => {
+  const sample = `File Request Date:08/28/2026
+Student First Name:Avery
+Student Middle Initial:Q
+Student Last Name:Example
+Student Street Address 1:100 Example Way
+Student Street Address 2:Apt 4
+Student City:Denver
+Student State Code:CO
+Student Country Code:US
+Student Zip Code:80202
+Student Email Address:avery@example.test
+Student Cell Phone Country Code:1
+Student Cell Phone Number:3035550100
+Student Cell Phone Preferred:Y
+Loan Type Code:D2
+Loan Type Description:DIRECT UNSUBSIDIZED LOAN
+Loan Award ID:MASKED-LOAN-1
+Loan Attending School Name:Example University
+Loan Amount:$15,000.00
+Loan Outstanding Principal Balance:$12,345.67
+Loan Outstanding Interest Balance:$123.45
+Loan Interest Rate:6.5%
+Loan Disbursement Date:08/15/2024
+Loan Disbursement Amount:$15,000.00
+Loan Status:RP
+Loan Status Description:IN REPAYMENT
+Loan Status Effective Date:01/01/2025
+Loan Contact Type:Current Servicer
+Loan Contact Name:Example Servicer
+Loan Contact Phone Number:8005550101
+Most Relevant:Y
+Loan Type Code:D4
+Loan Type Description:DIRECT PARENT PLUS LOAN
+Loan Award ID:MASKED-LOAN-2
+Loan Outstanding Principal Balance:$5,000.00
+Loan Outstanding Interest Balance:$50.00
+Loan Interest Rate:7.25%
+Loan Disbursement Date:08/15/2026
+Loan Status:RP
+Loan Status Description:IN REPAYMENT
+`;
+  const parsed = parseStudentAidDataText(sample);
+  assert.equal(STUDENTAID_MAPPING_VERSION, "2026-08-28-v1");
+  assert.equal(parsed.fileRequestDate, "08/28/2026");
+  assert.equal(parsed.borrower.displayName, "Avery Q Example");
+  assert.equal(parsed.borrower.email, "avery@example.test");
+  assert.equal(parsed.borrower.city, "Denver");
+  assert.equal(parsed.borrower.provenance.displayName, "imported_studentaid");
+  assert.equal(parsed.loans.length, 2);
+  assert.equal(parsed.loans[0]?.mappedLoanType, "direct_unsubsidized");
+  assert.equal(parsed.loans[0]?.disbursementPeriod, "before_2026_07_01");
+  assert.equal(parsed.loans[0]?.provenance.mappedLoanType, "derived_studentaid");
+  assert.equal(parsed.loans[1]?.mappedLoanType, "direct_parent_plus");
+  assert.equal(parsed.loans[1]?.disbursementPeriod, "on_or_after_2026_07_01");
+  assert.equal(parsed.repaymentLoans.length, 2);
+  assert.equal(parsed.eligibilityLoans?.length, 2);
+  assert.equal(parsed.summary.activeLoanCount, 2);
+  assert.equal(parsed.summary.totalOutstandingPrincipal, 17345.67);
+  assert.equal(parsed.summary.totalOutstandingInterest, 173.45);
+  assert.equal(parsed.summary.hasLoanDisbursedOnOrAfterJuly1_2026, true);
+  assert.equal(parsed.ambiguousCount, 0);
+});
+
+test("V0.8.6 StudentAid parser refuses to guess consolidation Parent PLUS history", () => {
+  const parsed = parseStudentAidDataText(`Loan Type Code:D5
+Loan Type Description:DIRECT CONSOLIDATION LOAN
+Loan Outstanding Principal Balance:$20,000
+Loan Interest Rate:6.25%
+Loan Disbursement Date:01/15/2025
+`);
+  assert.equal(parsed.loans.length, 1);
+  assert.equal(parsed.loans[0]?.mappedLoanType, undefined);
+  assert.equal(parsed.ambiguousCount, 1);
+  assert.equal(parsed.eligibilityLoans, undefined);
+  assert.equal(parsed.repaymentLoans.length, 1);
+});
+
 const MCP_HEADERS = {
   "content-type": "application/json",
   accept: "application/json, text/event-stream"
@@ -723,7 +801,7 @@ test("MCP initialize negotiates the declared protocol revision and current serve
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.result.protocolVersion, "2025-03-26");
-  assert.equal(body.result.serverInfo.version, "0.8.5");
+  assert.equal(body.result.serverInfo.version, "0.8.6");
 });
 
 test("MCP notification-only requests return 202 with no response body", async () => {
