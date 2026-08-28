@@ -126,7 +126,7 @@ Acceptance evidence:
 4. For every application fact, show provenance and readiness: borrower-stated, imported from StudentAid data, supported by uploaded/identified evidence, derived by the calculator, or still missing/needs review. RAP tax-return dependents remain distinct from legacy IDR family size.
 5. Generate fast, editable supporting statements and evidence checklists from only supplied facts. Support payer/employer-attestation drafts that an actual payer/employer can review and sign. A company logo may be uploaded as an optional browser-local branding asset for a draft, but a logo is never treated as proof of employment or payer verification and the system never invents signatures, employer records, amounts, dates, dependents, or evidence.
 6. Make completed drafts easy to print/download and suitable for normal email or later e-sign workflows, while preserving a clear review-before-sign boundary and never auto-submitting to Federal Student Aid or a servicer.
-7. Keep the guided workflow usable without a required account so a borrower can complete a private session before persistent identity/storage is introduced. V0.8 remains the boundary for saved profiles, retained drafts, and account-linked data.
+7. Keep the guided workflow usable without a required account so a borrower can complete a private session before persistent identity/storage is introduced. V0.8 remains the boundary for advisor authentication, saved client records, retained drafts, and account-linked data.
 
 ### V0.7.1 — IBR $0-payment quick info — COMPLETE
 
@@ -164,18 +164,23 @@ Acceptance evidence:
 - Track provenance and evidence readiness per source: borrower-stated, documented/identified evidence, imported fact where applicable, derived estimate, or still missing/needs review.
 - Build a source-specific evidence checklist and distinguish `document-ready` from `application-ready` so the borrower can immediately see what is complete and what still needs evidence or review.
 - Reuse the existing multi-source documentation engine to create combined or source-specific drafts from confirmed facts only; never invent payer names, amounts, dates, evidence, attestations, or signatures.
-- Keep the workflow account-free and browser-local where possible. V0.8 remains the boundary for saved profiles and retained drafts.
+- Keep the workflow account-free and browser-local where possible. V0.8 remains the boundary where an authenticated advisor can save multiple borrower clients, their normalized facts, evidence/readiness state, and retained drafts.
 
-## V0.8 — Borrower accounts + secure saved profile — PLANNED
+## V0.8 — Advisor/manager accounts + multi-client workspace — PLANNED
 
-1. Add explicit account authentication and consent boundaries before persisting borrower-specific data.
-2. Persist only the normalized facts needed for the product unless the borrower explicitly chooses otherwise. The raw StudentAid.gov file remains browser-local by default rather than becoming an account document store.
-3. Support saved normalized loan portfolios, application facts, document drafts, and repeat calculations so returning borrowers do not have to re-enter the same information.
-4. Define retention, deletion/export, encryption, session security, and audit boundaries before treating the service as a system of record.
+1. Make the persistent account an **advisor/manager account**, not a one-borrower account. One authenticated advisor can create, search, open, and manage many borrower **client records** from a single workspace.
+2. Give each client a structured profile for contact information, normalized StudentAid loan portfolio, confirmed application facts, income sources, family-size facts, evidence/readiness state, servicer information, generated document drafts, selected/considered repayment programs, notes, and repeat calculations. Client records must remain logically isolated from one another and scoped to the owning/authorized advisor account.
+3. Let the advisor walk a borrower through the same guided V0.7 workflow inside that client's workspace, save progress, resume later, regenerate documents from confirmed facts, and see what is document-ready or application-ready without re-entering the same information.
+4. Persist only normalized facts and explicitly retained artifacts needed for the advisor workflow. The raw StudentAid.gov download remains browser-local by default; importing it should populate the client's normalized loan facts without automatically turning the service into a raw Federal Student Aid document store.
+5. Add a client-level **repayment-program comparison** view that runs the accepted deterministic calculation engine across applicable scenarios and presents side-by-side estimates such as monthly payment, projected payment path where supported, estimated total paid, estimated repayment/forgiveness horizon, and estimated balance remaining for forgiveness where the policy model supports that projection.
+6. Add clear visualizations for those comparisons — for example payment-over-time, cumulative-paid, remaining-balance, and estimated-forgiveness comparison charts — while labeling all future-looking outputs as modeled estimates rather than guaranteed forgiveness, eligibility, or servicer outcomes.
+7. Support an advisor dashboard across clients with useful operational states such as recently updated, needs evidence, document-ready, application-ready, awaiting borrower review, and completed/archived. Do not expose one client's sensitive facts inside another client's workspace or aggregate view beyond the minimum summary needed for advisor workflow.
+8. Define authentication, advisor/client authorization, consent, retention, deletion/export, encryption, session security, access/audit history, and account recovery boundaries before treating the service as a system of record. A future team/organization model can extend this with roles and client assignment without weakening single-advisor isolation.
+9. Preserve the privacy-first direct borrower workflow as a separate no-account path where practical; V0.8 adds advisor-managed persistence rather than making an advisor account mandatory for every calculator user.
 
 ## Deferred economic layer — x402 + signup-minted token
 
-x402 is intentionally **not** the next implementation slice. Future paid agent-to-agent access is gated on a separate accepted design for an account-linked crypto asset that is minted/allocated through the calculator signup flow.
+x402 is intentionally **not** the next implementation slice. Future paid agent-to-agent access is gated on a separate accepted design for an account-linked crypto asset that is minted/allocated through the advisor/account signup flow.
 
 Before any x402 integration, freeze and review at least these decisions:
 
