@@ -2,7 +2,7 @@ import { calculateRepayment, getPolicyStatus, ibrZeroPaymentAgiThreshold } from 
 import { getDocumentationTemplate } from "./templates.ts";
 import type { CalculatorRequest, Region, TemplateRequest } from "./types.ts";
 
-const SERVER_VERSION = "0.7.1";
+const SERVER_VERSION = "0.7.2";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -193,8 +193,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .span-2 { grid-column: 1 / -1; }
     label, legend { font-weight: 650; }
     label { display: grid; gap: 7px; }
-    input, select, button { font: inherit; }
-    input, select { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: Canvas; color: CanvasText; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: Canvas; color: CanvasText; }
+    textarea { min-height: 96px; resize: vertical; }
     fieldset { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 12px; padding: 14px; margin: 0; }
     .checks { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
     .checks label { display: flex; align-items: center; gap: 7px; font-weight: 500; }
@@ -229,6 +230,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .quick-info th, .quick-info td { padding: 8px 10px; text-align: left; border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
     .quick-info th:last-child, .quick-info td:last-child { text-align: right; }
     .quick-callout { border-left: 4px solid currentColor; padding: 10px 12px; margin: 10px 0; background: color-mix(in srgb, CanvasText 4%, Canvas); border-radius: 0 10px 10px 0; }
+    .document-workspace[hidden], #document-draft-area[hidden] { display: none; }
+    .document-preview { white-space: pre-wrap; overflow: auto; max-height: 520px; padding: 16px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 12px; background: color-mix(in srgb, CanvasText 3%, Canvas); font: 0.92rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .document-review { display: flex; align-items: flex-start; gap: 9px; font-weight: 600; margin-top: 14px; }
+    .document-review input { width: auto; margin-top: 4px; }
     .basis { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: .78rem; font-weight: 750; border: 1px solid currentColor; margin-right: 6px; }
     .fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
     .fact { border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 12px; padding: 12px; }
@@ -265,6 +270,52 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       <strong>Facts collected in this session</strong>
       <p class="muted">These remain browser-local until you choose to calculate. Imported loan facts and deterministic results are labeled separately.</p>
       <ul id="guided-facts"><li class="muted">No guided facts confirmed yet.</li></ul>
+    </div>
+  </section>
+
+  <section class="workspace document-workspace" id="document-workspace" aria-labelledby="document-workspace-title" hidden>
+    <h2 id="document-workspace-title">Review your supporting statement</h2>
+    <p><span class="basis">Draft only</span>This uses only facts you supplied. Missing facts stay as visible placeholders. It does not create employer records, evidence, or signatures, and it does not submit anything to Federal Student Aid or a loan servicer.</p>
+    <form id="document-form">
+      <div class="grid">
+        <label>Document date <span class="muted">(optional)</span>
+          <input name="documentDate" type="text" placeholder="Leave blank for [date]">
+        </label>
+        <label>Borrower name <span class="muted">(optional)</span>
+          <input name="borrowerName" type="text" placeholder="Leave blank for [borrower full name]">
+        </label>
+        <label>Loan servicer <span class="muted">(optional)</span>
+          <input name="servicerName" type="text" placeholder="Leave blank for [loan servicer]">
+        </label>
+        <label>Payer / employer / agency <span class="muted">(optional)</span>
+          <input name="sourceName" type="text" placeholder="Leave blank for a placeholder">
+        </label>
+        <label>Source address <span class="muted">(optional)</span>
+          <input name="sourceAddress" type="text" placeholder="Leave blank for a placeholder">
+        </label>
+        <label>Gross amount for the stated cadence <span class="muted">(optional)</span>
+          <input name="grossAmount" type="number" min="0" step="0.01" placeholder="Leave blank for a placeholder">
+        </label>
+        <label>Payment frequency <span class="muted">(optional)</span>
+          <input name="paymentFrequency" type="text" placeholder="e.g. biweekly">
+        </label>
+        <label class="span-2">Additional explanation <span class="muted">(optional)</span>
+          <textarea name="notes" placeholder="Leave blank for [optional explanation]"></textarea>
+        </label>
+      </div>
+      <div class="actions">
+        <button type="submit" id="document-generate">Generate / refresh draft</button>
+        <span id="document-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+    <div id="document-draft-area" hidden>
+      <h3>Draft preview</h3>
+      <pre id="document-preview" class="document-preview"></pre>
+      <label class="document-review"><input type="checkbox" id="document-reviewed"> <span>I reviewed the draft facts. I understand this is not signed or submitted, and I must sign it myself if I choose to use it.</span></label>
+      <div class="actions">
+        <button type="button" id="document-print" disabled>Print / Save PDF</button>
+        <button type="button" id="document-download" disabled>Download HTML</button>
+      </div>
     </div>
   </section>
 
@@ -412,9 +463,23 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const guideForm = document.getElementById("guide-form");
   const guideInput = document.getElementById("guide-input");
   const guidedFactsList = document.getElementById("guided-facts");
+  const documentWorkspace = document.getElementById("document-workspace");
+  const documentForm = document.getElementById("document-form");
+  const documentGenerate = document.getElementById("document-generate");
+  const documentStatus = document.getElementById("document-status");
+  const documentDraftArea = document.getElementById("document-draft-area");
+  const documentPreview = document.getElementById("document-preview");
+  const documentReviewed = document.getElementById("document-reviewed");
+  const documentPrint = document.getElementById("document-print");
+  const documentDownload = document.getElementById("document-download");
   const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   const numberOrUndefined = (value) => value === "" ? undefined : Number(value);
   let importedPortfolio = null;
+  let documentDraft = null;
+  let guideDocumentGoal = null;
+  let guideContinueToCalculator = false;
+  let guideIncomeCadence = null;
+  let guideIncomeAmount = null;
 
   function numericValue(value) {
     if (!value) return undefined;
@@ -604,6 +669,97 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     if (control && "value" in control) control.value = String(value);
   }
 
+  function setDocumentValue(name, value) {
+    const control = documentForm.elements.namedItem(name);
+    if (control && "value" in control) control.value = String(value);
+  }
+
+  function documentSourceType() {
+    if (guideIncomeSituation === "unemployment") return "unemployment";
+    if (guideIncomeSituation === "self_employment") return "self_employment";
+    if (guideIncomeSituation === "employment") return "employment";
+    return "other";
+  }
+
+  function documentRequest(outputFormat) {
+    const templateType = guideDocumentGoal || "current_income_statement";
+    const payload = { templateType, outputFormat };
+    for (const name of ["documentDate", "borrowerName", "servicerName", "notes"]) {
+      const control = documentForm.elements.namedItem(name);
+      const value = control && "value" in control ? String(control.value).trim() : "";
+      if (value) payload[name] = value;
+    }
+    if (templateType !== "no_current_taxable_income_statement") {
+      const source = { sourceType: documentSourceType() };
+      const sourceNameControl = documentForm.elements.namedItem("sourceName");
+      const sourceAddressControl = documentForm.elements.namedItem("sourceAddress");
+      const grossAmountControl = documentForm.elements.namedItem("grossAmount");
+      const paymentFrequencyControl = documentForm.elements.namedItem("paymentFrequency");
+      const sourceName = sourceNameControl && "value" in sourceNameControl ? String(sourceNameControl.value).trim() : "";
+      const sourceAddress = sourceAddressControl && "value" in sourceAddressControl ? String(sourceAddressControl.value).trim() : "";
+      const grossAmount = grossAmountControl && "value" in grossAmountControl ? numberOrUndefined(String(grossAmountControl.value)) : undefined;
+      const paymentFrequency = paymentFrequencyControl && "value" in paymentFrequencyControl ? String(paymentFrequencyControl.value).trim() : "";
+      if (sourceName) source.name = sourceName;
+      if (sourceAddress) source.address = sourceAddress;
+      if (grossAmount !== undefined) source.grossAmount = grossAmount;
+      if (paymentFrequency) source.paymentFrequency = paymentFrequency;
+      payload.incomeSources = [source];
+    }
+    return payload;
+  }
+
+  async function requestDocument(outputFormat) {
+    const response = await fetch("/api/document", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(documentRequest(outputFormat))
+    });
+    const body = await response.json();
+    if (!response.ok || !body.ok) throw new Error(body.error || "Unable to generate document draft.");
+    return body.document;
+  }
+
+  function syncDocumentActions() {
+    const enabled = Boolean(documentDraft) && documentReviewed.checked;
+    documentPrint.disabled = !enabled;
+    documentDownload.disabled = !enabled;
+  }
+
+  async function generateDocumentDraft() {
+    documentGenerate.disabled = true;
+    documentStatus.textContent = "Generating draft…";
+    documentDraft = null;
+    documentReviewed.checked = false;
+    syncDocumentActions();
+    try {
+      const [text, html] = await Promise.all([requestDocument("text"), requestDocument("html")]);
+      documentDraft = { text, html };
+      documentPreview.textContent = text;
+      documentDraftArea.hidden = false;
+      documentStatus.textContent = "Draft ready. Review every fact before signing or sharing it.";
+    } catch (error) {
+      documentDraftArea.hidden = true;
+      documentStatus.textContent = error instanceof Error ? error.message : "Unable to generate document draft.";
+    } finally {
+      documentGenerate.disabled = false;
+      syncDocumentActions();
+    }
+  }
+
+  function openGuidedDocumentWorkspace() {
+    if (guideIncomeAmount !== null && guideIncomeAmount !== undefined) setDocumentValue("grossAmount", guideIncomeAmount);
+    if (guideIncomeCadence) setDocumentValue("paymentFrequency", guideIncomeCadence);
+    documentWorkspace.hidden = false;
+    documentWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
+    void generateDocumentDraft();
+  }
+
+  function documentFilename() {
+    if (guideDocumentGoal === "unemployment_income_statement") return "unemployment-compensation-income-statement.html";
+    if (guideDocumentGoal === "no_current_taxable_income_statement") return "no-current-taxable-income-statement.html";
+    return "current-taxable-income-supporting-statement.html";
+  }
+
   const guidePrompts = {
     goal: {
       text: "What would you like help with first?",
@@ -626,6 +782,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       options: [["Annual", "annual"], ["Monthly", "monthly"], ["Twice monthly", "semimonthly"], ["Every two weeks", "biweekly"], ["Weekly", "weekly"], ["Hourly", "hourly"]]
     },
     income_amount: { text: "What is the gross taxable income amount for that cadence? Type a number, without an SSN or account number.", options: [] },
+    doc_borrower_name: { text: "What borrower name should appear on the statement? You can leave it as a visible placeholder and fill it in later.", options: [["Leave as placeholder", "__skip__"]] },
+    doc_source_name: { text: "What payer, employer, or unemployment agency name should appear? You can leave it as a visible placeholder.", options: [["Leave as placeholder", "__skip__"]] },
+    doc_servicer_name: { text: "What loan servicer name should appear? You can leave it as a visible placeholder and fill it in later.", options: [["Leave as placeholder", "__skip__"]] },
     family_size: { text: "What is your current legacy IDR family size under the support-based definition? You can tap 1–6 or type any valid whole number; there is no six-person cap.", options: [["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"], ["5", "5"], ["6", "6"]] },
     dependents: { text: "How many dependents do you claim on your federal tax return for the RAP dependent reduction? This is intentionally separate from legacy IDR family size.", options: [["0", "0"], ["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"]] },
     region: { text: "Which poverty-guideline region applies to you?", options: [["48 states + D.C.", "contiguous_us"], ["Alaska", "alaska"], ["Hawaii", "hawaii"]] }
@@ -715,8 +874,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       }
       guideSay(shown, "user");
       setCalculatorValue("incomeAmount", amount);
+      guideIncomeAmount = amount;
       recordGuidedFact("income_amount", "Current gross taxable income amount", money.format(amount));
-      guideStep = "family_size";
+      guideStep = guideDocumentGoal ? "doc_borrower_name" : "family_size";
     } else if (guideStep === "family_size" || guideStep === "dependents") {
       const count = Number(value);
       const minimum = guideStep === "family_size" ? 1 : 0;
@@ -745,6 +905,8 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
         guideStep = "ibr_zero_region";
       } else {
         recordGuidedFact("goal", "Requested help", value === "both" ? "Payment estimate and income-document help" : value === "documents" ? "Income-document help" : "Payment estimate");
+        guideDocumentGoal = value === "documents" || value === "both" ? "auto" : null;
+        guideContinueToCalculator = value === "both";
         guideStep = "income_situation";
       }
     } else if (guideStep === "ibr_zero_region") {
@@ -764,15 +926,53 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       }
       guideSay(shown, "user");
       if (value === "current_income_doc") {
+        guideDocumentGoal = "current_income_statement";
+        guideContinueToCalculator = false;
         recordGuidedFact("document_goal", "Requested document", "Current / stated income supporting statement");
         guideStep = "income_situation";
       } else if (value === "unemployment_doc") {
+        guideDocumentGoal = "unemployment_income_statement";
+        guideContinueToCalculator = false;
         guideIncomeSituation = "unemployment";
         recordGuidedFact("document_goal", "Requested document", "Unemployment compensation income statement");
         recordGuidedFact("income_situation", "Current income situation", "Unemployment compensation");
         guideStep = "income_cadence";
       } else {
+        guideDocumentGoal = null;
+        guideContinueToCalculator = false;
         guideStep = "income_situation";
+      }
+    } else if (guideStep === "doc_borrower_name" || guideStep === "doc_source_name" || guideStep === "doc_servicer_name") {
+      guideSay(shown, "user");
+      if (guideStep === "doc_borrower_name") {
+        if (value !== "__skip__") {
+          setDocumentValue("borrowerName", shown);
+          recordGuidedFact("document_borrower_name", "Document borrower name", shown);
+        }
+        guideStep = guideDocumentGoal === "no_current_taxable_income_statement" ? "doc_servicer_name" : "doc_source_name";
+      } else if (guideStep === "doc_source_name") {
+        if (value !== "__skip__") {
+          setDocumentValue("sourceName", shown);
+          recordGuidedFact("document_source_name", "Document payer / employer / agency", shown);
+        }
+        guideStep = "doc_servicer_name";
+      } else {
+        if (value !== "__skip__") {
+          setDocumentValue("servicerName", shown);
+          recordGuidedFact("document_servicer_name", "Document loan servicer", shown);
+        }
+        guideInput.value = "";
+        guideAnswers.replaceChildren();
+        guideSay("Your draft is ready for review below. Missing facts remain visible placeholders. Review or edit the fields, generate again if needed, then explicitly confirm your review before print/download controls are enabled.");
+        openGuidedDocumentWorkspace();
+        if (guideContinueToCalculator) {
+          guideSay("You also asked for a payment estimate, so I’ll continue collecting the remaining calculator facts here.");
+          guideStep = "family_size";
+          showGuideStep();
+        } else {
+          guideStep = "document_ready";
+        }
+        return;
       }
     } else if (guideStep === "income_situation") {
       if (!["employment", "self_employment", "unemployment", "multiple", "none"].includes(value)) {
@@ -783,13 +983,22 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       guideIncomeSituation = value;
       const labels = { employment: "Employment", self_employment: "Self-employment / contract", unemployment: "Unemployment compensation", multiple: "Multiple taxable sources", none: "No current taxable income" };
       recordGuidedFact("income_situation", "Current income situation", labels[value]);
+      if (guideDocumentGoal === "auto") {
+        guideDocumentGoal = value === "unemployment" ? "unemployment_income_statement" : value === "none" ? "no_current_taxable_income_statement" : "current_income_statement";
+      } else if (guideDocumentGoal && value === "unemployment") {
+        guideDocumentGoal = "unemployment_income_statement";
+      } else if (guideDocumentGoal && value === "none") {
+        guideDocumentGoal = "no_current_taxable_income_statement";
+      }
       if (value === "none") {
         setCalculatorValue("cadence", "annual");
         setCalculatorValue("incomeAmount", 0);
+        guideIncomeCadence = "annual";
+        guideIncomeAmount = 0;
         recordGuidedFact("income_amount", "Current gross taxable income", money.format(0));
         cadence.value = "annual";
         syncHourlyFields();
-        guideStep = "family_size";
+        guideStep = guideDocumentGoal ? "doc_borrower_name" : "family_size";
       } else {
         guideStep = "income_cadence";
       }
@@ -800,6 +1009,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       }
       guideSay(shown, "user");
       cadence.value = value;
+      guideIncomeCadence = value;
       syncHourlyFields();
       recordGuidedFact("income_cadence", "Income cadence", shown);
       guideStep = "income_amount";
@@ -817,7 +1027,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     guideInput.value = "";
     if (guideStep === "done") {
       guideAnswers.replaceChildren();
-      guideSay("Your confirmed facts are now prefilled in the calculator. Review them, add or import your loan facts, then calculate. If you chose document help, the next V0.7 slice will turn this same fact ledger into source-by-source evidence and editable supporting documents without inventing missing facts.");
+      guideSay("Your confirmed facts are now prefilled in the calculator. Review them, add or import your loan facts, then calculate. Document drafts, when requested, use this same confirmed fact ledger and keep missing information as explicit placeholders.");
       return;
     }
     showGuideStep();
@@ -826,6 +1036,35 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   guideForm.addEventListener("submit", (event) => {
     event.preventDefault();
     handleGuideAnswer(guideInput.value);
+  });
+
+  documentForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void generateDocumentDraft();
+  });
+  documentReviewed.addEventListener("change", syncDocumentActions);
+  documentDownload.addEventListener("click", () => {
+    if (!documentDraft || !documentReviewed.checked) return;
+    const blob = new Blob([documentDraft.html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = documentFilename();
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  });
+  documentPrint.addEventListener("click", () => {
+    if (!documentDraft || !documentReviewed.checked) return;
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      documentStatus.textContent = "Your browser blocked the print window. Allow pop-ups for this page and try again.";
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(documentDraft.html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
   });
 
   cadence.addEventListener("change", syncHourlyFields);
@@ -970,6 +1209,57 @@ function uiResponse(): Response {
       "x-frame-options": "DENY"
     }
   });
+}
+
+async function handleDocumentApi(request: Request, env: Env): Promise<Response> {
+  const origin = request.headers.get("origin");
+  if (origin !== null && origin !== new URL(request.url).origin) {
+    return jsonResponse({ ok: false, error: "Cross-origin document requests are not allowed." }, 403, request, env, { "cache-control": "no-store" });
+  }
+
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("application/json")) {
+    return jsonResponse({ ok: false, error: "Content-Type must be application/json." }, 415, request, env, { "cache-control": "no-store" });
+  }
+
+  if (env.MCP_RATE_LIMITER) {
+    try {
+      const { success } = await env.MCP_RATE_LIMITER.limit({ key: "public:/api/document" });
+      if (!success) return jsonResponse({ ok: false, error: "Rate limit exceeded." }, 429, request, env, { "cache-control": "no-store" });
+    } catch {
+      return jsonResponse({ ok: false, error: "Rate limiter unavailable." }, 503, request, env, { "cache-control": "no-store" });
+    }
+  }
+
+  let text: string;
+  try {
+    text = (await readRequestText(request)).text;
+  } catch (error) {
+    if (error instanceof RequestTooLargeError) {
+      return jsonResponse({ ok: false, error: `Request body exceeds ${MAX_REQUEST_BYTES} bytes.` }, 413, request, env, { "cache-control": "no-store" });
+    }
+    return jsonResponse({ ok: false, error: "Unable to read request body." }, 400, request, env, { "cache-control": "no-store" });
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch {
+    return jsonResponse({ ok: false, error: "Invalid JSON." }, 400, request, env, { "cache-control": "no-store" });
+  }
+
+  const documentDefinition = toolDefinitions.find((tool) => tool.name === "get_repayment_documentation_template")!;
+  const issues = validateSchema(body, documentDefinition.inputSchema as RuntimeSchema);
+  if (issues.length > 0) {
+    return jsonResponse({ ok: false, error: "Invalid document input.", issues }, 400, request, env, { "cache-control": "no-store" });
+  }
+
+  try {
+    const requestBody = body as TemplateRequest;
+    return jsonResponse({ ok: true, format: requestBody.outputFormat ?? "markdown", document: getDocumentationTemplate(requestBody) }, 200, request, env, { "cache-control": "no-store" });
+  } catch (error) {
+    return jsonResponse({ ok: false, error: error instanceof Error ? error.message : "Document generation failed." }, 400, request, env, { "cache-control": "no-store" });
+  }
 }
 
 async function handleCalculatorApi(request: Request, env: Env): Promise<Response> {
@@ -1327,7 +1617,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /mcp"],
+    endpoints: ["GET /", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp"],
     hardening: {
       max_request_bytes: MAX_REQUEST_BYTES,
       bearer_auth_configured: Boolean(env.MCP_BEARER_TOKEN),
@@ -1349,6 +1639,7 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") return home(request, env);
     if (request.method === "GET" && url.pathname === "/api/ibr-zero-payment") return ibrZeroPaymentResponse(request, env);
     if (request.method === "POST" && url.pathname === "/api/calculate") return handleCalculatorApi(request, env);
+    if (request.method === "POST" && url.pathname === "/api/document") return handleDocumentApi(request, env);
     if (url.pathname === "/mcp" && request.method === "GET") {
       if (!allowedOrigin(request, env)) return jsonResponse(jsonRpcErrorObject(null, -32600, "Forbidden Origin"), 403, request, env);
       return new Response("SSE listening is not implemented by this stateless server.", { status: 405, headers: { allow: "POST, OPTIONS" } });
