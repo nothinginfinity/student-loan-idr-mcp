@@ -321,12 +321,12 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.8.3') break;
+              if (healthResponse.status === 200 && health?.version === '0.8.4') break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.8.3', `unexpected live version ${health.version}`);
+            assert(health.version === '0.8.4', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -337,6 +337,7 @@ jobs:
             assert(health.advisor_workspace?.owner_scoped_client_crud === true, 'advisor owner-scoped CRUD not active');
             assert(health.advisor_workspace?.browser_workspace === '/advisor', 'advisor browser workspace route missing');
             assert(health.advisor_workspace?.saved_guided_client_workflow === true, 'saved guided client workflow flag missing');
+            assert(health.advisor_workspace?.repayment_comparison_visualizations === true, 'advisor repayment comparison flag missing');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
 
             const livePassword = `Live-v082-${Date.now()}-Strong!`;
@@ -403,7 +404,7 @@ jobs:
                 confirmedFacts: {
                   income: [{ cadence: 'biweekly', amount: 1200 }],
                   incomeSources: [{ sourceType: 'employment', name: 'Example Employer', grossAmount: 1200, paymentFrequency: 'biweekly', evidenceState: 'evidence_in_hand' }],
-                  region: 'contiguous_us', familySize: 2, dependentsClaimedOnFederalTaxReturn: 1
+                  region: 'contiguous_us', familySize: 2, dependentsClaimedOnFederalTaxReturn: 1, newBorrowerOnOrAfterJuly1_2014: true
                 },
                 normalizedLoanPortfolio: {
                   repaymentLoans: [{ principal: 25000, annualInterestRatePercent: 6.5 }],
@@ -422,6 +423,27 @@ jobs:
             assert(resumedClient.response.status === 200, 'advisor saved client resume read failed');
             assert(resumedClient.body?.client?.servicerName === 'Example Servicer', 'advisor resumed servicer fact missing');
             assert(resumedClient.body?.client?.confirmedFacts?.dependentsClaimedOnFederalTaxReturn === 1, 'advisor resumed application fact missing');
+
+            const comparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparison`, {}, alpha);
+            assert(comparison.response.status === 200 && comparison.body?.ok === true, 'advisor comparison endpoint failed');
+            assert(comparison.body?.comparison?.schema === 'student-loan-idr-advisor-comparison-v1', 'advisor comparison schema mismatch');
+            assert(comparison.body?.comparison?.projections?.length === 4, 'advisor comparison plan inventory mismatch');
+            const rapProjection = comparison.body.comparison.projections.find((plan) => plan.plan === 'RAP');
+            const ibrProjection = comparison.body.comparison.projections.find((plan) => plan.plan === 'IBR');
+            const payeProjection = comparison.body.comparison.projections.find((plan) => plan.plan === 'PAYE');
+            const icrProjection = comparison.body.comparison.projections.find((plan) => plan.plan === 'ICR');
+            assert(rapProjection?.projectionKind === 'forgiveness_horizon' && rapProjection?.horizonMonths === 360, 'RAP 30-year comparison horizon mismatch');
+            assert(rapProjection?.projectedInterestWaived > 0, 'RAP comparison did not model unpaid-interest waiver');
+            assert(rapProjection?.projectedPrincipalMatch > 0, 'RAP comparison did not model principal match');
+            assert(rapProjection?.projectedForgiveness >= 0, 'RAP forgiveness estimate missing');
+            assert(ibrProjection?.projectionKind === 'forgiveness_horizon' && ibrProjection?.horizonMonths === 240, 'IBR saved 20-year horizon mismatch');
+            assert(ibrProjection?.projectedForgiveness > 0, 'IBR forgiveness estimate missing for low-income fixture');
+            assert(payeProjection?.projectionKind === 'sunset_only' && payeProjection?.horizonMonths === 22, 'PAYE sunset-bounded projection mismatch');
+            assert(icrProjection?.projectionKind === 'sunset_only' && icrProjection?.horizonMonths === 22, 'ICR sunset-bounded projection mismatch');
+            assert(payeProjection?.projectedForgiveness === null, 'PAYE must not invent post-sunset forgiveness');
+            assert(icrProjection?.projectedForgiveness === null, 'ICR must not invent post-sunset forgiveness');
+            const betaComparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparison`, {}, beta);
+            assert(betaComparison.response.status === 404 && betaComparison.body?.error === 'Client not found or not accessible.', 'cross-advisor comparison must fail generically');
 
             const exportedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/export`, {}, alpha);
             assert(exportedClient.response.status === 200 && exportedClient.body?.schema === 'student-loan-idr-advisor-client-export-v1', 'advisor client export failed');
@@ -467,6 +489,10 @@ jobs:
             assert(uiHtml.includes('id="advisor-client-bar"'), 'saved advisor-client workflow bar missing');
             assert(uiHtml.includes('id="advisor-save-progress"'), 'saved advisor-client progress control missing');
             assert(uiHtml.includes('id="advisor-regenerate-document"'), 'advisor document-regeneration control missing');
+            assert(uiHtml.includes('id="advisor-compare-plans"'), 'advisor repayment-comparison control missing');
+            assert(uiHtml.includes('id="advisor-comparison-workspace"'), 'advisor comparison workspace missing');
+            assert(uiHtml.includes('id="advisor-payment-chart"') && uiHtml.includes('id="advisor-paid-chart"') && uiHtml.includes('id="advisor-balance-chart"') && uiHtml.includes('id="advisor-forgiveness-chart"'), 'advisor comparison chart surfaces missing');
+            assert(uiHtml.includes('Modeled estimate'), 'advisor comparison non-guarantee label missing');
             assert(uiHtml.includes('saveAdvisorClientProgress'), 'advisor normalized save workflow missing');
             assert(uiHtml.includes('id="guided-assistant"'), 'UI guided assistant missing');
             assert(uiHtml.includes('id="guide-answers"'), 'UI guided answer bubbles missing');
@@ -663,7 +689,7 @@ jobs:
               tools: toolNames,
               checks: 72
             }));
-            console.log('::notice title=Live product acceptance::72 production checks passed');
+            console.log('::notice title=Live product acceptance::91 production checks passed');
           })().catch((error) => {
             console.error(error);
             const message = error instanceof Error ? error.message : String(error);
