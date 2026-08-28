@@ -190,7 +190,23 @@ Acceptance evidence:
 - The contract was committed as `e6bd0061215062116a1e8a9a18ead563918aa9cb`.
 - V0.8.1 intentionally does **not** create a D1 client store, login/session endpoint, recovery flow, public advisor CRUD API, raw StudentAid/evidence-file storage, comparison charts, or x402 integration.
 
-The next bounded V0.8 slice is authenticated advisor identity/session plus an owner-keyed D1 client store and scoped client CRUD under the accepted V0.8.1 contract.
+### V0.8.2 — Authenticated advisor sessions + owner-keyed D1 client CRUD — COMPLETE
+
+- Added advisor registration/login/logout/session endpoints with 12-hour server-issued `HttpOnly; Secure; SameSite=Strict` cookies, CSRF rotation/validation, login throttling, and password verification using the Workers-native Node crypto `scrypt` implementation. Passwords and raw session/CSRF tokens are never persisted.
+- Added the dedicated Cloudflare D1 database `student-loan-idr-mcp-db` and migration-backed tables for advisor accounts, sessions, owner-keyed clients, authentication-failure throttling, and payload-minimized audit events.
+- Added owner-scoped client list/create/read/update/archive/export/delete APIs. Every client read/write query keys on the authenticated advisor ID plus client ID, with generic cross-owner denial and optimistic `updatedAt` concurrency guards.
+- Preserved the V0.8.1 privacy boundary: raw StudentAid downloads remain browser-local, raw evidence/SSNs/FSA credentials are rejected from normalized client persistence, and aggregate client lists expose only minimized dashboard summaries.
+- Added account deletion, client export/deletion, same-origin enforcement, 64 KiB request ceilings, and privacy-safe audit events. The accepted security/retention boundaries are documented in `docs/V0_8_2_SECURITY_AND_RETENTION.md`.
+- Preserved the account-free borrower calculator/guided workflow and the existing three-tool MCP contract unchanged.
+
+Acceptance evidence:
+
+- Final V0.8.2 runtime source commit `8f993b88aedbcd453a1132a6d013d487c91d235e` passed strict TypeScript, the complete deterministic suite including real in-memory SQLite owner-isolation coverage, and Wrangler dry-run in CI run `33180881887`.
+- Exact-SHA deployment run `33180935616` passed the immutable-source guard, repeated typecheck/tests, remote D1 migration, Wrangler deployment, and all **61 production checks**.
+- Live acceptance created two independent advisor accounts, proved authenticated session/CSRF behavior and exact cross-advisor client isolation, exercised client persistence lifecycle operations, and cleaned up the live acceptance accounts afterward.
+- During live acceptance, the original PBKDF2 verifier hit a Cloudflare Workers runtime work-factor ceiling. The accepted runtime switched to Workers-native `scrypt`, retained salted one-way password storage, added explicit TypeScript declarations, and then passed the full live gate.
+
+The next bounded V0.8 slice is **V0.8.3 — advisor workspace UI + saved guided client workflow**: expose the authenticated multi-client dashboard/client workspace in the browser, connect saved normalized facts to the existing V0.7 guided workflow, and make save/resume/document regeneration practical before adding repayment-comparison charts.
 
 1. Make the persistent account an **advisor/manager account**, not a one-borrower account. One authenticated advisor can create, search, open, and manage many borrower **client records** from a single workspace.
 2. Give each client a structured profile for contact information, normalized StudentAid loan portfolio, confirmed application facts, income sources, family-size facts, evidence/readiness state, servicer information, generated document drafts, selected/considered repayment programs, notes, and repeat calculations. Client records must remain logically isolated from one another and scoped to the owning/authorized advisor account.
