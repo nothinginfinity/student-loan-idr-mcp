@@ -219,3 +219,113 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
   assert.equal(resumedBody.client.confirmedFacts.dependentsClaimedOnFederalTaxReturn, 1);
   assert.equal(resumedBody.client.normalizedLoanPortfolio.eligibilityLoans[0].loanType, "direct_unsubsidized");
 });
+
+test("V0.8.4 advisor comparison reuses saved facts, bounds forgiveness, and stays exact-owner scoped", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  const env = { ADVISOR_DB: d1 };
+  const alpha = await register(env, "comparison-alpha@example.test", "Comparison Alpha");
+  const beta = await register(env, "comparison-beta@example.test", "Comparison Beta");
+
+  const ui = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
+  const html = await ui.text();
+  assert.equal(ui.status, 200);
+  assert.match(html, /id="advisor-compare-plans"/);
+  assert.match(html, /id="advisor-comparison-workspace"/);
+  assert.match(html, /id="advisor-payment-chart"/);
+  assert.match(html, /id="advisor-paid-chart"/);
+  assert.match(html, /id="advisor-balance-chart"/);
+  assert.match(html, /id="advisor-forgiveness-chart"/);
+  assert.match(html, /Modeled estimate/);
+  assert.match(html, /runAdvisorComparison/);
+  assert.doesNotMatch(html, /localStorage|sessionStorage/);
+
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, {
+    method: "POST",
+    body: JSON.stringify({ displayName: "Comparison Borrower" })
+  });
+  const created = await create.json();
+  const clientId = created.client.clientId as string;
+
+  const saveWithoutTiming = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, {
+    method: "PUT",
+    body: JSON.stringify({
+      expectedUpdatedAt: created.client.updatedAt,
+      confirmedFacts: {
+        income: [{ cadence: "annual", amount: 25000 }],
+        region: "contiguous_us",
+        familySize: 1,
+        dependentsClaimedOnFederalTaxReturn: 0,
+        taxFilingStatus: "single"
+      },
+      normalizedLoanPortfolio: {
+        repaymentLoans: [{ principal: 25000, annualInterestRatePercent: 6.5 }],
+        eligibilityLoans: [{ loanType: "direct_unsubsidized", disbursementPeriod: "before_2026_07_01" }]
+      }
+    })
+  });
+  const withoutTiming = await saveWithoutTiming.json();
+  assert.equal(saveWithoutTiming.status, 200);
+
+  const unknown = await advisorFetch(`/api/advisor/clients/${clientId}/comparison`, alpha, env);
+  const unknownBody = await unknown.json();
+  assert.equal(unknown.status, 200);
+  assert.equal(unknownBody.comparison.schema, "student-loan-idr-advisor-comparison-v1");
+  assert.equal(unknownBody.comparison.projections.length, 4);
+  const unknownIbr = unknownBody.comparison.projections.find((plan: any) => plan.plan === "IBR");
+  assert.equal(unknownIbr.projectionKind, "horizon_unknown");
+  assert.equal(unknownIbr.projectedForgiveness, null);
+
+  const denied = await advisorFetch(`/api/advisor/clients/${clientId}/comparison`, beta, env);
+  assert.equal(denied.status, 404);
+  assert.equal((await denied.json()).error, "Client not found or not accessible.");
+
+  const saveTiming = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, {
+    method: "PUT",
+    body: JSON.stringify({
+      expectedUpdatedAt: withoutTiming.client.updatedAt,
+      confirmedFacts: {
+        ...withoutTiming.client.confirmedFacts,
+        newBorrowerOnOrAfterJuly1_2014: true
+      }
+    })
+  });
+  const timed = await saveTiming.json();
+  assert.equal(saveTiming.status, 200);
+  assert.equal(timed.client.confirmedFacts.newBorrowerOnOrAfterJuly1_2014, true);
+
+  const comparison = await advisorFetch(`/api/advisor/clients/${clientId}/comparison`, alpha, env);
+  const body = await comparison.json();
+  assert.equal(comparison.status, 200);
+  assert.equal(body.comparison.policySnapshot, "2026-08-27");
+  assert.match(body.comparison.assumptions.join("\n"), /modeled estimates/i);
+
+  const rap = body.comparison.projections.find((plan: any) => plan.plan === "RAP");
+  assert.equal(rap.projectionKind, "forgiveness_horizon");
+  assert.equal(rap.horizonMonths, 360);
+  assert.ok(rap.projectedInterestWaived > 0);
+  assert.ok(rap.projectedPrincipalMatch > 0);
+  assert.ok(rap.projectedForgiveness >= 0);
+  assert.equal(rap.series[0].month, 0);
+  assert.ok(rap.series.length > 2);
+
+  const ibr = body.comparison.projections.find((plan: any) => plan.plan === "IBR");
+  assert.equal(ibr.projectionKind, "forgiveness_horizon");
+  assert.equal(ibr.horizonMonths, 240);
+  assert.ok(ibr.projectedForgiveness > 0);
+  assert.match(ibr.warnings.join("\n"), /interest subsidies/i);
+
+  for (const planName of ["PAYE", "ICR"]) {
+    const plan = body.comparison.projections.find((candidate: any) => candidate.plan === planName);
+    assert.equal(plan.projectionKind, "sunset_only");
+    assert.equal(plan.horizonMonths, 22);
+    assert.equal(plan.projectedForgiveness, null);
+    assert.match(plan.horizonLabel, /July 1, 2028/);
+  }
+
+  const postComparisonRead = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env);
+  const postBody = await postComparisonRead.json();
+  assert.equal(postBody.client.updatedAt, timed.client.updatedAt, "comparison must not mutate the client record");
+  const auditRows = d1.database.prepare("SELECT action FROM advisor_audit_events WHERE advisor_id = ?").all(alpha.advisor.advisorId) as Array<{ action: string }>;
+  assert.ok(auditRows.some((row) => row.action === "client.compare"));
+});
