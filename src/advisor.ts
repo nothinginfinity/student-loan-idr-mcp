@@ -2,7 +2,9 @@ import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClient
 
 const COOKIE = "sl_advisor_session";
 const TTL_SECONDS = 12 * 60 * 60;
-const PBKDF2_ITERATIONS = 210_000;
+// Cloudflare workerd currently caps WebCrypto PBKDF2 at 100,000 iterations.
+// V0.8.2 is therefore an auth foundation, not the final production KDF boundary.
+const PBKDF2_ITERATIONS = 100_000;
 const MAX_BODY_BYTES = 64 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_FAILURE_LIMIT = 8;
