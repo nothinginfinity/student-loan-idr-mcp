@@ -258,7 +258,7 @@ function parseStoredJson<T>(value: string, label: string): T { try { return JSON
 function retainedName(value: unknown, label: string): string { if (typeof value !== "string") throw new ApiError(400, `${label} name is required.`); const x=value.trim(); if (!x || x.length>120) throw new ApiError(400, `${label} name must be between 1 and 120 characters.`); return x; }
 function retainedTemplateRequest(value: unknown): TemplateRequest {
   const cleaned=safeJson(value), b=bodyObject(cleaned);
-  const allowed=new Set(["templateType","documentDate","borrowerName","servicerName","incomeSources","incomeSourceName","incomeSourceAddress","paymentFrequency","grossAmount","notes"]);
+  const allowed=new Set(["templateType","outputFormat","documentDate","borrowerName","servicerName","incomeSources","incomeSourceName","incomeSourceAddress","paymentFrequency","grossAmount","notes"]);
   for (const k of Object.keys(b)) if (!allowed.has(k)) throw new ApiError(400, `Unexpected retained document field: ${k}.`);
   if (!["current_income_statement","income_change_explanation","unemployment_income_statement","no_current_taxable_income_statement"].includes(String(b.templateType))) throw new ApiError(400,"Invalid retained document template type.");
   return b as unknown as TemplateRequest;
