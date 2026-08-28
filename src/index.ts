@@ -11,7 +11,7 @@ import type {
   TemplateRequest
 } from "./types.ts";
 
-const SERVER_VERSION = "0.8.4";
+const SERVER_VERSION = "0.8.5";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -295,6 +295,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .chart-panel .series { fill: none; stroke: currentColor; stroke-width: 3; }
     .chart-panel text { fill: currentColor; font: 12px ui-sans-serif, system-ui, sans-serif; }
     .comparison-assumptions { margin-top: 14px; }
+    .history-workspace[hidden] { display: none; }
+    .history-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .history-list { display: grid; gap: 10px; }
+    .history-item { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 12px; padding: 12px; }
+    .history-item .actions { margin-top: 10px; }
     ul { padding-left: 22px; }
     a { color: inherit; }
     footer { margin-top: 36px; font-size: .9rem; color: color-mix(in srgb, CanvasText 65%, transparent); }
@@ -320,6 +325,8 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
         <button type="button" id="advisor-save-progress">Save progress</button>
         <button type="button" id="advisor-regenerate-document">Regenerate document</button>
         <button type="button" id="advisor-compare-plans">Compare repayment paths</button>
+        <button type="button" id="advisor-retain-calculation">Retain calculation</button>
+        <button type="button" id="advisor-open-history">History</button>
         <a class="link-button" href="/advisor">Client dashboard</a>
       </div>
     </div>
@@ -330,6 +337,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     <h2 id="advisor-comparison-title">Repayment & forgiveness comparison</h2>
     <p><span class="basis">Modeled estimate</span>These scenarios reuse this Worker’s deterministic repayment formulas and the client’s saved normalized facts. They are not guaranteed forgiveness, eligibility, approval, tax treatment, or servicer outcomes.</p>
     <p id="advisor-comparison-status" class="muted" role="status" aria-live="polite">Save the client’s current facts, then compare repayment paths.</p>
+    <div class="actions"><button type="button" id="advisor-retain-comparison">Retain this comparison</button></div>
     <div id="advisor-comparison-cards" class="comparison-cards"></div>
     <div class="chart-grid">
       <article class="chart-panel"><h3>Monthly payment path</h3><p class="muted">Current calculated payment held constant for this bounded scenario.</p><svg id="advisor-payment-chart" viewBox="0 0 720 260" role="img" aria-label="Modeled monthly payment by repayment plan"></svg></article>
@@ -338,6 +346,15 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       <article class="chart-panel"><h3>Estimated forgiveness</h3><p class="muted">Shown only when this policy snapshot supports a bounded forgiveness horizon and required timing facts are saved.</p><svg id="advisor-forgiveness-chart" viewBox="0 0 720 260" role="img" aria-label="Modeled forgiveness amount by repayment plan"></svg></article>
     </div>
     <div id="advisor-comparison-assumptions" class="comparison-assumptions"></div>
+  </section>
+
+  <section class="workspace history-workspace" id="advisor-history-workspace" hidden aria-labelledby="advisor-history-title">
+    <div class="guide-head"><div><h2 id="advisor-history-title">Retained client history</h2><p class="muted">Only explicitly retained document drafts and normalized calculation/comparison snapshots appear here. Raw StudentAid downloads and evidence files are never retained.</p></div><button type="button" id="advisor-refresh-history">Refresh history</button></div>
+    <p id="advisor-history-status" class="muted" role="status" aria-live="polite"></p>
+    <div class="history-grid">
+      <div><h3>Document drafts</h3><div id="advisor-artifact-history" class="history-list"></div></div>
+      <div><h3>Calculation snapshots</h3><div id="advisor-snapshot-history" class="history-list"></div></div>
+    </div>
   </section>
 
   <section class="workspace" id="guided-assistant" aria-labelledby="guided-assistant-title">
@@ -416,6 +433,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       <div class="actions">
         <button type="button" id="document-print" disabled>Print / Save PDF</button>
         <button type="button" id="document-download" disabled>Download HTML</button>
+        <button type="button" id="advisor-retain-document" disabled hidden>Retain draft in client history</button>
       </div>
     </div>
   </section>
@@ -583,6 +601,15 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorSaveProgress = document.getElementById("advisor-save-progress");
   const advisorRegenerateDocument = document.getElementById("advisor-regenerate-document");
   const advisorComparePlans = document.getElementById("advisor-compare-plans");
+  const advisorRetainCalculation = document.getElementById("advisor-retain-calculation");
+  const advisorOpenHistory = document.getElementById("advisor-open-history");
+  const advisorRetainComparison = document.getElementById("advisor-retain-comparison");
+  const advisorRetainDocument = document.getElementById("advisor-retain-document");
+  const advisorHistoryWorkspace = document.getElementById("advisor-history-workspace");
+  const advisorHistoryStatus = document.getElementById("advisor-history-status");
+  const advisorArtifactHistory = document.getElementById("advisor-artifact-history");
+  const advisorSnapshotHistory = document.getElementById("advisor-snapshot-history");
+  const advisorRefreshHistory = document.getElementById("advisor-refresh-history");
   const advisorSaveStatus = document.getElementById("advisor-save-status");
   const advisorComparisonWorkspace = document.getElementById("advisor-comparison-workspace");
   const advisorComparisonStatus = document.getElementById("advisor-comparison-status");
@@ -1172,6 +1199,65 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     advisorComparisonStatus.textContent = "Comparison generated from the saved client record under policy snapshot " + comparison.policySnapshot + ".";
     advisorComparisonWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+  function downloadJson(filename, value) {
+    const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  async function retainedNamePrompt(label) {
+    const value = window.prompt(label + " name", label + " · " + new Date().toLocaleString());
+    return value && value.trim() ? value.trim() : null;
+  }
+  async function retainCurrentDocument() {
+    if (!advisorClient || !documentDraft || !documentReviewed.checked) return;
+    const name = await retainedNamePrompt("Document draft"); if (!name) return;
+    try {
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/artifacts", { method:"POST", body:JSON.stringify({ name, templateRequest:documentRequest("text") }) });
+      advisorSaveStatus.textContent = "Retained document draft: " + body.artifact.name + ".";
+      await loadAdvisorHistory();
+    } catch (error) { advisorSaveStatus.textContent = error instanceof Error ? error.message : "Unable to retain document draft."; }
+  }
+  async function retainCurrentSnapshot(kind) {
+    if (!advisorClient) return;
+    const name = await retainedNamePrompt(kind === "comparison" ? "Comparison snapshot" : "Calculation snapshot"); if (!name) return;
+    const saved = await saveAdvisorClientProgress(); if (!saved) return;
+    try {
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/snapshots", { method:"POST", body:JSON.stringify({ name, snapshotKind:kind }) });
+      advisorSaveStatus.textContent = "Retained " + body.snapshot.snapshotKind + " snapshot: " + body.snapshot.name + ".";
+      await loadAdvisorHistory();
+    } catch (error) { advisorSaveStatus.textContent = error instanceof Error ? error.message : "Unable to retain calculation snapshot."; }
+  }
+  async function deleteHistoryItem(kind, itemId, name) {
+    if (!advisorClient || !window.confirm("Permanently delete retained history item “" + name + "”?")) return;
+    try { await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/" + kind + "/" + encodeURIComponent(itemId), { method:"DELETE", body:"{}" }); await loadAdvisorHistory(); }
+    catch (error) { advisorHistoryStatus.textContent = error instanceof Error ? error.message : "Unable to delete retained history."; }
+  }
+  function historyAction(label, handler) { const button=addText("button",label); button.type="button"; button.addEventListener("click",handler); return button; }
+  async function loadAdvisorHistory() {
+    if (!advisorClient) return;
+    advisorHistoryWorkspace.hidden = false; advisorHistoryStatus.textContent = "Loading retained history…";
+    try {
+      const [artifactBody,snapshotBody] = await Promise.all([
+        advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/artifacts"),
+        advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/snapshots")
+      ]);
+      advisorArtifactHistory.replaceChildren(); advisorSnapshotHistory.replaceChildren();
+      if (!artifactBody.artifacts.length) advisorArtifactHistory.appendChild(addText("p","No retained document drafts yet.","muted"));
+      artifactBody.artifacts.forEach((artifact) => {
+        const card=document.createElement("article"); card.className="history-item"; card.append(addText("strong",artifact.name),addText("div","Retained " + new Date(artifact.createdAt).toLocaleString() + " · engine " + artifact.engineVersion,"muted"));
+        const actions=document.createElement("div"); actions.className="actions";
+        actions.append(historyAction("Regenerate",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/artifacts/"+encodeURIComponent(artifact.artifactId)+"/regenerate",{method:"POST",body:"{}"}); documentDraft={text:body.regenerated.documentText,html:body.regenerated.documentHtml}; documentPreview.textContent=documentDraft.text; documentDraftArea.hidden=false; documentReviewed.checked=false; syncDocumentActions(); documentWorkspace.hidden=false; documentWorkspace.scrollIntoView({behavior:"smooth",block:"start"}); }),historyAction("Export JSON",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/artifacts/"+encodeURIComponent(artifact.artifactId)); downloadJson("retained-document-"+artifact.artifactId+".json",body); }),historyAction("Delete",()=>{void deleteHistoryItem("artifacts",artifact.artifactId,artifact.name);})); card.appendChild(actions); advisorArtifactHistory.appendChild(card);
+      });
+      if (!snapshotBody.snapshots.length) advisorSnapshotHistory.appendChild(addText("p","No retained calculation snapshots yet.","muted"));
+      snapshotBody.snapshots.forEach((snapshot) => {
+        const card=document.createElement("article"); card.className="history-item"; card.append(addText("strong",snapshot.name),addText("div",snapshot.snapshotKind+" · policy "+snapshot.policySnapshot+" · "+new Date(snapshot.createdAt).toLocaleString(),"muted"));
+        const actions=document.createElement("div"); actions.className="actions";
+        actions.append(historyAction("Rerun retained basis",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/snapshots/"+encodeURIComponent(snapshot.snapshotId)+"/rerun",{method:"POST",body:"{}"}); if(snapshot.snapshotKind==="comparison") renderAdvisorComparison(body.rerun.result); else { render(body.rerun.result); results.scrollIntoView({behavior:"smooth",block:"start"}); } }),historyAction("Export JSON",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/snapshots/"+encodeURIComponent(snapshot.snapshotId)); downloadJson("retained-snapshot-"+snapshot.snapshotId+".json",body); }),historyAction("Delete",()=>{void deleteHistoryItem("snapshots",snapshot.snapshotId,snapshot.name);})); card.appendChild(actions); advisorSnapshotHistory.appendChild(card);
+      });
+      advisorHistoryStatus.textContent = artifactBody.artifacts.length + " document draft(s) and " + snapshotBody.snapshots.length + " snapshot(s) retained.";
+    } catch (error) { advisorHistoryStatus.textContent = error instanceof Error ? error.message : "Unable to load retained history."; }
+  }
   async function runAdvisorComparison() {
     if (!advisorClient) return;
     advisorComparePlans.disabled = true;
@@ -1331,6 +1417,8 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     const enabled = Boolean(documentDraft) && documentReviewed.checked;
     documentPrint.disabled = !enabled;
     documentDownload.disabled = !enabled;
+    advisorRetainDocument.hidden = !advisorClient;
+    advisorRetainDocument.disabled = !enabled || !advisorClient;
   }
 
   async function generateDocumentDraft() {
@@ -1743,6 +1831,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     syncDocumentActions();
   });
   advisorSaveProgress.addEventListener("click", () => { void saveAdvisorClientProgress(); });
+  advisorRetainDocument.addEventListener("click", () => { void retainCurrentDocument(); });
+  advisorRetainCalculation.addEventListener("click", () => { void retainCurrentSnapshot("calculation"); });
+  advisorRetainComparison.addEventListener("click", () => { void retainCurrentSnapshot("comparison"); });
+  advisorOpenHistory.addEventListener("click", () => { void loadAdvisorHistory().then(() => advisorHistoryWorkspace.scrollIntoView({ behavior:"smooth", block:"start" })); });
+  advisorRefreshHistory.addEventListener("click", () => { void loadAdvisorHistory(); });
   advisorComparePlans.addEventListener("click", async () => {
     const saved = await saveAdvisorClientProgress();
     if (saved) await runAdvisorComparison();
@@ -2627,7 +2720,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
@@ -2635,6 +2728,8 @@ function home(request: Request, env: Env): Response {
       browser_workspace: "/advisor",
       saved_guided_client_workflow: true,
       repayment_comparison_visualizations: true,
+      retained_client_artifacts: true,
+      calculation_history: true,
       raw_student_aid_retention: false
     },
     hardening: {
