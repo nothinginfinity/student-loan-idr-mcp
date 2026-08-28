@@ -1,5 +1,7 @@
 import { calculateRepayment, getPolicyStatus, ibrZeroPaymentAgiThreshold } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
+import { handleAdvisorApi } from "./advisor.ts";
+import type { D1DatabaseBinding } from "./advisor.ts";
 import type {
   AdvisorClientDashboardSummary,
   AdvisorClientRecordV1,
@@ -9,7 +11,7 @@ import type {
   TemplateRequest
 } from "./types.ts";
 
-const SERVER_VERSION = "0.7.3";
+const SERVER_VERSION = "0.8.2";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -27,6 +29,7 @@ interface Env {
   MCP_BEARER_TOKEN?: string;
   MCP_ALLOWED_ORIGINS?: string;
   MCP_RATE_LIMITER?: RateLimiterBinding;
+  ADVISOR_DB?: D1DatabaseBinding;
 }
 
 export function advisorCanAccessClient(principal: AdvisorPrincipal, client: AdvisorClientRecordV1): boolean {
@@ -1909,7 +1912,13 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp"],
+    endpoints: ["GET /", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId"],
+    advisor_workspace: {
+      persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
+      authentication: "server_session_cookie",
+      owner_scoped_client_crud: Boolean(env.ADVISOR_DB),
+      raw_student_aid_retention: false
+    },
     hardening: {
       max_request_bytes: MAX_REQUEST_BYTES,
       bearer_auth_configured: Boolean(env.MCP_BEARER_TOKEN),
@@ -1930,6 +1939,7 @@ export default {
     if (request.method === "GET" && url.pathname === "/") return uiResponse();
     if (request.method === "GET" && url.pathname === "/health") return home(request, env);
     if (request.method === "GET" && url.pathname === "/api/ibr-zero-payment") return ibrZeroPaymentResponse(request, env);
+    if (url.pathname.startsWith("/api/advisor/")) return handleAdvisorApi(request, env);
     if (request.method === "POST" && url.pathname === "/api/calculate") return handleCalculatorApi(request, env);
     if (request.method === "POST" && url.pathname === "/api/document") return handleDocumentApi(request, env);
     if (url.pathname === "/mcp" && request.method === "GET") {
