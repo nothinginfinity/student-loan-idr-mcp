@@ -612,7 +612,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.8.3', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.8.4', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -687,7 +687,7 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 72
+              checks: 91
             }));
             console.log('::notice title=Live product acceptance::91 production checks passed');
           })().catch((error) => {
