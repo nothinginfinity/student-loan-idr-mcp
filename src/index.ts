@@ -1039,7 +1039,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       const wrapper = document.createElement("label");
       const title = document.createElement("span"); title.append(addText("span", provenanceLabel(importedFieldProvenance[field] || (portfolio.borrower?.[field] ? "imported_studentaid" : "missing_review")), "basis"), document.createTextNode(label));
       const input = document.createElement("input"); input.value = portfolio.borrower?.[field] || ""; input.dataset.importField = field; input.placeholder = "Not supplied by StudentAid";
-      input.addEventListener("input", () => { importedFieldProvenance[field] = advisorClientId ? "advisor_entered" : "borrower_confirmed"; title.querySelector(".basis").textContent = provenanceLabel(importedFieldProvenance[field]); });
+      input.addEventListener("input", () => {
+        importedFieldProvenance[field] = advisorClientId ? "advisor_entered" : "borrower_confirmed";
+        if (portfolio.borrower) portfolio.borrower[field] = input.value;
+        if (field === "displayName") setDocumentValue("borrowerName", input.value);
+        title.querySelector(".basis").textContent = provenanceLabel(importedFieldProvenance[field]);
+      });
       wrapper.append(title, input); borrowerGrid.appendChild(wrapper);
     });
     studentAidReview.appendChild(borrowerGrid);
@@ -1307,18 +1312,29 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     advisorComparisonWorkspace.hidden = false;
     advisorComparisonStatus.textContent = "Saved facts loaded. Compare after saving any changes you make in this session.";
 
-    if (client.normalizedLoanPortfolio?.repaymentLoans?.length) {
-      const repaymentLoans = client.normalizedLoanPortfolio.repaymentLoans;
+    if (client.normalizedLoanPortfolio?.repaymentLoans?.length || client.normalizedLoanPortfolio?.loans?.length) {
+      const repaymentLoans = client.normalizedLoanPortfolio.repaymentLoans || [];
       const eligibilityLoans = client.normalizedLoanPortfolio.eligibilityLoans;
+      const savedLoans = client.normalizedLoanPortfolio.loans?.length
+        ? client.normalizedLoanPortfolio.loans
+        : repaymentLoans.map((loan, loanIndex) => ({ loanIndex, outstandingPrincipal: loan.principal, interestRatePercent: loan.annualInterestRatePercent, provenance: { outstandingPrincipal: "imported_studentaid", interestRatePercent: "imported_studentaid" } }));
+      const totalPrincipal = client.normalizedLoanPortfolio.summary?.totalOutstandingPrincipal ?? repaymentLoans.reduce((sum, loan) => sum + loan.principal, 0);
+      const totalInterest = client.normalizedLoanPortfolio.summary?.totalOutstandingInterest ?? savedLoans.reduce((sum, loan) => sum + (loan.outstandingInterest || 0), 0);
+      importedFieldProvenance = { ...(client.fieldProvenance || {}) };
       importedPortfolio = {
-        loans: repaymentLoans.map((loan) => ({ principal: loan.principal, interestRate: loan.annualInterestRatePercent })),
+        loans: savedLoans,
         repaymentLoans,
         ...(eligibilityLoans ? { eligibilityLoans } : {}),
-        totalPrincipal: repaymentLoans.reduce((sum, loan) => sum + loan.principal, 0),
-        ambiguousCount: eligibilityLoans ? 0 : repaymentLoans.length
+        summary: client.normalizedLoanPortfolio.summary || { loanCount: savedLoans.length, activeLoanCount: repaymentLoans.length, totalOutstandingPrincipal: totalPrincipal, totalOutstandingInterest: totalInterest, repaymentLoanCount: repaymentLoans.length, eligibilityMappedLoanCount: eligibilityLoans?.length || 0, ambiguousEligibilityLoanCount: eligibilityLoans ? 0 : repaymentLoans.length, hasLoanDisbursedOnOrAfterJuly1_2026: Boolean(eligibilityLoans?.some((loan) => loan.disbursementPeriod === "on_or_after_2026_07_01")) },
+        totalPrincipal,
+        totalInterest,
+        ambiguousCount: client.normalizedLoanPortfolio.summary?.ambiguousEligibilityLoanCount ?? (eligibilityLoans ? 0 : repaymentLoans.length),
+        borrower: { ...client.contact, provenance: { ...(client.fieldProvenance || {}) } },
+        servicerName: client.servicerName || null,
+        fileRequestDate: client.studentAidImport?.fileRequestDate || null
       };
       renderPortfolio(importedPortfolio);
-      importStatus.textContent = "Saved normalized loan portfolio loaded. No raw StudentAid.gov file is stored on the server.";
+      importStatus.textContent = "Saved normalized StudentAid facts loaded. The raw StudentAid.gov file was never stored on the server.";
     }
 
     renderIncomeReadiness();
@@ -1358,6 +1374,18 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     }
   }
 
+  function reviewedStudentAidContact() {
+    const values = { ...(advisorClient?.contact || {}) };
+    studentAidReview.querySelectorAll("[data-import-field]").forEach((input) => {
+      const field = input.dataset.importField;
+      if (!field) return;
+      const value = String(input.value || "").trim();
+      if (value) values[field] = value; else delete values[field];
+    });
+    if (!values.displayName) values.displayName = advisorClient?.contact?.displayName || "Client";
+    return values;
+  }
+
   async function saveAdvisorClientProgress() {
     if (!advisorClient || !advisorCsrfToken) return false;
     advisorSaveProgress.disabled = true;
@@ -1388,18 +1416,26 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
         confirmedFacts: facts,
         readinessState: advisorReadinessForPersistence()
       };
+      if (studentAidReview.querySelector("[data-import-field]")) {
+        body.contact = reviewedStudentAidContact();
+        body.fieldProvenance = { ...importedFieldProvenance };
+      }
       const servicerControl = documentForm.elements.namedItem("servicerName");
       if (servicerControl && "value" in servicerControl) body.servicerName = String(servicerControl.value).trim();
-      if (importedPortfolio?.repaymentLoans?.length) {
+      if (importedPortfolio?.repaymentLoans?.length || importedPortfolio?.loans?.length) {
         body.normalizedLoanPortfolio = {
-          repaymentLoans: importedPortfolio.repaymentLoans,
-          ...(importedPortfolio.eligibilityLoans ? { eligibilityLoans: importedPortfolio.eligibilityLoans } : {})
+          repaymentLoans: importedPortfolio.repaymentLoans || [],
+          ...(importedPortfolio.eligibilityLoans ? { eligibilityLoans: importedPortfolio.eligibilityLoans } : {}),
+          ...(importedPortfolio.loans ? { loans: importedPortfolio.loans } : {}),
+          ...(importedPortfolio.summary ? { summary: importedPortfolio.summary } : {})
         };
       }
-      if ((loanFile.files && loanFile.files[0]) || advisorClient.studentAidImport) {
+      if ((loanFile.files && loanFile.files[0]) || advisorClient.studentAidImport || importedPortfolio?.loans?.length) {
         body.studentAidImport = {
           source: "studentaid_download",
           importedAt: loanFile.files && loanFile.files[0] ? new Date().toISOString() : advisorClient.studentAidImport?.importedAt,
+          ...(importedPortfolio?.fileRequestDate ? { fileRequestDate: importedPortfolio.fileRequestDate } : advisorClient.studentAidImport?.fileRequestDate ? { fileRequestDate: advisorClient.studentAidImport.fileRequestDate } : {}),
+          mappingVersion: "2026-08-28-v1",
           rawFileRetained: false
         };
       }
@@ -2217,7 +2253,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 
   loanFile.addEventListener("change", async () => {
     importedPortfolio = null;
+    importedFieldProvenance = {};
     portfolioSummary.replaceChildren();
+    studentAidReview.replaceChildren();
     const file = loanFile.files && loanFile.files[0];
     if (!file) {
       importStatus.textContent = "No loan file loaded. Manual loan fields remain available below.";
@@ -2233,8 +2271,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       const portfolio = parseStudentAidData(text);
       if (!portfolio.loans.length) throw new Error("No active loan records with an outstanding principal balance were found.");
       importedPortfolio = portfolio;
+      importedFieldProvenance = { ...(portfolio.borrower?.provenance || {}) };
       renderPortfolio(portfolio);
-      importStatus.textContent = "Portfolio loaded locally. The raw StudentAid.gov file has not been uploaded.";
+      importStatus.textContent = advisorClientId
+        ? "Client facts prefilled locally. Review them, then use Save progress to persist only normalized facts. The raw StudentAid.gov file has not been uploaded."
+        : "Borrower facts and loan details prefilled locally for this private session. The raw StudentAid.gov file has not been uploaded or persisted.";
     } catch (error) {
       importStatus.textContent = error instanceof Error ? error.message : "Unable to read that loan-data file.";
       loanFile.value = "";
