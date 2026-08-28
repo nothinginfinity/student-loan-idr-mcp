@@ -310,8 +310,14 @@ jobs:
           };
 
           (async () => {
-            const healthResponse = await fetchChecked(`${base}/health`);
-            const health = await healthResponse.json();
+            let healthResponse;
+            let health;
+            for (let attempt = 1; attempt <= 10; attempt += 1) {
+              healthResponse = await fetchChecked(`${base}/health`);
+              health = await healthResponse.json();
+              if (healthResponse.status === 200 && health?.version === '0.7.2') break;
+              if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
+            }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
             assert(health.version === '0.7.2', `unexpected live version ${health.version}`);
