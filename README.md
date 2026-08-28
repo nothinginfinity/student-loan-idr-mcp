@@ -102,9 +102,11 @@ The borrower page now includes a deterministic guided assistant that records onl
 
 V0.7.2 turns the guided stated-income and unemployment follow-ups into a real document-review workflow. Confirmed income amount/cadence facts are reused; the borrower can supply or intentionally leave placeholders for their name, payer/employer/agency, servicer, address, and explanation. The browser calls a same-origin `POST /api/document` route that validates the request against the existing documentation-tool schema and renders through the same trusted template engine used by MCP.
 
+V0.7.3 extends that private session to a real source-by-source current-income ledger. Employment, self-employment, contract/gig, unemployment compensation, and other taxable sources stay separate; each source carries borrower-stated evidence readiness and a conservative `Document-ready`, `Application-ready`, or `Needs review` state. The UI shows a source-specific evidence checklist, lets the borrower generate either a combined statement or a single-source draft, and sends all confirmed guided sources to the deterministic calculator rather than collapsing them into one ambiguous amount. Evidence readiness is not evidence verification: the browser does not upload or inspect evidence files.
+
 The draft stays review-before-sign: print / Save PDF and local HTML download remain disabled until the borrower explicitly acknowledges reviewing the facts. The service does not create signatures, fabricate employer records or evidence, persist the draft, or auto-submit anything. The three-tool MCP contract remains unchanged.
 
-Borrower accounts and secure saved profiles are planned after the guided workflow. x402 is deliberately deferred until an account-linked signup-minted token/asset contract, anti-abuse model, wallet binding, and economic/legal boundaries are explicitly designed and accepted.
+V0.8 is planned as an advisor/manager account with a multi-client workspace, not a one-borrower saved profile. x402 is deliberately deferred until an account-linked signup-minted token/asset contract, anti-abuse model, wallet binding, and economic/legal boundaries are explicitly designed and accepted.
 
 ## MCP
 
