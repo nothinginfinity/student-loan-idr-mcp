@@ -374,7 +374,7 @@ jobs:
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
-                templateType: 'unemployment_income_statement',
+                templateType: 'current_income_statement',
                 outputFormat: 'text',
                 borrowerName: 'Live Browser Draft',
                 servicerName: 'Example Servicer',
