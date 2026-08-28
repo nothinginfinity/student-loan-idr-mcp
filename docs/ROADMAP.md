@@ -173,7 +173,24 @@ Acceptance evidence:
 - Live acceptance covers the browser-local source-by-source income ledger, borrower-stated evidence-readiness boundary, source-specific evidence guidance, separate `Document-ready` / `Application-ready` / `Needs review` states, combined and source-specific drafts through the trusted multi-source documentation engine, preservation of two distinct income sources, and reuse of all confirmed guided sources by the deterministic calculator.
 - The raw StudentAid.gov file remains browser-local; evidence files are not uploaded or verified by this slice; no borrower account or server persistence was introduced; and the existing three-tool MCP contract remains unchanged.
 
-## V0.8 — Advisor/manager accounts + multi-client workspace — NEXT / PLANNED
+## V0.8 — Advisor/manager accounts + multi-client workspace — IN PROGRESS
+
+### V0.8.1 — Advisor/client authority + persistence contract — COMPLETE
+
+- Added a versioned `AdvisorClientRecordV1` model for owner-scoped client contact data, normalized loan facts, confirmed application/income facts, evidence readiness, workflow state, retained draft IDs, notes, and considered plans without enabling server persistence yet.
+- Added fail-closed authority helpers: only an active advisor whose `advisorId` exactly matches `client.ownerAdvisorId` may access the client; cross-advisor and suspended-account access use the same generic denial.
+- Added a minimized dashboard projection that exposes only client ID, display name, lifecycle/readiness state, and update time rather than copying private contact, loan, income, note, evidence, or draft details into the client list.
+- Structurally fixed StudentAid import metadata to `rawFileRetained: false`, preserving the browser-local raw-file boundary from V0.6/V0.7.
+- Added `docs/V0_8_ADVISOR_CLIENT_CONTRACT.md` to freeze ownership, consent/provenance, persistence, deletion/export, session/recovery, audit, and sensitive-data boundaries before D1/authentication work.
+- Added deterministic regression coverage proving owner access, cross-advisor denial, suspended-owner denial, generic errors, dashboard minimization, and the no-raw-file-retention invariant.
+
+Acceptance evidence:
+
+- Clean authority/data-model candidate `3e2232d8f6fac19dc528232e8061fa79998b990e` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in CI run `33175744194`.
+- The contract was committed as `e6bd0061215062116a1e8a9a18ead563918aa9cb`.
+- V0.8.1 intentionally does **not** create a D1 client store, login/session endpoint, recovery flow, public advisor CRUD API, raw StudentAid/evidence-file storage, comparison charts, or x402 integration.
+
+The next bounded V0.8 slice is authenticated advisor identity/session plus an owner-keyed D1 client store and scoped client CRUD under the accepted V0.8.1 contract.
 
 1. Make the persistent account an **advisor/manager account**, not a one-borrower account. One authenticated advisor can create, search, open, and manage many borrower **client records** from a single workspace.
 2. Give each client a structured profile for contact information, normalized StudentAid loan portfolio, confirmed application facts, income sources, family-size facts, evidence/readiness state, servicer information, generated document drafts, selected/considered repayment programs, notes, and repeat calculations. Client records must remain logically isolated from one another and scoped to the owning/authorized advisor account.
