@@ -1,5 +1,6 @@
 import { scryptSync } from "node:crypto";
-import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal } from "./types.ts";
+import { calculateRepayment } from "./formulas.ts";
+import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, RepaymentPlan, RepaymentLoanInput } from "./types.ts";
 
 const COOKIE = "sl_advisor_session";
 const TTL_SECONDS = 12 * 60 * 60;
@@ -97,6 +98,151 @@ async function clearFailures(database: D1DatabaseBinding, e: string): Promise<vo
 
 function parseClient(row: ClientRow): AdvisorClientRecordV1 { let r: unknown; try { r=JSON.parse(row.record_json); } catch { throw new ApiError(500,"Stored client record is invalid."); } const x=r as AdvisorClientRecordV1; if (!x || x.schemaVersion!==1 || x.clientId!==row.client_id || x.ownerAdvisorId!==row.owner_advisor_id) throw new ApiError(500,"Stored client record failed integrity checks."); return x; }
 function summary(row: ClientRow): AdvisorClientDashboardSummary { return { clientId: row.client_id, displayName: row.display_name, lifecycleState: row.lifecycle_state, readinessState: row.readiness_state, updatedAt: row.updated_at }; }
+
+type ComparisonPoint = { month: number; remainingBalance: number; cumulativeBorrowerPaid: number; cumulativeInterestWaived: number; cumulativePrincipalMatch: number };
+type ComparisonProjection = {
+  plan: RepaymentPlan;
+  eligibilityStatus: string;
+  currentMonthlyPayment: number;
+  projectionKind: "forgiveness_horizon" | "sunset_only" | "horizon_unknown" | "unavailable";
+  horizonMonths: number | null;
+  horizonLabel: string;
+  projectedBorrowerPaid: number | null;
+  projectedRemainingBalance: number | null;
+  projectedForgiveness: number | null;
+  projectedInterestWaived: number | null;
+  projectedPrincipalMatch: number | null;
+  payoffMonth: number | null;
+  series: ComparisonPoint[];
+  warnings: string[];
+};
+
+function roundCents(value: number): number { return Math.round((value + Number.EPSILON) * 100) / 100; }
+function allocatePrincipalReduction(loans: RepaymentLoanInput[], amount: number): RepaymentLoanInput[] {
+  const total = loans.reduce((sum, loan) => sum + loan.principal, 0);
+  if (amount <= 0 || total <= 0) return loans;
+  const reduction = Math.min(amount, total);
+  let remaining = reduction;
+  return loans.map((loan, index) => {
+    const share = index === loans.length - 1 ? remaining : Math.min(loan.principal, reduction * (loan.principal / total));
+    remaining -= share;
+    return { ...loan, principal: Math.max(0, loan.principal - share) };
+  });
+}
+function comparisonRequest(client: AdvisorClientRecordV1): CalculatorRequest {
+  const facts = client.confirmedFacts;
+  const portfolio = client.normalizedLoanPortfolio;
+  if (!facts?.income?.length) throw new ApiError(422, "Save at least one normalized income input before comparing repayment programs.");
+  if (!facts.region || !Number.isInteger(facts.familySize) || facts.familySize < 1) throw new ApiError(422, "Save region and family size before comparing repayment programs.");
+  if (!portfolio?.repaymentLoans?.length) throw new ApiError(422, "Save a normalized loan portfolio with balance and interest-rate facts before comparing repayment programs.");
+  return {
+    income: facts.income,
+    region: facts.region,
+    familySize: facts.familySize,
+    ...(typeof facts.dependentsClaimedOnFederalTaxReturn === "number" ? { dependentsClaimedOnFederalTaxReturn: facts.dependentsClaimedOnFederalTaxReturn } : {}),
+    ...(facts.taxFilingStatus ? { taxFilingStatus: facts.taxFilingStatus } : {}),
+    loan: {
+      repaymentLoans: portfolio.repaymentLoans,
+      ...(portfolio.eligibilityLoans?.length ? { eligibilityLoans: portfolio.eligibilityLoans } : {}),
+      ...(typeof facts.newBorrowerOnOrAfterJuly1_2014 === "boolean" ? { newBorrowerOnOrAfterJuly1_2014: facts.newBorrowerOnOrAfterJuly1_2014 } : {})
+    },
+    plans: ["RAP", "IBR", "PAYE", "ICR"]
+  };
+}
+function projectionHorizon(plan: RepaymentPlan, client: AdvisorClientRecordV1): { kind: ComparisonProjection["projectionKind"]; months: number | null; label: string } {
+  if (plan === "RAP") return { kind: "forgiveness_horizon", months: 360, label: "30-year RAP discharge horizon (360 modeled monthly payments)" };
+  if (plan === "IBR") {
+    const newer = client.confirmedFacts?.newBorrowerOnOrAfterJuly1_2014;
+    if (newer === true) return { kind: "forgiveness_horizon", months: 240, label: "20-year IBR forgiveness horizon for a saved post-July-1-2014 new-borrower fact" };
+    if (newer === false) return { kind: "forgiveness_horizon", months: 300, label: "25-year IBR forgiveness horizon for a saved earlier-borrower fact" };
+    return { kind: "horizon_unknown", months: null, label: "IBR horizon withheld until the 20-vs-25-year borrower-timing fact is saved" };
+  }
+  return { kind: "sunset_only", months: 22, label: `${plan} modeled only through the July 1, 2028 plan sunset; long-term forgiveness is not projected as if the plan continues` };
+}
+function simulateProjection(plan: RepaymentPlan, monthlyPayment: number, loansInput: RepaymentLoanInput[], horizon: ReturnType<typeof projectionHorizon>, eligibilityStatus: string): ComparisonProjection {
+  const warnings = [
+    "Projection holds the saved income, family/dependent facts, payment formula, and current interest rates constant; real annual recertification can change payments.",
+    "Projection starts from the currently saved outstanding principal and does not credit prior qualifying payment counts, PSLF credit, deferment/forbearance history, defaults, extra payments, capitalization events, or tax consequences."
+  ];
+  if (eligibilityStatus !== "eligible") warnings.push(`Current plan eligibility is ${eligibilityStatus}; this modeled scenario is not an eligibility determination.`);
+  if (horizon.kind === "horizon_unknown") return { plan, eligibilityStatus, currentMonthlyPayment: monthlyPayment, projectionKind: horizon.kind, horizonMonths: null, horizonLabel: horizon.label, projectedBorrowerPaid: null, projectedRemainingBalance: null, projectedForgiveness: null, projectedInterestWaived: null, projectedPrincipalMatch: null, payoffMonth: null, series: [], warnings };
+  if (eligibilityStatus === "ineligible") return { plan, eligibilityStatus, currentMonthlyPayment: monthlyPayment, projectionKind: "unavailable", horizonMonths: horizon.months, horizonLabel: "Projection withheld because the saved loan facts are currently ineligible for this plan.", projectedBorrowerPaid: null, projectedRemainingBalance: null, projectedForgiveness: null, projectedInterestWaived: null, projectedPrincipalMatch: null, payoffMonth: null, series: [], warnings };
+  const months = horizon.months ?? 0;
+  let loans = loansInput.map((loan) => ({ ...loan }));
+  let accruedUnpaidInterest = 0;
+  let cumulativeBorrowerPaid = 0;
+  let cumulativeInterestWaived = 0;
+  let cumulativePrincipalMatch = 0;
+  let payoffMonth: number | null = null;
+  const totalBalance = () => loans.reduce((sum, loan) => sum + loan.principal, 0) + accruedUnpaidInterest;
+  const point = (month: number): ComparisonPoint => ({ month, remainingBalance: roundCents(totalBalance()), cumulativeBorrowerPaid: roundCents(cumulativeBorrowerPaid), cumulativeInterestWaived: roundCents(cumulativeInterestWaived), cumulativePrincipalMatch: roundCents(cumulativePrincipalMatch) });
+  const series: ComparisonPoint[] = [point(0)];
+  for (let month = 1; month <= months; month += 1) {
+    const principalBefore = loans.reduce((sum, loan) => sum + loan.principal, 0);
+    if (principalBefore <= 0 && accruedUnpaidInterest <= 0) { payoffMonth = payoffMonth ?? month - 1; break; }
+    const currentInterest = loans.reduce((sum, loan) => sum + loan.principal * loan.annualInterestRatePercent / 1200, 0);
+    const amountDueForModel = principalBefore + accruedUnpaidInterest + currentInterest;
+    const borrowerPayment = Math.min(monthlyPayment, amountDueForModel);
+    cumulativeBorrowerPaid += borrowerPayment;
+    let borrowerPrincipalReduction = 0;
+    if (plan === "RAP") {
+      const interestPaid = Math.min(borrowerPayment, currentInterest);
+      const waived = Math.max(0, currentInterest - interestPaid);
+      cumulativeInterestWaived += waived;
+      borrowerPrincipalReduction = Math.min(principalBefore, Math.max(0, borrowerPayment - interestPaid));
+      const match = Math.min(principalBefore - borrowerPrincipalReduction, Math.max(0, Math.min(50, borrowerPayment) - borrowerPrincipalReduction));
+      cumulativePrincipalMatch += match;
+      loans = allocatePrincipalReduction(loans, borrowerPrincipalReduction + match);
+      accruedUnpaidInterest = 0;
+    } else {
+      const totalInterestDue = accruedUnpaidInterest + currentInterest;
+      const interestPaid = Math.min(borrowerPayment, totalInterestDue);
+      accruedUnpaidInterest = totalInterestDue - interestPaid;
+      borrowerPrincipalReduction = Math.min(principalBefore, Math.max(0, borrowerPayment - interestPaid));
+      loans = allocatePrincipalReduction(loans, borrowerPrincipalReduction);
+    }
+    if (totalBalance() <= 0.005) { payoffMonth = month; accruedUnpaidInterest = 0; loans = loans.map((loan) => ({ ...loan, principal: 0 })); }
+    if (month % 12 === 0 || month === months || payoffMonth === month) series.push(point(month));
+    if (payoffMonth === month) break;
+  }
+  const remaining = roundCents(totalBalance());
+  if (plan === "IBR") warnings.push("IBR projection does not model loan-specific temporary interest subsidies because the saved repayment rows do not encode enough subsidy detail; unpaid interest is tracked without assumed capitalization.");
+  if (horizon.kind === "sunset_only") warnings.push("PAYE and ICR end no later than July 1, 2028 under the current policy snapshot, so the comparison intentionally stops there and does not report a standalone long-term forgiveness amount.");
+  return {
+    plan,
+    eligibilityStatus,
+    currentMonthlyPayment: monthlyPayment,
+    projectionKind: horizon.kind,
+    horizonMonths: months,
+    horizonLabel: horizon.label,
+    projectedBorrowerPaid: roundCents(cumulativeBorrowerPaid),
+    projectedRemainingBalance: remaining,
+    projectedForgiveness: horizon.kind === "forgiveness_horizon" ? remaining : null,
+    projectedInterestWaived: plan === "RAP" ? roundCents(cumulativeInterestWaived) : null,
+    projectedPrincipalMatch: plan === "RAP" ? roundCents(cumulativePrincipalMatch) : null,
+    payoffMonth,
+    series,
+    warnings
+  };
+}
+function compareClientPrograms(client: AdvisorClientRecordV1) {
+  const request = comparisonRequest(client);
+  const calculation = calculateRepayment(request);
+  const loans = request.loan!.repaymentLoans!;
+  const projections = calculation.planEstimates.map((estimate) => simulateProjection(estimate.plan, estimate.monthlyPaymentEstimate, loans, projectionHorizon(estimate.plan, client), estimate.eligibility.status));
+  return {
+    schema: "student-loan-idr-advisor-comparison-v1",
+    policySnapshot: calculation.policySnapshot,
+    generatedAt: new Date().toISOString(),
+    clientId: client.clientId,
+    assumptions: [
+      "All future-looking figures are modeled estimates, not guaranteed forgiveness, eligibility, approval, or servicer outcomes.",
+      "RAP modeling applies the current unpaid-interest waiver and monthly principal-match mechanics to the saved loan balances; IBR uses the saved 20/25-year borrower timing only when explicitly confirmed.",
+      "PAYE and ICR are modeled only through their July 1, 2028 sunset under the current policy snapshot."
+    ],
+    projections
+  };
+}
 function lifecycle(value: unknown): AdvisorClientLifecycleState { if (["active","awaiting_borrower_review","completed","archived"].includes(String(value))) return value as AdvisorClientLifecycleState; throw new ApiError(400,"Invalid client lifecycle state."); }
 function readiness(value: unknown): AdvisorClientReadinessState { if (["needs_evidence","document_ready","application_ready"].includes(String(value))) return value as AdvisorClientReadinessState; throw new ApiError(400,"Invalid client readiness state."); }
 function safeJson(value: unknown): unknown {
@@ -144,6 +290,7 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       if(request.method==="GET"&&r.suffix===""){const row=await owned(database,a.account.advisor_id,r.id);return json({ok:true,client:parseClient(row)});}
       if(request.method==="PUT"&&r.suffix==="") return await updateClient(request,database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/archive") return await archiveClient(request,database,a,r.id);
+      if(request.method==="GET"&&r.suffix==="/comparison"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row),comparison=compareClientPrograms(client);await audit(database,a.account.advisor_id,"client.compare",r.id);return json({ok:true,comparison});}
       if(request.method==="DELETE"&&r.suffix==="") return await deleteClient(request,database,a,r.id);
       if(request.method==="GET"&&r.suffix==="/export"){const row=await owned(database,a.account.advisor_id,r.id);await audit(database,a.account.advisor_id,"client.export",r.id);return json({ok:true,schema:"student-loan-idr-advisor-client-export-v1",exportedAt:new Date().toISOString(),client:parseClient(row)});}
     }
