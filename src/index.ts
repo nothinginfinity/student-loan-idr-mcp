@@ -2,7 +2,7 @@ import { calculateRepayment, getPolicyStatus, ibrZeroPaymentAgiThreshold } from 
 import { getDocumentationTemplate } from "./templates.ts";
 import type { CalculatorRequest, Region, TemplateRequest } from "./types.ts";
 
-const SERVER_VERSION = "0.7.2";
+const SERVER_VERSION = "0.7.3";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -238,6 +238,11 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
     .fact { border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 12px; padding: 12px; }
     .fact strong { display: block; margin-bottom: 4px; }
+    .readiness-list { display: grid; gap: 10px; margin-top: 12px; }
+    .readiness-card { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 12px; padding: 12px; }
+    .readiness-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .readiness-card ul { margin-bottom: 0; }
+    .readiness-actions { margin-top: 12px; }
     #portfolio-summary { margin-top: 12px; }
     ul { padding-left: 22px; }
     a { color: inherit; }
@@ -276,8 +281,21 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   <section class="workspace document-workspace" id="document-workspace" aria-labelledby="document-workspace-title" hidden>
     <h2 id="document-workspace-title">Review your supporting statement</h2>
     <p><span class="basis">Draft only</span>This uses only facts you supplied. Missing facts stay as visible placeholders. It does not create employer records, evidence, or signatures, and it does not submit anything to Federal Student Aid or a loan servicer.</p>
+    <div class="fact-ledger" id="income-readiness-panel">
+      <strong>Source-by-source income readiness</strong>
+      <p class="muted">Each taxable source stays separate in this browser-local session. Evidence readiness is borrower-stated only: this page does not upload, inspect, or verify evidence files.</p>
+      <p id="readiness-summary" class="muted">No current income sources confirmed yet.</p>
+      <div id="income-source-readiness" class="readiness-list"></div>
+      <div class="readiness-actions"><button type="button" id="add-income-source">Add another income source</button></div>
+    </div>
     <form id="document-form">
       <div class="grid">
+        <label class="span-2">Draft scope
+          <select name="documentScope" id="document-scope">
+            <option value="combined">Combined confirmed income sources</option>
+          </select>
+          <span class="muted">Choose a single source for a source-specific statement, or keep all confirmed sources together.</span>
+        </label>
         <label>Document date <span class="muted">(optional)</span>
           <input name="documentDate" type="text" placeholder="Leave blank for [date]">
         </label>
@@ -340,6 +358,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   </section>
 
   <form id="calculator-form">
+    <p id="calculator-income-note" class="muted">If you use the guided source-by-source workflow, calculation uses every confirmed guided taxable income source. The visible income controls remain the manual fallback and the first-source preview. Hourly guided sources use the displayed hours-per-week and weeks-per-year controls, so review those before calculating.</p>
     <div class="grid">
       <label>Income cadence
         <select name="cadence" id="cadence">
@@ -472,6 +491,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const documentReviewed = document.getElementById("document-reviewed");
   const documentPrint = document.getElementById("document-print");
   const documentDownload = document.getElementById("document-download");
+  const documentScope = document.getElementById("document-scope");
+  const readinessSummary = document.getElementById("readiness-summary");
+  const incomeSourceReadiness = document.getElementById("income-source-readiness");
+  const addIncomeSource = document.getElementById("add-income-source");
   const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   const numberOrUndefined = (value) => value === "" ? undefined : Number(value);
   let importedPortfolio = null;
@@ -480,6 +503,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   let guideContinueToCalculator = false;
   let guideIncomeCadence = null;
   let guideIncomeAmount = null;
+  let guidedIncomeSources = [];
+  let pendingIncomeSource = null;
+  let collectMultipleSources = false;
 
   function numericValue(value) {
     if (!value) return undefined;
@@ -681,30 +707,159 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     return "other";
   }
 
+  function sourceTypeLabel(value) {
+    const labels = {
+      employment: "Employment",
+      self_employment: "Self-employment",
+      contract: "Contract / gig income",
+      unemployment: "Unemployment compensation",
+      other: "Other taxable income"
+    };
+    return labels[value] || "Other taxable income";
+  }
+
+  function evidenceStatusLabel(value) {
+    if (value === "documented") return "Evidence in hand (borrower-stated)";
+    if (value === "identified") return "Evidence identified (borrower-stated)";
+    return "Needs evidence / review";
+  }
+
+  function sourceEvidenceGuidance(sourceType) {
+    if (sourceType === "employment") return "Recent pay stub(s) or an employer statement showing gross pay and pay frequency.";
+    if (sourceType === "self_employment" || sourceType === "contract") return "Recent client/business payment records, invoices paired with payment evidence, or a payer statement that reflects current taxable income.";
+    if (sourceType === "unemployment") return "Recent unemployment-benefits statement or payment history.";
+    return "A recent payer/source record showing the current taxable amount and payment frequency, or another item requested by the servicer.";
+  }
+
+  function sourceDocumentReady(source) {
+    return Boolean(source && source.sourceType && typeof source.grossAmount === "number" && source.paymentFrequency);
+  }
+
+  function sourceApplicationReady(source) {
+    return sourceDocumentReady(source) && Boolean(source.name) && ["documented", "identified"].includes(source.evidenceStatus);
+  }
+
+  function refreshDocumentScopeOptions() {
+    const previous = documentScope.value;
+    documentScope.replaceChildren();
+    const combined = document.createElement("option");
+    combined.value = "combined";
+    combined.textContent = "Combined confirmed income sources";
+    documentScope.appendChild(combined);
+    guidedIncomeSources.forEach((source, index) => {
+      const option = document.createElement("option");
+      option.value = "source:" + index;
+      option.textContent = "Source " + (index + 1) + " — " + sourceTypeLabel(source.sourceType) + (source.name ? " — " + source.name : "");
+      documentScope.appendChild(option);
+    });
+    const values = Array.from(documentScope.options).map((option) => option.value);
+    documentScope.value = values.includes(previous) ? previous : "combined";
+  }
+
+  function renderIncomeReadiness() {
+    incomeSourceReadiness.replaceChildren();
+    if (!guidedIncomeSources.length) {
+      readinessSummary.textContent = guideIncomeSituation === "none"
+        ? "No current taxable income was stated. A no-current-taxable-income draft can be prepared, but the borrower should still review current servicer instructions before submission."
+        : "No current income sources confirmed yet.";
+      refreshDocumentScopeOptions();
+      return;
+    }
+
+    let documentReadyCount = 0;
+    let applicationReadyCount = 0;
+    guidedIncomeSources.forEach((source, index) => {
+      const documentReady = sourceDocumentReady(source);
+      const applicationReady = sourceApplicationReady(source);
+      if (documentReady) documentReadyCount += 1;
+      if (applicationReady) applicationReadyCount += 1;
+
+      const card = document.createElement("div");
+      card.className = "readiness-card";
+      const head = document.createElement("div");
+      head.className = "readiness-head";
+      const title = addText("strong", "Source " + (index + 1) + " — " + sourceTypeLabel(source.sourceType));
+      const state = addText("span", applicationReady ? "Application-ready" : documentReady ? "Document-ready" : "Needs review", "badge");
+      head.append(title, state);
+      card.appendChild(head);
+      card.appendChild(addText("p", (source.name || "[payer / source name still missing]") + " · " + money.format(source.grossAmount) + " · " + source.paymentFrequency, "muted"));
+
+      const checklist = document.createElement("ul");
+      const checks = [
+        [Boolean(source.sourceType), "Income source type confirmed"],
+        [typeof source.grossAmount === "number" && Boolean(source.paymentFrequency), "Gross taxable amount and payment frequency confirmed"],
+        [Boolean(source.name), "Payer / source name confirmed"],
+        [["documented", "identified"].includes(source.evidenceStatus), evidenceStatusLabel(source.evidenceStatus)]
+      ];
+      checks.forEach(([ok, label]) => checklist.appendChild(addText("li", (ok ? "✓ " : "□ ") + label)));
+      card.appendChild(checklist);
+      card.appendChild(addText("p", "Typical evidence for this source: " + sourceEvidenceGuidance(source.sourceType), "muted"));
+      incomeSourceReadiness.appendChild(card);
+    });
+
+    if (applicationReadyCount === guidedIncomeSources.length) {
+      readinessSummary.textContent = "Application-ready: every confirmed source has core facts, a payer/source name, and evidence that the borrower says is in hand or identified. Final servicer review is still required.";
+    } else if (documentReadyCount === guidedIncomeSources.length) {
+      readinessSummary.textContent = "Document-ready: every confirmed source has enough core facts for a draft, but one or more sources still need a payer/source name, evidence, or review before this session should be treated as application-ready.";
+    } else {
+      readinessSummary.textContent = "Needs review: one or more income sources are missing core amount/frequency facts needed for a source-specific draft.";
+    }
+    refreshDocumentScopeOptions();
+  }
+
+  function documentIncomeSources() {
+    const sources = guidedIncomeSources.map((source) => ({
+      sourceType: source.sourceType,
+      ...(source.name ? { name: source.name } : {}),
+      ...(source.address ? { address: source.address } : {}),
+      ...(typeof source.grossAmount === "number" ? { grossAmount: source.grossAmount } : {}),
+      ...(source.paymentFrequency ? { paymentFrequency: source.paymentFrequency } : {})
+    }));
+
+    const sourceNameControl = documentForm.elements.namedItem("sourceName");
+    const sourceAddressControl = documentForm.elements.namedItem("sourceAddress");
+    const grossAmountControl = documentForm.elements.namedItem("grossAmount");
+    const paymentFrequencyControl = documentForm.elements.namedItem("paymentFrequency");
+    const sourceName = sourceNameControl && "value" in sourceNameControl ? String(sourceNameControl.value).trim() : "";
+    const sourceAddress = sourceAddressControl && "value" in sourceAddressControl ? String(sourceAddressControl.value).trim() : "";
+    const grossAmount = grossAmountControl && "value" in grossAmountControl ? numberOrUndefined(String(grossAmountControl.value)) : undefined;
+    const paymentFrequency = paymentFrequencyControl && "value" in paymentFrequencyControl ? String(paymentFrequencyControl.value).trim() : "";
+
+    if (sources.length) {
+      if (sourceName) sources[0].name = sourceName;
+      if (sourceAddress) sources[0].address = sourceAddress;
+      if (grossAmount !== undefined) sources[0].grossAmount = grossAmount;
+      if (paymentFrequency) sources[0].paymentFrequency = paymentFrequency;
+      return sources;
+    }
+
+    const source = { sourceType: documentSourceType() };
+    if (sourceName) source.name = sourceName;
+    if (sourceAddress) source.address = sourceAddress;
+    if (grossAmount !== undefined) source.grossAmount = grossAmount;
+    if (paymentFrequency) source.paymentFrequency = paymentFrequency;
+    return [source];
+  }
+
   function documentRequest(outputFormat) {
-    const templateType = guideDocumentGoal || "current_income_statement";
+    const allSources = documentIncomeSources();
+    const scope = documentScope.value;
+    const sourceIndex = scope.startsWith("source:") ? Number(scope.slice(7)) : -1;
+    const selectedSources = sourceIndex >= 0 && allSources[sourceIndex] ? [allSources[sourceIndex]] : allSources;
+    let templateType = guideDocumentGoal || "current_income_statement";
+    if (templateType === "auto") templateType = "current_income_statement";
+    if (templateType !== "no_current_taxable_income_statement") {
+      templateType = selectedSources.length === 1 && selectedSources[0]?.sourceType === "unemployment"
+        ? "unemployment_income_statement"
+        : "current_income_statement";
+    }
     const payload = { templateType, outputFormat };
     for (const name of ["documentDate", "borrowerName", "servicerName", "notes"]) {
       const control = documentForm.elements.namedItem(name);
       const value = control && "value" in control ? String(control.value).trim() : "";
       if (value) payload[name] = value;
     }
-    if (templateType !== "no_current_taxable_income_statement") {
-      const source = { sourceType: documentSourceType() };
-      const sourceNameControl = documentForm.elements.namedItem("sourceName");
-      const sourceAddressControl = documentForm.elements.namedItem("sourceAddress");
-      const grossAmountControl = documentForm.elements.namedItem("grossAmount");
-      const paymentFrequencyControl = documentForm.elements.namedItem("paymentFrequency");
-      const sourceName = sourceNameControl && "value" in sourceNameControl ? String(sourceNameControl.value).trim() : "";
-      const sourceAddress = sourceAddressControl && "value" in sourceAddressControl ? String(sourceAddressControl.value).trim() : "";
-      const grossAmount = grossAmountControl && "value" in grossAmountControl ? numberOrUndefined(String(grossAmountControl.value)) : undefined;
-      const paymentFrequency = paymentFrequencyControl && "value" in paymentFrequencyControl ? String(paymentFrequencyControl.value).trim() : "";
-      if (sourceName) source.name = sourceName;
-      if (sourceAddress) source.address = sourceAddress;
-      if (grossAmount !== undefined) source.grossAmount = grossAmount;
-      if (paymentFrequency) source.paymentFrequency = paymentFrequency;
-      payload.incomeSources = [source];
-    }
+    if (templateType !== "no_current_taxable_income_statement") payload.incomeSources = selectedSources;
     return payload;
   }
 
@@ -747,8 +902,17 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   }
 
   function openGuidedDocumentWorkspace() {
-    if (guideIncomeAmount !== null && guideIncomeAmount !== undefined) setDocumentValue("grossAmount", guideIncomeAmount);
-    if (guideIncomeCadence) setDocumentValue("paymentFrequency", guideIncomeCadence);
+    const primarySource = guidedIncomeSources[0];
+    if (primarySource) {
+      if (primarySource.name) setDocumentValue("sourceName", primarySource.name);
+      if (primarySource.address) setDocumentValue("sourceAddress", primarySource.address);
+      if (typeof primarySource.grossAmount === "number") setDocumentValue("grossAmount", primarySource.grossAmount);
+      if (primarySource.paymentFrequency) setDocumentValue("paymentFrequency", primarySource.paymentFrequency);
+    } else {
+      if (guideIncomeAmount !== null && guideIncomeAmount !== undefined) setDocumentValue("grossAmount", guideIncomeAmount);
+      if (guideIncomeCadence) setDocumentValue("paymentFrequency", guideIncomeCadence);
+    }
+    renderIncomeReadiness();
     documentWorkspace.hidden = false;
     documentWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
     void generateDocumentDraft();
@@ -777,11 +941,18 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       text: "Which best describes your current taxable income situation?",
       options: [["Employment", "employment"], ["Self-employed / contract", "self_employment"], ["Unemployment compensation", "unemployment"], ["Multiple taxable sources", "multiple"], ["No current taxable income", "none"]]
     },
+    income_source_type: {
+      text: "What type of taxable income source is this? I’ll keep each source separate instead of collapsing them together.",
+      options: [["Employment", "employment"], ["Self-employment", "self_employment"], ["Contract / gig income", "contract"], ["Unemployment compensation", "unemployment"], ["Other taxable income", "other"]]
+    },
     income_cadence: {
-      text: "How often is the income amount you want to use paid or received?",
+      text: "How often is the income amount for this source paid or received?",
       options: [["Annual", "annual"], ["Monthly", "monthly"], ["Twice monthly", "semimonthly"], ["Every two weeks", "biweekly"], ["Weekly", "weekly"], ["Hourly", "hourly"]]
     },
-    income_amount: { text: "What is the gross taxable income amount for that cadence? Type a number, without an SSN or account number.", options: [] },
+    income_amount: { text: "What is the gross taxable income amount for this source at that cadence? Type a number, without an SSN or account number.", options: [] },
+    source_name: { text: "What payer, employer, agency, client, or source name belongs to this income source? You can leave it as a visible placeholder for the draft, but it will not be application-ready until the source is identified.", options: [["Leave as placeholder", "__skip__"]] },
+    source_evidence: { text: "What is the evidence status for this source? This is only your statement about readiness; no evidence file is uploaded or verified here.", options: [["I have recent evidence in hand", "documented"], ["I know what evidence I’ll use", "identified"], ["I still need evidence / review", "missing"]] },
+    another_source: { text: "Do you have another current taxable income source to add?", options: [["Yes — add another source", "yes"], ["No — continue", "no"]] },
     doc_borrower_name: { text: "What borrower name should appear on the statement? You can leave it as a visible placeholder and fill it in later.", options: [["Leave as placeholder", "__skip__"]] },
     doc_source_name: { text: "What payer, employer, or unemployment agency name should appear? You can leave it as a visible placeholder.", options: [["Leave as placeholder", "__skip__"]] },
     doc_servicer_name: { text: "What loan servicer name should appear? You can leave it as a visible placeholder and fill it in later.", options: [["Leave as placeholder", "__skip__"]] },
@@ -816,6 +987,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       ibr_zero_region: { contiguous_us: "contiguous_us", us: "contiguous_us", mainland: "contiguous_us", _48_states_dc: "contiguous_us", alaska: "alaska", hawaii: "hawaii" },
       ibr_zero_followup: { current_income_doc: "current_income_doc", stated_income: "current_income_doc", prepare_stated_income_document: "current_income_doc", unemployment_doc: "unemployment_doc", unemployment_statement: "unemployment_doc", prepare_unemployment_statement: "unemployment_doc", calculator: "calculator", continue_to_calculator: "calculator" },
       income_situation: { employment: "employment", employed: "employment", job: "employment", self_employed: "self_employment", self_employment: "self_employment", contract: "self_employment", contractor: "self_employment", unemployment: "unemployment", unemployment_compensation: "unemployment", multiple: "multiple", multiple_taxable_sources: "multiple", none: "none", no_income: "none", no_current_taxable_income: "none" },
+      income_source_type: { employment: "employment", employed: "employment", self_employment: "self_employment", self_employed: "self_employment", contract: "contract", contractor: "contract", gig: "contract", unemployment: "unemployment", unemployment_compensation: "unemployment", other: "other", other_taxable_income: "other" },
+      source_evidence: { documented: "documented", evidence_in_hand: "documented", identified: "identified", evidence_identified: "identified", missing: "missing", need_evidence: "missing", needs_review: "missing" },
+      another_source: { yes: "yes", add_another_source: "yes", no: "no", continue: "no" },
       income_cadence: { annual: "annual", annually: "annual", yearly: "annual", monthly: "monthly", semimonthly: "semimonthly", twice_monthly: "semimonthly", biweekly: "biweekly", every_two_weeks: "biweekly", weekly: "weekly", hourly: "hourly" },
       region: { contiguous_us: "contiguous_us", us: "contiguous_us", mainland: "contiguous_us", _48_states_dc: "contiguous_us", alaska: "alaska", hawaii: "hawaii" }
     };
@@ -861,6 +1035,29 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     }
   }
 
+  function finalizePendingIncomeSource(evidenceStatus) {
+    if (!pendingIncomeSource) return;
+    pendingIncomeSource.evidenceStatus = evidenceStatus;
+    const source = { ...pendingIncomeSource };
+    guidedIncomeSources.push(source);
+    const sourceNumber = guidedIncomeSources.length;
+    const evidenceLabel = evidenceStatusLabel(evidenceStatus);
+    recordGuidedFact(
+      "income_source_" + sourceNumber,
+      "Taxable income source " + sourceNumber,
+      sourceTypeLabel(source.sourceType) + " · " + money.format(source.grossAmount) + " · " + source.paymentFrequency + " · " + evidenceLabel
+    );
+    if (sourceNumber === 1) {
+      guideIncomeCadence = source.paymentFrequency;
+      guideIncomeAmount = source.grossAmount;
+      cadence.value = source.paymentFrequency;
+      setCalculatorValue("incomeAmount", source.grossAmount);
+      syncHourlyFields();
+    }
+    pendingIncomeSource = null;
+    renderIncomeReadiness();
+  }
+
   function handleGuideAnswer(rawValue, displayValue) {
     const value = resolveTypedChoice(guideStep, rawValue);
     const shown = displayValue || String(rawValue).trim();
@@ -873,10 +1070,45 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
         return;
       }
       guideSay(shown, "user");
-      setCalculatorValue("incomeAmount", amount);
-      guideIncomeAmount = amount;
-      recordGuidedFact("income_amount", "Current gross taxable income amount", money.format(amount));
-      guideStep = guideDocumentGoal ? "doc_borrower_name" : "family_size";
+      if (!pendingIncomeSource) pendingIncomeSource = { sourceType: documentSourceType() };
+      pendingIncomeSource.grossAmount = amount;
+      pendingIncomeSource.paymentFrequency = guideIncomeCadence;
+      guideStep = "source_name";
+    } else if (guideStep === "source_name") {
+      guideSay(shown, "user");
+      if (!pendingIncomeSource) pendingIncomeSource = { sourceType: documentSourceType(), paymentFrequency: guideIncomeCadence, grossAmount: guideIncomeAmount };
+      if (value !== "__skip__") pendingIncomeSource.name = shown;
+      guideStep = "source_evidence";
+    } else if (guideStep === "source_evidence") {
+      if (!["documented", "identified", "missing"].includes(value)) {
+        guideSay("Choose evidence in hand, evidence identified, or needs evidence / review.");
+        return;
+      }
+      guideSay(shown, "user");
+      finalizePendingIncomeSource(value);
+      guideStep = collectMultipleSources ? "another_source" : guideDocumentGoal ? "doc_borrower_name" : "family_size";
+    } else if (guideStep === "another_source") {
+      if (!["yes", "no"].includes(value)) {
+        guideSay("Choose whether to add another current taxable income source.");
+        return;
+      }
+      guideSay(shown, "user");
+      if (value === "yes") {
+        pendingIncomeSource = null;
+        guideStep = "income_source_type";
+      } else {
+        collectMultipleSources = false;
+        guideStep = guideDocumentGoal ? "doc_borrower_name" : "family_size";
+      }
+    } else if (guideStep === "income_source_type") {
+      if (!["employment", "self_employment", "contract", "unemployment", "other"].includes(value)) {
+        guideSay("Choose employment, self-employment, contract/gig income, unemployment compensation, or other taxable income.");
+        return;
+      }
+      guideSay(shown, "user");
+      pendingIncomeSource = { sourceType: value };
+      guideIncomeSituation = value;
+      guideStep = "income_cadence";
     } else if (guideStep === "family_size" || guideStep === "dependents") {
       const count = Number(value);
       const minimum = guideStep === "family_size" ? 1 : 0;
@@ -949,7 +1181,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
           setDocumentValue("borrowerName", shown);
           recordGuidedFact("document_borrower_name", "Document borrower name", shown);
         }
-        guideStep = guideDocumentGoal === "no_current_taxable_income_statement" ? "doc_servicer_name" : "doc_source_name";
+        guideStep = "doc_servicer_name";
       } else if (guideStep === "doc_source_name") {
         if (value !== "__skip__") {
           setDocumentValue("sourceName", shown);
@@ -981,6 +1213,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       }
       guideSay(shown, "user");
       guideIncomeSituation = value;
+      guidedIncomeSources = [];
+      pendingIncomeSource = null;
+      collectMultipleSources = value === "multiple";
       const labels = { employment: "Employment", self_employment: "Self-employment / contract", unemployment: "Unemployment compensation", multiple: "Multiple taxable sources", none: "No current taxable income" };
       recordGuidedFact("income_situation", "Current income situation", labels[value]);
       if (guideDocumentGoal === "auto") {
@@ -998,8 +1233,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
         recordGuidedFact("income_amount", "Current gross taxable income", money.format(0));
         cadence.value = "annual";
         syncHourlyFields();
+        renderIncomeReadiness();
         guideStep = guideDocumentGoal ? "doc_borrower_name" : "family_size";
+      } else if (value === "multiple") {
+        guideStep = "income_source_type";
       } else {
+        pendingIncomeSource = { sourceType: value === "self_employment" ? "self_employment" : value };
         guideStep = "income_cadence";
       }
     } else if (guideStep === "income_cadence") {
@@ -1010,8 +1249,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       guideSay(shown, "user");
       cadence.value = value;
       guideIncomeCadence = value;
+      if (!pendingIncomeSource) pendingIncomeSource = { sourceType: documentSourceType() };
+      pendingIncomeSource.paymentFrequency = value;
       syncHourlyFields();
-      recordGuidedFact("income_cadence", "Income cadence", shown);
       guideStep = "income_amount";
     } else if (guideStep === "region") {
       if (!["contiguous_us", "alaska", "hawaii"].includes(value)) {
@@ -1043,6 +1283,21 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     void generateDocumentDraft();
   });
   documentReviewed.addEventListener("change", syncDocumentActions);
+  documentScope.addEventListener("change", () => {
+    documentDraft = null;
+    documentReviewed.checked = false;
+    documentDraftArea.hidden = true;
+    syncDocumentActions();
+  });
+  addIncomeSource.addEventListener("click", () => {
+    collectMultipleSources = true;
+    pendingIncomeSource = null;
+    guideStep = "income_source_type";
+    guideSay("Add another source here. I’ll keep its facts and evidence readiness separate from the sources already confirmed.");
+    showGuideStep();
+    documentWorkspace.hidden = true;
+    document.getElementById("guided-assistant").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
   documentDownload.addEventListener("click", () => {
     if (!documentDraft || !documentReviewed.checked) return;
     const blob = new Blob([documentDraft.html], { type: "text/html;charset=utf-8" });
@@ -1111,9 +1366,16 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 
       const cadenceValue = String(data.get("cadence"));
       const amount = Number(data.get("incomeAmount"));
-      const income = cadenceValue === "hourly"
-        ? [{ cadence: cadenceValue, hourlyRate: amount, hoursPerWeek: Number(data.get("hoursPerWeek")), weeksPerYear: Number(data.get("weeksPerYear")) }]
-        : [{ cadence: cadenceValue, amount }];
+      const guidedCalculatorIncome = guidedIncomeSources
+        .filter((source) => typeof source.grossAmount === "number" && source.paymentFrequency)
+        .map((source) => source.paymentFrequency === "hourly"
+          ? { cadence: "hourly", hourlyRate: source.grossAmount, hoursPerWeek: Number(data.get("hoursPerWeek")), weeksPerYear: Number(data.get("weeksPerYear")) }
+          : { cadence: source.paymentFrequency, amount: source.grossAmount });
+      const income = guidedCalculatorIncome.length
+        ? guidedCalculatorIncome
+        : cadenceValue === "hourly"
+          ? [{ cadence: cadenceValue, hourlyRate: amount, hoursPerWeek: Number(data.get("hoursPerWeek")), weeksPerYear: Number(data.get("weeksPerYear")) }]
+          : [{ cadence: cadenceValue, amount }];
 
       const payload = {
         income,
