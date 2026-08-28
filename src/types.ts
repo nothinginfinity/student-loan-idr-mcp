@@ -168,6 +168,64 @@ export interface TemplateRequest {
   notes?: string;
 }
 
+export type AdvisorAccountStatus = "active" | "suspended" | "closed";
+export type AdvisorClientLifecycleState = "active" | "awaiting_borrower_review" | "completed" | "archived";
+export type AdvisorClientReadinessState = "needs_evidence" | "document_ready" | "application_ready";
+export type AdvisorEvidenceState = "evidence_in_hand" | "evidence_identified" | "needs_evidence_review";
+
+export interface AdvisorPrincipal {
+  advisorId: string;
+  status: AdvisorAccountStatus;
+}
+
+export interface AdvisorClientIncomeSource extends DocumentationIncomeSource {
+  evidenceState: AdvisorEvidenceState;
+}
+
+export interface AdvisorClientRecordV1 {
+  schemaVersion: 1;
+  clientId: string;
+  ownerAdvisorId: string;
+  createdAt: string;
+  updatedAt: string;
+  lifecycleState: AdvisorClientLifecycleState;
+  readinessState: AdvisorClientReadinessState;
+  contact: {
+    displayName: string;
+    email?: string;
+    phone?: string;
+  };
+  servicerName?: string;
+  normalizedLoanPortfolio?: {
+    repaymentLoans: RepaymentLoanInput[];
+    eligibilityLoans?: EligibilityLoanInput[];
+  };
+  confirmedFacts?: {
+    income?: IncomeInput[];
+    incomeSources?: AdvisorClientIncomeSource[];
+    region?: Region;
+    familySize?: number;
+    dependentsClaimedOnFederalTaxReturn?: number;
+    taxFilingStatus?: TaxFilingStatus;
+  };
+  consideredPlans?: RepaymentPlan[];
+  retainedDraftIds?: string[];
+  notes?: string;
+  studentAidImport?: {
+    source: "studentaid_download";
+    importedAt?: string;
+    rawFileRetained: false;
+  };
+}
+
+export interface AdvisorClientDashboardSummary {
+  clientId: string;
+  displayName: string;
+  lifecycleState: AdvisorClientLifecycleState;
+  readinessState: AdvisorClientReadinessState;
+  updatedAt: string;
+}
+
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
   id?: string | number | null;
