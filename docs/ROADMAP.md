@@ -102,9 +102,56 @@ Acceptance evidence:
 - Live deploy + production acceptance run `33125464977` succeeded from that exact immutable source. All 16 production checks passed, including the borrower HTML/CSP shell, same-origin RAP calculation, browser-origin rejection, 64 KiB ceiling, MCP initialize/tool inventory, policy status, document generation, notification semantics, and MCP media/origin guards.
 - Live borrower calculator: `https://student-loan-idr-mcp.jaredtechfit.workers.dev/`.
 
-## Later / optional — NEXT DECISION
+## V0.6 — Borrower portfolio import + fact provenance — COMPLETE
 
-- x402 paid access for agent-to-agent use.
+1. Added browser-local import for the StudentAid.gov **Download My Aid Data** text file. The raw file is read only in the borrower's browser; there is no `/api/import` route and the Worker does not receive or persist the raw file.
+2. Extracted active loan facts needed for faster borrower-specific calculations, including outstanding principal, interest rate, loan description/type when safely mappable, disbursement date/period, status/default hints, and servicer/contact name. Ambiguous consolidation or Parent PLUS history is never guessed; unresolved records remain visibly ambiguous for eligibility screening.
+3. Added `loan.repaymentLoans` so multiple balance/rate pairs can be modeled independently. The 10-year Standard cap and ICR fixed-payment arm now sum per-loan amortized payments instead of collapsing an imported portfolio into a blended-rate approximation.
+4. Added explicit UI provenance labels: **Stated fact**, **Documented fact**, **Imported fact**, and **Derived estimate**. The borrower can see which answers come from their statements, supporting evidence, StudentAid data, or deterministic calculations.
+5. Corrected the borrower-facing family-size guidance to follow the current IDR support-based definition rather than an arbitrary household cap. Borrower/spouse treatment, supported children, and other supported household members are explained separately from RAP tax-return dependents.
+6. Added current-income evidence guidance around recent gross-pay documentation, pay frequency, one item per taxable income source, and signed source-by-source statements when normal documentation is unavailable or needs explanation. V0.6 explains these requirements but does not yet automate a complete application packet.
+7. Hardened legacy FFEL import mapping, including the older `NON-SUBSIDIZED` naming, and retained conservative fail-closed eligibility behavior when a source record cannot be mapped confidently.
+
+Acceptance evidence:
+
+- Final regression-bearing V0.6 source commit `0f2d4cebafad279c676bb708588ff51ca7192fb3` passed strict TypeScript, all 44 deterministic regressions, and Wrangler dry-run in CI run `33131135145`.
+- Live deploy + production acceptance run `33131163767` succeeded from that exact immutable source. All 18 live checks passed, including the borrower import/privacy shell, absence of a raw-file import endpoint, multi-loan portfolio calculation, original borrower calculation hardening, and the unchanged three-tool MCP contract.
+- Live borrower calculator remains `https://student-loan-idr-mcp.jaredtechfit.workers.dev/`.
+
+## V0.7 — Guided application facts + evidence/document packet — NEXT
+
+1. Replace opaque single-number application fields with guided questions that mirror the facts the current federal IDR process actually asks for, while keeping RAP tax-return dependents distinct from legacy IDR family size.
+2. Build a source-by-source current-income workflow for employment, self-employment/contract income, unemployment compensation, other taxable income, and no-current-taxable-income situations.
+3. For every application fact, show provenance and readiness: borrower-stated, imported from StudentAid data, supported by uploaded/identified evidence, derived by the calculator, or still missing/needs review.
+4. Generate fast, editable supporting statements/templates and an evidence checklist from only supplied facts. Never invent employer names, amounts, dates, dependents, signatures, or supporting evidence.
+5. Keep the first guided workflow usable without a required account so the borrower can complete a private session before persistent identity/storage is introduced.
+
+## V0.8 — Borrower accounts + secure saved profile — PLANNED
+
+1. Add explicit account authentication and consent boundaries before persisting borrower-specific data.
+2. Persist only the normalized facts needed for the product unless the borrower explicitly chooses otherwise. The raw StudentAid.gov file remains browser-local by default rather than becoming an account document store.
+3. Support saved normalized loan portfolios, application facts, document drafts, and repeat calculations so returning borrowers do not have to re-enter the same information.
+4. Define retention, deletion/export, encryption, session security, and audit boundaries before treating the service as a system of record.
+
+## Deferred economic layer — x402 + signup-minted token
+
+x402 is intentionally **not** the next implementation slice. Future paid agent-to-agent access is gated on a separate accepted design for an account-linked crypto asset that is minted/allocated through the calculator signup flow.
+
+Before any x402 integration, freeze and review at least these decisions:
+
+- exact token/asset and chain/network accepted by x402;
+- mint authority, supply/issuance rules, signup allocation, transferability, and whether the asset represents credits, access rights, or something else;
+- account ↔ wallet binding and recovery model;
+- anti-abuse/Sybil controls so repeated signups cannot mint unbounded value;
+- custody/key model and what a borrower must understand or approve;
+- pricing/burn/redeem/treasury behavior and whether tokens expire;
+- legal/compliance/tax review appropriate to the final economic design;
+- x402 quote/settlement behavior that rejects every other asset and cannot bypass account/token policy.
+
+Only after that contract is accepted should x402 be wired around the service. Payment logic must remain outside the deterministic repayment formulas and must not weaken the free/privacy-preserving borrower workflow by accident.
+
+## Later / optional
+
 - Policy change monitor that proposes reviewed constants updates.
 - Multi-year policy snapshots for historical calculations.
 
