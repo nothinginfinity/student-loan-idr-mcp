@@ -11,7 +11,7 @@ import type {
   TemplateRequest
 } from "./types.ts";
 
-const SERVER_VERSION = "0.8.3";
+const SERVER_VERSION = "0.8.4";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -282,6 +282,19 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .readiness-card ul { margin-bottom: 0; }
     .readiness-actions { margin-top: 12px; }
     #portfolio-summary { margin-top: 12px; }
+    .comparison-workspace[hidden] { display: none; }
+    .comparison-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+    .comparison-card, .chart-panel { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 14px; padding: 14px; }
+    .comparison-card h3, .chart-panel h3 { margin: 0 0 8px; }
+    .comparison-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .comparison-metrics div { border-top: 1px solid color-mix(in srgb, CanvasText 12%, transparent); padding-top: 7px; }
+    .comparison-metrics strong { display: block; }
+    .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+    .chart-panel svg { display: block; width: 100%; height: auto; min-height: 220px; overflow: visible; }
+    .chart-panel .axis { stroke: color-mix(in srgb, CanvasText 28%, transparent); stroke-width: 1; }
+    .chart-panel .series { fill: none; stroke: currentColor; stroke-width: 3; }
+    .chart-panel text { fill: currentColor; font: 12px ui-sans-serif, system-ui, sans-serif; }
+    .comparison-assumptions { margin-top: 14px; }
     ul { padding-left: 22px; }
     a { color: inherit; }
     footer { margin-top: 36px; font-size: .9rem; color: color-mix(in srgb, CanvasText 65%, transparent); }
@@ -306,10 +319,25 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       <div class="actions">
         <button type="button" id="advisor-save-progress">Save progress</button>
         <button type="button" id="advisor-regenerate-document">Regenerate document</button>
+        <button type="button" id="advisor-compare-plans">Compare repayment paths</button>
         <a class="link-button" href="/advisor">Client dashboard</a>
       </div>
     </div>
     <p id="advisor-save-status" class="muted" role="status" aria-live="polite">Loading saved client facts…</p>
+  </section>
+
+  <section class="workspace comparison-workspace" id="advisor-comparison-workspace" hidden aria-labelledby="advisor-comparison-title">
+    <h2 id="advisor-comparison-title">Repayment & forgiveness comparison</h2>
+    <p><span class="basis">Modeled estimate</span>These scenarios reuse this Worker’s deterministic repayment formulas and the client’s saved normalized facts. They are not guaranteed forgiveness, eligibility, approval, tax treatment, or servicer outcomes.</p>
+    <p id="advisor-comparison-status" class="muted" role="status" aria-live="polite">Save the client’s current facts, then compare repayment paths.</p>
+    <div id="advisor-comparison-cards" class="comparison-cards"></div>
+    <div class="chart-grid">
+      <article class="chart-panel"><h3>Monthly payment path</h3><p class="muted">Current calculated payment held constant for this bounded scenario.</p><svg id="advisor-payment-chart" viewBox="0 0 720 260" role="img" aria-label="Modeled monthly payment by repayment plan"></svg></article>
+      <article class="chart-panel"><h3>Cumulative borrower paid</h3><p class="muted">Modeled dollars paid by the borrower over time.</p><svg id="advisor-paid-chart" viewBox="0 0 720 260" role="img" aria-label="Modeled cumulative borrower payments by repayment plan"></svg></article>
+      <article class="chart-panel"><h3>Remaining balance</h3><p class="muted">Modeled principal plus tracked unpaid interest where applicable.</p><svg id="advisor-balance-chart" viewBox="0 0 720 260" role="img" aria-label="Modeled remaining loan balance by repayment plan"></svg></article>
+      <article class="chart-panel"><h3>Estimated forgiveness</h3><p class="muted">Shown only when this policy snapshot supports a bounded forgiveness horizon and required timing facts are saved.</p><svg id="advisor-forgiveness-chart" viewBox="0 0 720 260" role="img" aria-label="Modeled forgiveness amount by repayment plan"></svg></article>
+    </div>
+    <div id="advisor-comparison-assumptions" class="comparison-assumptions"></div>
   </section>
 
   <section class="workspace" id="guided-assistant" aria-labelledby="guided-assistant-title">
@@ -554,7 +582,16 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorClientName = document.getElementById("advisor-client-name");
   const advisorSaveProgress = document.getElementById("advisor-save-progress");
   const advisorRegenerateDocument = document.getElementById("advisor-regenerate-document");
+  const advisorComparePlans = document.getElementById("advisor-compare-plans");
   const advisorSaveStatus = document.getElementById("advisor-save-status");
+  const advisorComparisonWorkspace = document.getElementById("advisor-comparison-workspace");
+  const advisorComparisonStatus = document.getElementById("advisor-comparison-status");
+  const advisorComparisonCards = document.getElementById("advisor-comparison-cards");
+  const advisorPaymentChart = document.getElementById("advisor-payment-chart");
+  const advisorPaidChart = document.getElementById("advisor-paid-chart");
+  const advisorBalanceChart = document.getElementById("advisor-balance-chart");
+  const advisorForgivenessChart = document.getElementById("advisor-forgiveness-chart");
+  const advisorComparisonAssumptions = document.getElementById("advisor-comparison-assumptions");
   const advisorClientId = new URLSearchParams(window.location.search).get("advisorClient");
   const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   const numberOrUndefined = (value) => value === "" ? undefined : Number(value);
@@ -907,6 +944,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       recordGuidedFact("dependents", "Federal tax-return dependents for RAP", String(facts.dependentsClaimedOnFederalTaxReturn));
     }
     if (facts.taxFilingStatus) setCalculatorValue("taxFilingStatus", facts.taxFilingStatus);
+    if (typeof facts.newBorrowerOnOrAfterJuly1_2014 === "boolean") {
+      setCalculatorValue("ibrNewBorrower", facts.newBorrowerOnOrAfterJuly1_2014);
+      recordGuidedFact("ibr_borrower_timing", "IBR borrower timing", facts.newBorrowerOnOrAfterJuly1_2014 ? "New borrower on/after July 1, 2014" : "Earlier borrower");
+    }
+    advisorComparisonWorkspace.hidden = false;
+    advisorComparisonStatus.textContent = "Saved facts loaded. Compare after saving any changes you make in this session.";
 
     if (client.normalizedLoanPortfolio?.repaymentLoans?.length) {
       const repaymentLoans = client.normalizedLoanPortfolio.repaymentLoans;
@@ -960,7 +1003,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   }
 
   async function saveAdvisorClientProgress() {
-    if (!advisorClient || !advisorCsrfToken) return;
+    if (!advisorClient || !advisorCsrfToken) return false;
     advisorSaveProgress.disabled = true;
     advisorSaveStatus.textContent = "Saving normalized client facts…";
     try {
@@ -981,6 +1024,8 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       if (guidedFacts.has("dependents")) facts.dependentsClaimedOnFederalTaxReturn = Number(formData.get("dependents"));
       const taxFilingStatus = String(formData.get("taxFilingStatus") || "");
       if (taxFilingStatus) facts.taxFilingStatus = taxFilingStatus;
+      const ibrNewBorrower = String(formData.get("ibrNewBorrower") || "");
+      if (ibrNewBorrower) facts.newBorrowerOnOrAfterJuly1_2014 = ibrNewBorrower === "true";
 
       const body = {
         expectedUpdatedAt: advisorClient.updatedAt,
@@ -1005,10 +1050,145 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       const saved = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId), { method: "PUT", body: JSON.stringify(body) });
       advisorClient = saved.client;
       advisorSaveStatus.textContent = "Saved " + new Date(saved.client.updatedAt).toLocaleString() + ". Raw StudentAid data and evidence files were not retained.";
+      return true;
     } catch (error) {
       advisorSaveStatus.textContent = error instanceof Error ? error.message : "Unable to save client progress.";
+      return false;
     } finally {
       advisorSaveProgress.disabled = false;
+    }
+  }
+
+  const svgNs = "http://www.w3.org/2000/svg";
+  function svgNode(tag, attrs = {}, text = "") {
+    const node = document.createElementNS(svgNs, tag);
+    Object.entries(attrs).forEach(([name, value]) => node.setAttribute(name, String(value)));
+    if (text) node.textContent = text;
+    return node;
+  }
+  function emptyChart(svg, message) {
+    svg.replaceChildren(svgNode("text", { x: 360, y: 130, "text-anchor": "middle" }, message));
+  }
+  function chartPlanStyle(index) {
+    return [
+      { dash: "", opacity: "1" },
+      { dash: "11 5", opacity: ".9" },
+      { dash: "3 5", opacity: ".82" },
+      { dash: "15 5 3 5", opacity: ".75" }
+    ][index % 4];
+  }
+  function renderLineChart(svg, projections, valueForPoint, paymentMode = false) {
+    const usable = projections.filter((projection) => projection.series?.length);
+    if (!usable.length) { emptyChart(svg, "No bounded projection available"); return; }
+    const values = [];
+    let maxMonth = 1;
+    usable.forEach((projection) => projection.series.forEach((point) => {
+      maxMonth = Math.max(maxMonth, point.month);
+      values.push(paymentMode ? projection.currentMonthlyPayment : valueForPoint(point));
+    }));
+    const maxValue = Math.max(1, ...values);
+    const left = 70, top = 22, width = 610, height = 190, bottom = top + height;
+    const x = (month) => left + month / maxMonth * width;
+    const y = (value) => bottom - value / maxValue * height;
+    svg.replaceChildren(
+      svgNode("line", { x1: left, y1: top, x2: left, y2: bottom, class: "axis" }),
+      svgNode("line", { x1: left, y1: bottom, x2: left + width, y2: bottom, class: "axis" }),
+      svgNode("text", { x: left, y: 238, "text-anchor": "middle" }, "Now"),
+      svgNode("text", { x: left + width, y: 238, "text-anchor": "end" }, (maxMonth / 12).toFixed(maxMonth % 12 ? 1 : 0) + " yr"),
+      svgNode("text", { x: 62, y: bottom + 4, "text-anchor": "end" }, "$0"),
+      svgNode("text", { x: 62, y: top + 4, "text-anchor": "end" }, money.format(maxValue))
+    );
+    usable.forEach((projection, index) => {
+      const style = chartPlanStyle(index);
+      const points = projection.series.map((point) => ({ month: point.month, value: paymentMode ? projection.currentMonthlyPayment : valueForPoint(point) }));
+      const d = points.map((point, pointIndex) => (pointIndex ? "L" : "M") + x(point.month).toFixed(1) + " " + y(point.value).toFixed(1)).join(" ");
+      const path = svgNode("path", { d, class: "series", opacity: style.opacity, "stroke-dasharray": style.dash });
+      const last = points[points.length - 1];
+      const label = svgNode("text", { x: Math.min(690, x(last.month) + 5), y: Math.max(14, y(last.value) - 5 + index * 12), "text-anchor": "end" }, projection.plan);
+      svg.append(path, label);
+    });
+  }
+  function renderForgivenessChart(svg, projections) {
+    const usable = projections.filter((projection) => typeof projection.projectedForgiveness === "number");
+    if (!usable.length) { emptyChart(svg, "Forgiveness withheld for current saved facts"); return; }
+    const maxValue = Math.max(1, ...usable.map((projection) => projection.projectedForgiveness));
+    const left = 85, top = 22, width = 570, rowHeight = 50;
+    svg.replaceChildren();
+    usable.forEach((projection, index) => {
+      const y = top + index * rowHeight;
+      const barWidth = projection.projectedForgiveness / maxValue * width;
+      svg.append(
+        svgNode("text", { x: left - 10, y: y + 21, "text-anchor": "end" }, projection.plan),
+        svgNode("rect", { x: left, y, width: Math.max(1, barWidth), height: 28, fill: "currentColor", opacity: String(.85 - index * .12), rx: 5 }),
+        svgNode("text", { x: Math.min(700, left + barWidth + 7), y: y + 20 }, money.format(projection.projectedForgiveness))
+      );
+    });
+  }
+  function renderAdvisorComparison(comparison) {
+    advisorComparisonWorkspace.hidden = false;
+    advisorComparisonCards.replaceChildren();
+    comparison.projections.forEach((projection) => {
+      const card = document.createElement("article");
+      card.className = "comparison-card";
+      const title = document.createElement("div");
+      title.className = "plan-head";
+      const name = document.createElement("div");
+      name.append(addText("h3", projection.plan), addText("span", projection.eligibilityStatus, "badge"));
+      title.append(name, addText("span", money.format(projection.currentMonthlyPayment) + "/mo", "payment"));
+      card.append(title, addText("p", projection.horizonLabel, "muted"));
+      const metrics = document.createElement("div");
+      metrics.className = "comparison-metrics";
+      [
+        ["Modeled borrower paid", projection.projectedBorrowerPaid],
+        ["Modeled remaining balance", projection.projectedRemainingBalance],
+        ["Estimated forgiveness", projection.projectedForgiveness],
+        ["RAP principal match", projection.projectedPrincipalMatch]
+      ].forEach(([label, value]) => {
+        const box = document.createElement("div");
+        box.append(addText("span", label, "muted"), addText("strong", typeof value === "number" ? money.format(value) : "Withheld"));
+        metrics.appendChild(box);
+      });
+      card.appendChild(metrics);
+      if (typeof projection.projectedInterestWaived === "number") card.appendChild(addText("p", "Modeled RAP interest waived: " + money.format(projection.projectedInterestWaived), "muted"));
+      if (projection.payoffMonth) card.appendChild(addText("p", "Modeled payoff before horizon: month " + projection.payoffMonth + ".", "muted"));
+      if (projection.warnings?.length) {
+        const details = document.createElement("details");
+        details.appendChild(addText("summary", "Projection caveats"));
+        const list = document.createElement("ul");
+        projection.warnings.forEach((warning) => list.appendChild(addText("li", warning)));
+        details.appendChild(list);
+        card.appendChild(details);
+      }
+      advisorComparisonCards.appendChild(card);
+    });
+    renderLineChart(advisorPaymentChart, comparison.projections, () => 0, true);
+    renderLineChart(advisorPaidChart, comparison.projections, (point) => point.cumulativeBorrowerPaid);
+    renderLineChart(advisorBalanceChart, comparison.projections, (point) => point.remainingBalance);
+    renderForgivenessChart(advisorForgivenessChart, comparison.projections);
+    advisorComparisonAssumptions.replaceChildren(addText("strong", "Model assumptions"));
+    const assumptions = document.createElement("ul");
+    comparison.assumptions.forEach((assumption) => assumptions.appendChild(addText("li", assumption)));
+    advisorComparisonAssumptions.appendChild(assumptions);
+    advisorComparisonStatus.textContent = "Comparison generated from the saved client record under policy snapshot " + comparison.policySnapshot + ".";
+    advisorComparisonWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  async function runAdvisorComparison() {
+    if (!advisorClient) return;
+    advisorComparePlans.disabled = true;
+    advisorComparisonWorkspace.hidden = false;
+    advisorComparisonStatus.textContent = "Calculating saved repayment paths…";
+    try {
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/comparison");
+      renderAdvisorComparison(body.comparison);
+    } catch (error) {
+      advisorComparisonCards.replaceChildren();
+      emptyChart(advisorPaymentChart, "Comparison unavailable");
+      emptyChart(advisorPaidChart, "Comparison unavailable");
+      emptyChart(advisorBalanceChart, "Comparison unavailable");
+      emptyChart(advisorForgivenessChart, "Comparison unavailable");
+      advisorComparisonStatus.textContent = error instanceof Error ? error.message : "Unable to compare repayment programs.";
+    } finally {
+      advisorComparePlans.disabled = false;
     }
   }
 
@@ -1563,6 +1743,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     syncDocumentActions();
   });
   advisorSaveProgress.addEventListener("click", () => { void saveAdvisorClientProgress(); });
+  advisorComparePlans.addEventListener("click", async () => {
+    const saved = await saveAdvisorClientProgress();
+    if (saved) await runAdvisorComparison();
+  });
   advisorRegenerateDocument.addEventListener("click", () => {
     if (!advisorClient) return;
     guideDocumentGoal = guideIncomeSituation === "none" ? "no_current_taxable_income_statement" : "auto";
@@ -2443,13 +2627,14 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
       owner_scoped_client_crud: Boolean(env.ADVISOR_DB),
       browser_workspace: "/advisor",
       saved_guided_client_workflow: true,
+      repayment_comparison_visualizations: true,
       raw_student_aid_retention: false
     },
     hardening: {
