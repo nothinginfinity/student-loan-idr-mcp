@@ -206,7 +206,23 @@ Acceptance evidence:
 - Live acceptance created two independent advisor accounts, proved authenticated session/CSRF behavior and exact cross-advisor client isolation, exercised client persistence lifecycle operations, and cleaned up the live acceptance accounts afterward.
 - During live acceptance, the original PBKDF2 verifier hit a Cloudflare Workers runtime work-factor ceiling. The accepted runtime switched to Workers-native `scrypt`, retained salted one-way password storage, added explicit TypeScript declarations, and then passed the full live gate.
 
-The next bounded V0.8 slice is **V0.8.3 — advisor workspace UI + saved guided client workflow**: expose the authenticated multi-client dashboard/client workspace in the browser, connect saved normalized facts to the existing V0.7 guided workflow, and make save/resume/document regeneration practical before adding repayment-comparison charts.
+### V0.8.3 — Advisor workspace UI + saved guided client workflow — COMPLETE
+
+- Added an authenticated browser workspace at `GET /advisor` with advisor registration/sign-in, client creation/search, minimized client dashboard cards, client export/archive controls, and explicit navigation back to the account-free borrower calculator.
+- Added saved-client mode to the existing V0.7 guided workflow through `/?advisorClient=<clientId>`. The authenticated advisor can open one client, hydrate that client's confirmed normalized facts and loan portfolio, continue the guided fact workflow, save progress, and return later without mixing client records.
+- Connected saved current-income sources, region, legacy IDR family size, RAP tax-return dependents, servicer name, readiness state, and normalized repayment/eligibility loan facts to the existing deterministic calculator/document workflow rather than creating parallel formulas or template logic.
+- Added advisor controls to save normalized progress and regenerate the existing reviewable supporting-document drafts from confirmed facts. The direct borrower workflow remains usable without an account.
+- Preserved the privacy boundary: raw StudentAid.gov files and evidence files are not retained by the advisor workspace, dashboard summaries remain minimized, browser storage is not introduced, and saved StudentAid metadata requires `rawFileRetained: false`.
+- Extended deterministic and live acceptance coverage for the advisor HTML/CSP/auth shell, normalized save/resume workflow, cross-advisor isolation, document regeneration controls, and the unchanged three-tool MCP surface.
+
+Acceptance evidence:
+
+- Exact V0.8.3 runtime source commit `8dea095439957b83f0fc1945dd9697b085e92ade` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in normal CI run `33183133895`.
+- Exact-SHA live deployment + production acceptance run `33183228204` succeeded from that immutable source. The deployment passed the immutable-source guard, D1 migrations, repeated typecheck/tests, Wrangler deployment, and all **72 production checks**.
+- Live acceptance exercised authenticated advisor creation/session behavior, client creation and exact owner isolation, normalized application/income/loan persistence and resume, the `/advisor` dashboard/privacy shell, saved guided-client controls, the borrower calculator/document workflow, and the existing MCP protocol/tool contract.
+- The raw StudentAid.gov file remains browser-local by default; evidence files, SSNs, FSA credentials, raw session tokens, and raw CSRF tokens are not introduced as retained advisor-client payloads by this slice.
+
+The next bounded V0.8 slice is **V0.8.4 — repayment-program comparison + forgiveness visualizations**: use each saved client's accepted normalized facts and deterministic loan calculations to compare applicable programs side by side, then add clearly labeled modeled charts for payment, cumulative paid, remaining balance, and estimated forgiveness where the supported policy model permits those projections.
 
 1. Make the persistent account an **advisor/manager account**, not a one-borrower account. One authenticated advisor can create, search, open, and manage many borrower **client records** from a single workspace.
 2. Give each client a structured profile for contact information, normalized StudentAid loan portfolio, confirmed application facts, income sources, family-size facts, evidence/readiness state, servicer information, generated document drafts, selected/considered repayment programs, notes, and repeat calculations. Client records must remain logically isolated from one another and scoped to the owning/authorized advisor account.
