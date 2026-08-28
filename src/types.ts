@@ -172,6 +172,107 @@ export type AdvisorAccountStatus = "active" | "suspended" | "closed";
 export type AdvisorClientLifecycleState = "active" | "awaiting_borrower_review" | "completed" | "archived";
 export type AdvisorClientReadinessState = "needs_evidence" | "document_ready" | "application_ready";
 export type AdvisorEvidenceState = "evidence_in_hand" | "evidence_identified" | "needs_evidence_review";
+export type StudentAidFactProvenance = "imported_studentaid" | "derived_studentaid" | "advisor_entered" | "borrower_confirmed" | "missing_review";
+
+export interface StudentAidLoanStatusFact {
+  code?: string;
+  description?: string;
+  effectiveDate?: string;
+}
+
+export interface StudentAidLoanDisbursementFact {
+  date?: string;
+  amount?: number;
+}
+
+export interface StudentAidLoanContactFact {
+  type?: string;
+  code?: string;
+  name?: string;
+  streetAddress1?: string;
+  streetAddress2?: string;
+  city?: string;
+  stateCode?: string;
+  zipCode?: string;
+  phoneNumber?: string;
+  phoneExtension?: string;
+  emailAddress?: string;
+  websiteAddress?: string;
+  mostRelevant?: boolean;
+}
+
+export interface StudentAidNormalizedLoanFact {
+  loanIndex: number;
+  maskedAwardId?: string;
+  loanTypeCode?: string;
+  loanTypeDescription?: string;
+  mappedLoanType?: LoanType;
+  disbursementPeriod?: LoanDisbursementPeriod;
+  inDefault?: boolean;
+  attendingSchoolName?: string;
+  attendingSchoolOpeid?: string;
+  loanDate?: string;
+  repaymentBeginDate?: string;
+  periodBeginDate?: string;
+  periodEndDate?: string;
+  originalAmount?: number;
+  disbursedAmount?: number;
+  canceledAmount?: number;
+  canceledDate?: string;
+  outstandingPrincipal?: number;
+  outstandingPrincipalAsOfDate?: string;
+  outstandingInterest?: number;
+  outstandingInterestAsOfDate?: string;
+  interestRateTypeCode?: string;
+  interestRateTypeDescription?: string;
+  interestRatePercent?: number;
+  actualInterestRatePercent?: number;
+  statutoryInterestRatePercent?: number;
+  repaymentPlanTypeCode?: string;
+  repaymentPlanDescription?: string;
+  repaymentPlanBeginDate?: string;
+  repaymentPlanScheduledAmount?: number;
+  repaymentPlanIdrAnniversaryDate?: string;
+  confirmedSubsidyStatus?: string;
+  subsidizedUsageYears?: number;
+  reaffirmationDate?: string;
+  mostRecentPaymentEffectiveDate?: string;
+  nextPaymentDueDate?: string;
+  cumulativePaymentAmount?: number;
+  pslfCumulativeMatchedMonths?: number;
+  academicLevel?: string;
+  awardYear?: string;
+  capitalizedInterest?: number;
+  netLoanAmount?: number;
+  reaffirmationFlag?: string;
+  calculatedSubsidizedAggregateOpb?: number;
+  calculatedUnsubsidizedAggregateOpb?: number;
+  calculatedCombinedAggregateOpb?: number;
+  updateDate?: string;
+  delinquencyDate?: string;
+  currentLoanStatusCode?: string;
+  currentLoanStatusDescription?: string;
+  highestHistoricalOutstandingPrincipalBalance?: number;
+  currentStandardSchedulePaymentAmount?: number;
+  permanentStandardSchedulePaymentAmount?: number;
+  parentPlusFirstLevelConsolidationIndicator?: string;
+  consolidationLoanWithAnyParentPlusIndicator?: string;
+  statuses?: StudentAidLoanStatusFact[];
+  disbursements?: StudentAidLoanDisbursementFact[];
+  contacts?: StudentAidLoanContactFact[];
+  provenance: Record<string, StudentAidFactProvenance>;
+}
+
+export interface StudentAidPortfolioSummary {
+  loanCount: number;
+  activeLoanCount: number;
+  totalOutstandingPrincipal: number;
+  totalOutstandingInterest: number;
+  repaymentLoanCount: number;
+  eligibilityMappedLoanCount: number;
+  ambiguousEligibilityLoanCount: number;
+  hasLoanDisbursedOnOrAfterJuly1_2026: boolean;
+}
 
 export interface AdvisorPrincipal {
   advisorId: string;
@@ -194,11 +295,20 @@ export interface AdvisorClientRecordV1 {
     displayName: string;
     email?: string;
     phone?: string;
+    streetAddress1?: string;
+    streetAddress2?: string;
+    city?: string;
+    stateCode?: string;
+    countryCode?: string;
+    zipCode?: string;
   };
+  fieldProvenance?: Record<string, StudentAidFactProvenance>;
   servicerName?: string;
   normalizedLoanPortfolio?: {
     repaymentLoans: RepaymentLoanInput[];
     eligibilityLoans?: EligibilityLoanInput[];
+    loans?: StudentAidNormalizedLoanFact[];
+    summary?: StudentAidPortfolioSummary;
   };
   confirmedFacts?: {
     income?: IncomeInput[];
@@ -215,6 +325,8 @@ export interface AdvisorClientRecordV1 {
   studentAidImport?: {
     source: "studentaid_download";
     importedAt?: string;
+    fileRequestDate?: string;
+    mappingVersion?: string;
     rawFileRetained: false;
   };
 }
