@@ -240,7 +240,27 @@ Acceptance evidence:
 - Final exact-SHA deployment + production acceptance run `33186338271` succeeded from `ef32ee123772d0d4a189d6f33fcafbcd9a506ae2`, including immutable-source verification, repeated typecheck/tests, D1 migrations, Wrangler deployment, and all **91 production checks**.
 - Live acceptance created independent advisor accounts, proved cross-advisor comparison denial, exercised the saved client comparison schema and four-plan inventory, verified RAP/IBR bounded forgiveness behavior, verified PAYE/ICR sunset-only behavior, checked all four chart surfaces/non-guarantee labeling, and cleaned up the acceptance accounts.
 
-The next bounded V0.8 slice is **V0.8.5 — retained client artifacts + calculation history**: let an advisor explicitly retain generated document drafts and named comparison/calculation snapshots inside the owning client record, browse/regenerate/export that history, and keep retention/deletion/audit boundaries explicit without storing raw StudentAid downloads or evidence files.
+### V0.8.5 — Retained client artifacts + calculation history — COMPLETE
+
+- Added two dedicated owner-and-client-keyed D1 history stores: one for explicitly retained generated document drafts and one for named deterministic calculation/comparison snapshots. History is opt-in; ordinary generation/calculation/comparison does not silently create retained records.
+- Retained document drafts store the validated trusted-template request plus generated text/printable HTML, engine version, and creation time. Retained calculation/comparison snapshots store a bounded normalized basis, deterministic result, policy snapshot, engine version, and creation time. Raw StudentAid downloads and raw evidence files remain outside server persistence.
+- Added exact-owner-scoped history APIs to list minimized history summaries, retrieve/export full retained records, regenerate document drafts from their retained template request, rerun calculation/comparison snapshots from their retained basis, and permanently delete individual history items.
+- Regeneration/rerun is deliberately non-mutating: the historical original is never overwritten. A fresh result becomes retained history only through another explicit retain action.
+- Upgraded client export to `student-loan-idr-advisor-client-export-v2`, including the normalized client record plus all explicitly retained document artifacts and calculation/comparison snapshots.
+- Added saved-client browser controls to retain the current document draft, calculation, or comparison; browse history; regenerate/rerun; export JSON; and delete retained items. The dashboard remains minimized, the direct borrower workflow remains account-free, and no browser storage was introduced.
+- Preserved payload-minimized auditing: retain/regenerate/rerun/delete history events record action names and client IDs without copying document bodies, history names, loan/income facts, template payloads, snapshot bases, or results into audit metadata.
+- Client deletion continues to delete dependent retained history. Live acceptance exposed a D1-specific detail: `meta.changes` on the parent delete can include cascading child deletions, so the guarded delete now treats any positive change count as success while zero remains the optimistic-concurrency failure signal.
+- Added `docs/V0_8_5_RETENTION_AND_HISTORY.md` to freeze the accepted storage, isolation, regeneration/rerun, export, deletion, audit, and browser/privacy boundaries.
+- Hardened the live acceptance harness to count assertions dynamically instead of maintaining a copied check-count constant, preventing the stale-count/stale-version class of acceptance fixture seen at the V0.8.4 boundary.
+
+Acceptance evidence:
+
+- Final V0.8.5 runtime/workflow source commit `112e24583028c01443d560252db1cc869be1cc4d` passed strict TypeScript, the complete deterministic regression suite including retained-basis/history isolation coverage, and Wrangler dry-run in normal CI run `33190299021`.
+- Exact-SHA deployment + production acceptance run `33190347634` succeeded from that immutable source. The run passed the immutable-source guard, repeated typecheck/tests, remote D1 migrations, Wrangler deployment, and **166 dynamically counted production checks**.
+- Production acceptance proved explicit artifact/snapshot retention, minimized history lists, exact cross-advisor denial, regeneration, retained-basis rerun, export v2, individual deletion, client cleanup/cascade behavior, saved-client history UI/privacy boundaries, all prior borrower/advisor comparison workflows, and the unchanged three-tool MCP contract.
+- An earlier live gate correctly caught the D1 cascade-count behavior after successful deployment; the final accepted run above includes the bounded production fix rather than weakening the concurrency guard.
+
+V0.8.5 is closed. V0.8 remains **IN PROGRESS** until the next bounded advisor-workspace slice (or V0.8 closure) is explicitly selected; x402 remains deferred behind its separate token/economic design gate.
 
 1. Make the persistent account an **advisor/manager account**, not a one-borrower account. One authenticated advisor can create, search, open, and manage many borrower **client records** from a single workspace.
 2. Give each client a structured profile for contact information, normalized StudentAid loan portfolio, confirmed application facts, income sources, family-size facts, evidence/readiness state, servicer information, generated document drafts, selected/considered repayment programs, notes, and repeat calculations. Client records must remain logically isolated from one another and scoped to the owning/authorized advisor account.
