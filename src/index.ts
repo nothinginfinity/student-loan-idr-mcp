@@ -8,10 +8,15 @@ import type {
   AdvisorPrincipal,
   CalculatorRequest,
   Region,
-  TemplateRequest
+  TemplateRequest,
+  LoanType,
+  LoanDisbursementPeriod,
+  StudentAidFactProvenance,
+  StudentAidNormalizedLoanFact,
+  StudentAidPortfolioSummary
 } from "./types.ts";
 
-const SERVER_VERSION = "0.8.5";
+const SERVER_VERSION = "0.8.6";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -205,6 +210,241 @@ const toolDefinitions = [
     }
   }
 ] as const;
+
+export const STUDENTAID_MAPPING_VERSION = "2026-08-28-v1";
+
+type ParsedStudentAidBorrower = {
+  displayName?: string;
+  email?: string;
+  phone?: string;
+  streetAddress1?: string;
+  streetAddress2?: string;
+  city?: string;
+  stateCode?: string;
+  countryCode?: string;
+  zipCode?: string;
+  provenance: Record<string, StudentAidFactProvenance>;
+};
+
+export type ParsedStudentAidPortfolio = {
+  fileRequestDate?: string;
+  borrower: ParsedStudentAidBorrower;
+  loans: StudentAidNormalizedLoanFact[];
+  repaymentLoans: Array<{ principal: number; annualInterestRatePercent: number }>;
+  eligibilityLoans?: Array<{ loanType: LoanType; disbursementPeriod: LoanDisbursementPeriod; inDefault?: boolean }>;
+  summary: StudentAidPortfolioSummary;
+  totalPrincipal: number;
+  totalInterest: number;
+  ambiguousCount: number;
+};
+
+function studentAidNumber(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const normalized = value.replace(/[$,%]/g, "").replace(/,/g, "").trim();
+  if (!normalized) return undefined;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function studentAidDateToPeriod(value: string | undefined): LoanDisbursementPeriod | undefined {
+  if (!value) return undefined;
+  const match = value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const timestamp = match
+    ? Date.UTC(Number(match[3]), Number(match[1]) - 1, Number(match[2]))
+    : Date.parse(value);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return timestamp >= Date.UTC(2026, 6, 1) ? "on_or_after_2026_07_01" : "before_2026_07_01";
+}
+
+function studentAidYes(value: string | undefined): boolean | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toUpperCase();
+  if (["Y", "YES", "TRUE", "1"].includes(normalized)) return true;
+  if (["N", "NO", "FALSE", "0"].includes(normalized)) return false;
+  return undefined;
+}
+
+function mapStudentAidLoanType(code: string | undefined, description: string | undefined, parentPlusIndicator?: string): LoanType | undefined {
+  const c = String(code || "").trim().toUpperCase();
+  const d = String(description || "").trim().toUpperCase();
+  const hasParentPlus = studentAidYes(parentPlusIndicator);
+  if (["D0", "D1"].includes(c)) return "direct_subsidized";
+  if (["D2", "D8"].includes(c)) return "direct_unsubsidized";
+  if (c === "D3") return "direct_grad_plus";
+  if (c === "D4") return "direct_parent_plus";
+  if (["D5", "D6", "D9"].includes(c)) {
+    if (hasParentPlus === true) return "direct_consolidation_with_parent_plus";
+    if (hasParentPlus === false) return "direct_consolidation_no_parent_plus";
+    return undefined;
+  }
+  if (c === "GB") return "ffel_grad_plus";
+  if (c === "PL") return "ffel_parent_plus";
+  if (c === "SF") return "ffel_subsidized_stafford";
+  if (["SU", "SN"].includes(c)) return "ffel_unsubsidized_stafford";
+  if (c === "CL") {
+    if (hasParentPlus === true) return "ffel_consolidation_with_parent_plus";
+    if (hasParentPlus === false) return "ffel_consolidation_no_parent_plus";
+    return undefined;
+  }
+  if (["PU", "DU", "NU"].includes(c) || d.includes("PERKINS")) return "perkins";
+  const isDirect = d.includes("DIRECT");
+  const isFfel = d.includes("FFEL") || d.includes("FEDERAL STAFFORD");
+  if (d.includes("CONSOLIDAT")) return undefined;
+  if (isDirect) {
+    if (d.includes("PARENT") && d.includes("PLUS")) return "direct_parent_plus";
+    if ((d.includes("GRAD") || d.includes("PROFESSIONAL")) && d.includes("PLUS")) return "direct_grad_plus";
+    if (d.includes("UNSUBSID")) return "direct_unsubsidized";
+    if (d.includes("SUBSID")) return "direct_subsidized";
+  }
+  if (isFfel) {
+    if (d.includes("PARENT") && d.includes("PLUS")) return "ffel_parent_plus";
+    if ((d.includes("GRAD") || d.includes("PROFESSIONAL")) && d.includes("PLUS")) return "ffel_grad_plus";
+    if (d.includes("UNSUBSID") || d.includes("NON-SUBSID")) return "ffel_unsubsidized_stafford";
+    if (d.includes("SUBSID")) return "ffel_subsidized_stafford";
+  }
+  return undefined;
+}
+
+function studentAidPreferredPhone(student: Record<string, string>): string | undefined {
+  const candidates = [
+    ["Student Cell Phone Number", "Student Cell Phone Country Code", "Student Cell Phone Preferred"],
+    ["Student Home Phone Number", "Student Home Phone Country Code", "Student Home Phone Preferred"],
+    ["Student Work Phone Number", "Student Work Phone Country Code", "Student Work Phone Preferred"]
+  ] as const;
+  const preferred = candidates.find(([numberKey, , preferredKey]) => student[numberKey] && studentAidYes(student[preferredKey]) === true);
+  const chosen = preferred ?? candidates.find(([numberKey]) => student[numberKey]);
+  if (!chosen) return undefined;
+  const number = student[chosen[0]]?.trim();
+  const country = student[chosen[1]]?.trim();
+  return [country ? `+${country.replace(/^\+/, "")}` : "", number].filter(Boolean).join(" ") || undefined;
+}
+
+export function parseStudentAidDataText(text: string): ParsedStudentAidPortfolio {
+  const student: Record<string, string> = {};
+  const rawLoans: any[] = [];
+  let fileRequestDate: string | undefined;
+  let current: any = null;
+  let currentStatus: any = null;
+  let currentDisbursement: any = null;
+  let currentContact: any = null;
+  const pushCurrent = () => { if (current) rawLoans.push(current); current = null; currentStatus = null; currentDisbursement = null; currentContact = null; };
+  const textFields: Record<string, string> = {
+    "Loan Award ID": "maskedAwardId",
+    "Loan Attending School Name": "attendingSchoolName",
+    "Loan Attending School OPEID": "attendingSchoolOpeid",
+    "Loan Date": "loanDate",
+    "Loan Repayment Begin Date": "repaymentBeginDate",
+    "Loan Period Begin Date": "periodBeginDate",
+    "Loan Period End Date": "periodEndDate",
+    "Loan Canceled Date": "canceledDate",
+    "Loan Outstanding Principal Balance as of Date": "outstandingPrincipalAsOfDate",
+    "Loan Outstanding Interest Balance as of Date": "outstandingInterestAsOfDate",
+    "Loan Interest Rate Type Code": "interestRateTypeCode",
+    "Loan Interest Rate Type Description": "interestRateTypeDescription",
+    "Loan Repayment Plan Type Code": "repaymentPlanTypeCode",
+    "Loan Repayment Plan Type Code Description": "repaymentPlanDescription",
+    "Loan Repayment Plan Begin Date": "repaymentPlanBeginDate",
+    "Loan Repayment Plan IDR Plan Anniversary Date": "repaymentPlanIdrAnniversaryDate",
+    "Loan Confirmed Subsidy Status": "confirmedSubsidyStatus",
+    "Loan Reaffirmation Date": "reaffirmationDate",
+    "Loan Most Recent Payment Effective Date": "mostRecentPaymentEffectiveDate",
+    "Loan Next Payment Due Date": "nextPaymentDueDate",
+    "Academic Level": "academicLevel",
+    "Award Year": "awardYear",
+    "Reaffirmation flag": "reaffirmationFlag",
+    "UpdtDt": "updateDate",
+    "DelinqDate": "delinquencyDate",
+    "Current Loan Status": "currentLoanStatusCode",
+    "Current Loan Status Description": "currentLoanStatusDescription",
+    "Parent Plus First Level Consolidation Indicator": "parentPlusFirstLevelConsolidationIndicator",
+    "Consolidation Loan With Any Parent Plus Indicator": "consolidationLoanWithAnyParentPlusIndicator"
+  };
+  const numericFields: Record<string, string> = {
+    "Loan Amount": "originalAmount",
+    "Loan Disbursed Amount": "disbursedAmount",
+    "Loan Canceled Amount": "canceledAmount",
+    "Loan Outstanding Principal Balance": "outstandingPrincipal",
+    "Loan Outstanding Interest Balance": "outstandingInterest",
+    "Loan Interest Rate": "interestRatePercent",
+    "Loan Actual Interest Rate": "actualInterestRatePercent",
+    "Loan Statutory Interest Rate": "statutoryInterestRatePercent",
+    "Loan Repayment Plan Scheduled Amount": "repaymentPlanScheduledAmount",
+    "Loan Subsidized Usage in Years": "subsidizedUsageYears",
+    "Loan Cumulative Payment Amount": "cumulativePaymentAmount",
+    "Loan PSLF Cumulative Matched Months": "pslfCumulativeMatchedMonths",
+    "Capitalized Interest": "capitalizedInterest",
+    "Net Loan Amount": "netLoanAmount",
+    "Calculated Subsidized Aggregate OPB": "calculatedSubsidizedAggregateOpb",
+    "Calculated Unsubsidized Aggregate OPB": "calculatedUnsubsidizedAggregateOpb",
+    "Calculated Combined Aggregate OPB": "calculatedCombinedAggregateOpb",
+    "Highest Historical Outstanding Principal Balance (OPB)": "highestHistoricalOutstandingPrincipalBalance",
+    "Current Standard-Standard Schedule Payment Amount": "currentStandardSchedulePaymentAmount",
+    "Permanent Standard-Standard Schedule Payment Amount": "permanentStandardSchedulePaymentAmount"
+  };
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const separator = rawLine.indexOf(":");
+    if (separator < 0) continue;
+    const key = rawLine.slice(0, separator).trim();
+    const value = rawLine.slice(separator + 1).trim();
+    if (key === "File Request Date") { fileRequestDate = value || undefined; continue; }
+    if (key.startsWith("Student ")) { student[key] = value; continue; }
+    if (key === "Loan Type Code" || key === "Loan Type") {
+      pushCurrent();
+      current = { loanTypeCode: key === "Loan Type Code" ? value : undefined, loanTypeDescription: key === "Loan Type" ? value : undefined, statuses: [], disbursements: [], contacts: [], provenance: {} };
+      if (value) current.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid";
+      continue;
+    }
+    if (!current) continue;
+    if (key === "Loan Type Description") { current.loanTypeDescription = value || undefined; if (value) current.provenance.loanTypeDescription = "imported_studentaid"; continue; }
+    if (textFields[key]) { current[textFields[key]] = value || undefined; if (value) current.provenance[textFields[key]] = "imported_studentaid"; continue; }
+    if (numericFields[key]) { const number = studentAidNumber(value); if (number !== undefined) { current[numericFields[key]] = number; current.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
+    if (key === "Loan Status") { currentStatus = { code: value || undefined }; current.statuses.push(currentStatus); continue; }
+    if (key === "Loan Status Description" && currentStatus) { currentStatus.description = value || undefined; continue; }
+    if (key === "Loan Status Effective Date" && currentStatus) { currentStatus.effectiveDate = value || undefined; continue; }
+    if (key === "Loan Disbursement Date") { currentDisbursement = { date: value || undefined }; current.disbursements.push(currentDisbursement); continue; }
+    if (key === "Loan Disbursement Amount" && currentDisbursement) { currentDisbursement.amount = studentAidNumber(value); continue; }
+    if (key === "Loan Contact Type") { currentContact = { type: value || undefined }; current.contacts.push(currentContact); continue; }
+    if (currentContact && key.startsWith("Loan Contact ")) {
+      const contactFields: Record<string, string> = { "Loan Contact Code":"code", "Loan Contact Name":"name", "Loan Contact Street Address 1":"streetAddress1", "Loan Contact Street Address 2":"streetAddress2", "Loan Contact City":"city", "Loan Contact State Code":"stateCode", "Loan Contact Zip Code":"zipCode", "Loan Contact Phone Number":"phoneNumber", "Loan Contact Phone Extension":"phoneExtension", "Loan Contact Email Address":"emailAddress", "Loan Contact Web Site Address":"websiteAddress" };
+      if (contactFields[key]) currentContact[contactFields[key]] = value || undefined;
+      continue;
+    }
+    if (key === "Most Relevant" && currentContact) { currentContact.mostRelevant = studentAidYes(value) === true; continue; }
+  }
+  pushCurrent();
+
+  const loans = rawLoans.map((raw, index): StudentAidNormalizedLoanFact => {
+    const dateForPeriod = raw.disbursements.find((item: any) => item.date)?.date || raw.loanDate;
+    const mappedLoanType = mapStudentAidLoanType(raw.loanTypeCode, raw.loanTypeDescription, raw.consolidationLoanWithAnyParentPlusIndicator);
+    const disbursementPeriod = studentAidDateToPeriod(dateForPeriod);
+    const statusDescription = String(raw.currentLoanStatusDescription || raw.statuses.at(-1)?.description || "").toUpperCase();
+    const inDefault = statusDescription.includes("DEFAULT") && !statusDescription.includes("NON-DEFAULT");
+    const provenance = { ...(raw.provenance || {}) } as Record<string, StudentAidFactProvenance>;
+    if (mappedLoanType) provenance.mappedLoanType = "derived_studentaid";
+    if (disbursementPeriod) provenance.disbursementPeriod = "derived_studentaid";
+    provenance.inDefault = "derived_studentaid";
+    return { ...raw, loanIndex: index, ...(mappedLoanType ? { mappedLoanType } : {}), ...(disbursementPeriod ? { disbursementPeriod } : {}), ...(inDefault ? { inDefault: true } : {}), provenance };
+  });
+  const active = loans.filter((loan) => typeof loan.outstandingPrincipal === "number" && loan.outstandingPrincipal > 0);
+  const repaymentLoans = active.filter((loan) => typeof loan.interestRatePercent === "number").map((loan) => ({ principal: loan.outstandingPrincipal!, annualInterestRatePercent: loan.interestRatePercent! }));
+  const fullyMappedForEligibility = active.length > 0 && active.every((loan) => loan.mappedLoanType && loan.disbursementPeriod);
+  const eligibilityLoans = fullyMappedForEligibility ? active.map((loan) => ({ loanType: loan.mappedLoanType!, disbursementPeriod: loan.disbursementPeriod!, ...(loan.inDefault ? { inDefault: true } : {}) })) : undefined;
+  const totalPrincipal = active.reduce((sum, loan) => sum + (loan.outstandingPrincipal || 0), 0);
+  const totalInterest = active.reduce((sum, loan) => sum + (loan.outstandingInterest || 0), 0);
+  const ambiguousCount = active.filter((loan) => !loan.mappedLoanType || !loan.disbursementPeriod).length;
+  const summary: StudentAidPortfolioSummary = { loanCount: loans.length, activeLoanCount: active.length, totalOutstandingPrincipal: totalPrincipal, totalOutstandingInterest: totalInterest, repaymentLoanCount: repaymentLoans.length, eligibilityMappedLoanCount: active.length - ambiguousCount, ambiguousEligibilityLoanCount: ambiguousCount, hasLoanDisbursedOnOrAfterJuly1_2026: active.some((loan) => loan.disbursementPeriod === "on_or_after_2026_07_01") };
+  const nameParts = [student["Student First Name"], student["Student Middle Initial"], student["Student Last Name"]].map((value) => value?.trim()).filter(Boolean);
+  const borrower: ParsedStudentAidBorrower = { provenance: {} };
+  const borrowerFields: Array<[keyof ParsedStudentAidBorrower, string | undefined]> = [
+    ["displayName", nameParts.join(" ") || undefined], ["email", student["Student Email Address"]], ["phone", studentAidPreferredPhone(student)], ["streetAddress1", student["Student Street Address 1"]], ["streetAddress2", student["Student Street Address 2"]], ["city", student["Student City"]], ["stateCode", student["Student State Code"]], ["countryCode", student["Student Country Code"]], ["zipCode", student["Student Zip Code"]]
+  ];
+  for (const [field, rawValue] of borrowerFields) {
+    const value = typeof rawValue === "string" ? rawValue.trim() : rawValue;
+    if (value) { (borrower as any)[field] = value; borrower.provenance[String(field)] = "imported_studentaid"; }
+  }
+  return { ...(fileRequestDate ? { fileRequestDate } : {}), borrower, loans, repaymentLoans, ...(eligibilityLoans ? { eligibilityLoans } : {}), summary, totalPrincipal, totalInterest, ambiguousCount };
+}
 
 const BORROWER_UI_HTML = String.raw`<!doctype html>
 <html lang="en">
