@@ -253,6 +253,26 @@ test("IBR fixtures cover both statutory percentage branches", () => {
   assert.equal(newer.planEstimates[0]?.monthlyPaymentEstimate, 217.17);
 });
 
+test("multi-loan portfolio models the sum of per-loan Standard payments", () => {
+  const result = calculateRepayment({
+    income: [{ cadence: "annual", amount: 250000 }],
+    adjustedGrossIncomeOverride: 250000,
+    region: "contiguous_us",
+    familySize: 1,
+    loan: {
+      newBorrowerOnOrAfterJuly1_2014: false,
+      repaymentLoans: [
+        { principal: 10000, annualInterestRatePercent: 5 },
+        { principal: 20000, annualInterestRatePercent: 7 }
+      ]
+    },
+    plans: ["IBR"]
+  });
+  const expected = amortizedMonthlyPayment(10000, 5, 10) + amortizedMonthlyPayment(20000, 7, 10);
+  assert.equal(result.planEstimates[0]?.monthlyPaymentEstimate, Math.round((expected + Number.EPSILON) * 100) / 100);
+  assert.match(result.assumptions.join("\n"), /sum of per-loan amortized payments/i);
+});
+
 test("PAYE rejects initial enrollment when modeled PAYE amount is not below 10-year Standard", () => {
   const result = calculateRepayment({
     income: [{ cadence: "annual", amount: 100000 }],
@@ -407,6 +427,32 @@ test("borrower calculator API uses the deterministic RAP engine", async () => {
   assert.equal(body.ok, true);
   assert.equal(body.result.planEstimates[0].monthlyPaymentEstimate, 116.67);
   assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
+test("borrower calculator API accepts a per-loan repayment portfolio", async () => {
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/calculate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      income: [{ cadence: "annual", amount: 250000 }],
+      adjustedGrossIncomeOverride: 250000,
+      region: "contiguous_us",
+      familySize: 1,
+      loan: {
+        newBorrowerOnOrAfterJuly1_2014: false,
+        repaymentLoans: [
+          { principal: 10000, annualInterestRatePercent: 5 },
+          { principal: 20000, annualInterestRatePercent: 7 }
+        ]
+      },
+      plans: ["IBR"]
+    })
+  }), {});
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  const expected = amortizedMonthlyPayment(10000, 5, 10) + amortizedMonthlyPayment(20000, 7, 10);
+  assert.equal(body.result.planEstimates[0].monthlyPaymentEstimate, Math.round((expected + Number.EPSILON) * 100) / 100);
 });
 
 test("borrower calculator API rejects unknown fields without echoing their values", async () => {
