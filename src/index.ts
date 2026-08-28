@@ -400,7 +400,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     if (isFfel) {
       if (value.includes("PARENT") && value.includes("PLUS")) return "ffel_parent_plus";
       if ((value.includes("GRAD") || value.includes("PROFESSIONAL")) && value.includes("PLUS")) return "ffel_grad_plus";
-      if (value.includes("UNSUBSID")) return "ffel_unsubsidized_stafford";
+      if (value.includes("UNSUBSID") || value.includes("NON-SUBSID")) return "ffel_unsubsidized_stafford";
       if (value.includes("SUBSID")) return "ffel_subsidized_stafford";
     }
     return null;
