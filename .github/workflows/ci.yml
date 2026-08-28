@@ -314,7 +314,7 @@ jobs:
             const health = await healthResponse.json();
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.7.0', `unexpected live version ${health.version}`);
+            assert(health.version === '0.7.1', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -332,12 +332,22 @@ jobs:
             assert(uiHtml.includes('id="guide-input"'), 'UI guided typed-answer input missing');
             assert(uiHtml.includes('Facts collected in this session'), 'UI guided fact ledger missing');
             assert(uiHtml.includes('No account is required'), 'UI private no-account guided boundary missing');
+            assert(uiHtml.includes('Could my IBR payment be $0?'), 'UI IBR zero-payment quick-info bubble missing');
+            assert(uiHtml.includes('Prepare stated income document'), 'UI stated-income follow-up action missing');
+            assert(uiHtml.includes('Prepare unemployment statement'), 'UI unemployment follow-up action missing');
             assert(uiHtml.includes('id="loan-file"'), 'UI local loan-file import missing');
             assert(uiHtml.includes('Download My Aid Data'), 'UI StudentAid import guidance missing');
             assert(/raw file is never uploaded/i.test(uiHtml), 'UI raw-file privacy boundary missing');
             assert(/no six-person cap/i.test(uiHtml), 'UI family-size correction missing');
             assert(uiHtml.includes('Documented fact') && uiHtml.includes('Imported fact') && uiHtml.includes('Derived estimate'), 'UI fact provenance labels missing');
             assert(!uiHtml.includes('/api/import'), 'UI must not upload raw loan files to an import API');
+
+            const quickInfo = await fetchChecked(`${base}/api/ibr-zero-payment?region=contiguous_us`);
+            const quickInfoBody = await quickInfo.json();
+            assert(quickInfo.status === 200, `IBR quick info returned ${quickInfo.status}`);
+            assert(quickInfoBody?.thresholds?.length === 6, 'IBR quick info family-size table mismatch');
+            assert(quickInfoBody.thresholds[5]?.maxAgiForZeroPayment === 66540, 'IBR family-size-6 $0 cutoff mismatch');
+            assert(quickInfoBody.thresholds[0]?.maxAgiForZeroPayment === 23940, 'IBR family-size-1 $0 cutoff mismatch');
 
             const rawImportEndpoint = await fetchChecked(`${base}/api/import`);
             assert(rawImportEndpoint.status === 404, `raw import endpoint must not exist, got ${rawImportEndpoint.status}`);
@@ -379,7 +389,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.7.0', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.7.1', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
@@ -454,9 +464,9 @@ jobs:
               version: health.version,
               policy_snapshot: health.policy_snapshot,
               tools: toolNames,
-              checks: 23
+              checks: 29
             }));
-            console.log('::notice title=Live product acceptance::23 production checks passed');
+            console.log('::notice title=Live product acceptance::29 production checks passed');
           })().catch((error) => {
             console.error(error);
             process.exit(1);
