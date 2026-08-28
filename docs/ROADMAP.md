@@ -128,13 +128,28 @@ Acceptance evidence:
 6. Make completed drafts easy to print/download and suitable for normal email or later e-sign workflows, while preserving a clear review-before-sign boundary and never auto-submitting to Federal Student Aid or a servicer.
 7. Keep the guided workflow usable without a required account so a borrower can complete a private session before persistent identity/storage is introduced. V0.8 remains the boundary for saved profiles, retained drafts, and account-linked data.
 
-### V0.7.1 — IBR $0-payment quick info — IMPLEMENTING
+### V0.7.1 — IBR $0-payment quick info — COMPLETE
 
 - Add a guided-assistant bubble for borrowers who want to know whether IBR could produce a $0 required monthly payment.
 - Derive the quick-info threshold from the same 2026 poverty-guideline constants used by the deterministic calculator: IBR discretionary income is AGI above 150% of the applicable poverty guideline.
 - Show family-size 1–6 AGI cutoffs by region, with a plain-language 48-states-plus-D.C. example showing that $60,000 with family size 6 is below the 2026 $66,540 $0-payment line, subject to borrower/loan IBR eligibility and the income actually used for the application.
 - Immediately offer the next workflow action: prepare a current/stated-income supporting statement, prepare an unemployment-compensation statement, or continue to the full calculator.
 - Keep the quick-info explanation explicit that a $0 formula result is not automatic plan eligibility, annual recertification still matters, spouse income can matter in applicable situations, and interest may still accrue.
+
+Acceptance evidence:
+
+- Exact V0.7.1 runtime source commit `1fa309f0631d7d89918e0c61de76d524291ae291` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in CI run `33133261659`.
+- Live deploy + production acceptance run `33133417016` succeeded from that exact immutable source. The deployment passed the immutable-source guard, tests, Wrangler deployment, and live checks for the guided bubble, both document follow-ups, the quick-info endpoint, and the $23,940 / $66,540 boundary values.
+- CairnStone canonical closure is `4337549bfac4cec26fac20c3f88009ea2039b0c16cd3891a2970677b97790a93`.
+
+### V0.7.2 — Browser document review, print, and local download — IMPLEMENTING
+
+- Turn the stated-income and unemployment follow-up actions into an actual borrower document workflow without requiring an account.
+- Reuse confirmed guided facts and ask only for the remaining borrower, payer/agency, and servicer names needed for the draft; every skipped item remains an explicit placeholder.
+- Generate the draft through a same-origin `/api/document` route that validates against and calls the existing trusted documentation-template engine rather than duplicating statement wording in browser JavaScript.
+- Keep the generated preview editable through its source fields and require an explicit review acknowledgement before enabling print / Save PDF or local HTML download.
+- Keep raw borrower facts out of server persistence and application logs. Do not auto-submit, invent evidence, create employer records, or create a borrower/employer signature.
+- Preserve the existing three-tool MCP contract; this is a borrower-facing workflow layered on the same template engine.
 
 ## V0.8 — Borrower accounts + secure saved profile — PLANNED
 
