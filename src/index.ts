@@ -553,13 +553,18 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .jump-nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 24px; }
     .jump-nav a { display: inline-flex; align-items: center; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 999px; padding: 8px 12px; text-decoration: none; font-weight: 700; background: color-mix(in srgb, CanvasText 4%, Canvas); }
     .field-completion { margin: -8px 0 16px; font-size: .92rem; }
-    @media (max-width: 700px) { .grid, .summary, .fact-grid, .comparison-cards, .chart-grid, .history-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } .jump-nav { gap: 7px; } .jump-nav a { flex: 1 1 calc(50% - 7px); justify-content: center; } }
+    @media (max-width: 700px) { .grid, .summary, .fact-grid, .comparison-cards, .chart-grid, .history-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } .jump-nav { position: sticky; top: 0; z-index: 20; background: Canvas; gap: 7px; margin: 0 0 20px; padding: 10px 0 8px; } .jump-nav a { flex: 1 1 calc(50% - 7px); justify-content: center; min-height: 44px; } #guided-assistant, #loan-import, #calculator-form, #results { scroll-margin-top: 68px; } }
     .field-color-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 4px 0 18px; }
     .field-color-toggle input { width: auto; }
     label[data-fill-state] { border-left: 4px solid transparent; border-radius: 6px; padding-left: 10px; margin-left: -14px; transition: border-color .15s ease, background-color .15s ease; }
     label[data-fill-state].fill-red { border-left-color: #dc2626; background: color-mix(in srgb, #dc2626 9%, transparent); }
     label[data-fill-state].fill-green { border-left-color: #16a34a; background: color-mix(in srgb, #16a34a 9%, transparent); }
     label[data-fill-state].fill-purple { border-left-color: #9333ea; background: color-mix(in srgb, #9333ea 9%, transparent); }
+    .fill-status-text { font-size: .78rem; font-weight: 700; letter-spacing: .01em; }
+    label[data-fill-state].fill-red .fill-status-text { color: #dc2626; }
+    label[data-fill-state].fill-green .fill-status-text { color: #16a34a; }
+    label[data-fill-state].fill-purple .fill-status-text { color: #9333ea; }
+    body.field-colors-off .fill-status-text { color: inherit; }
     body.field-colors-off label[data-fill-state] { border-left-color: transparent; background: transparent; padding-left: 0; margin-left: 0; }
   </style>
 </head>
@@ -2401,17 +2406,30 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     if (input.type === "checkbox" || input.type === "radio") return input.checked;
     return String(input.value == null ? "" : input.value).trim().length > 0;
   }
+  function ensureStatusEl(label) {
+    var el = label.querySelector(".fill-status-text");
+    if (!el) {
+      el = document.createElement("span");
+      el.className = "fill-status-text";
+      label.appendChild(el);
+    }
+    return el;
+  }
   function updateField(label) {
     var input = label.querySelector("input, select, textarea");
     if (!input) return;
     var state = label.getAttribute("data-fill-state");
+    var statusEl = ensureStatusEl(label);
     label.classList.remove("fill-red", "fill-green", "fill-purple");
     if (isFilled(input)) {
       label.classList.add("fill-green");
+      statusEl.textContent = "✓ Filled";
     } else if (state === "required") {
       label.classList.add("fill-red");
+      statusEl.textContent = "! Required";
     } else {
       label.classList.add("fill-purple");
+      statusEl.textContent = "○ Optional";
     }
   }
   function updateCompletion() {
@@ -2423,12 +2441,17 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     var optionalFilled = optional.filter(function (label) { return isFilled(label.querySelector("input, select, textarea")); }).length;
     completion.textContent = "Required: " + requiredFilled + "/" + required.length + " filled · Optional: " + optionalFilled + "/" + optional.length + " filled";
   }
+  var completionTimer = null;
+  function scheduleCompletionUpdate() {
+    if (completionTimer) window.clearTimeout(completionTimer);
+    completionTimer = window.setTimeout(updateCompletion, 400);
+  }
   function refreshAll() { fields.forEach(updateField); updateCompletion(); }
   fields.forEach(function (label) {
     var input = label.querySelector("input, select, textarea");
     if (!input) return;
-    input.addEventListener("input", function () { updateField(label); updateCompletion(); });
-    input.addEventListener("change", function () { updateField(label); updateCompletion(); });
+    input.addEventListener("input", function () { updateField(label); scheduleCompletionUpdate(); });
+    input.addEventListener("change", function () { updateField(label); scheduleCompletionUpdate(); });
   });
   var cadenceControl = document.getElementById("cadence");
   if (cadenceControl) cadenceControl.addEventListener("change", function () { window.setTimeout(refreshAll, 0); });
