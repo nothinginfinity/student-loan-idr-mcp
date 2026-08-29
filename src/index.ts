@@ -2798,6 +2798,43 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
     } catch (error) { status.textContent = error instanceof Error ? error.message : "Unable to archive client."; }
   }
 
+  async function generateShareLink(client, box) {
+    box.hidden = false;
+    box.replaceChildren(addText("p", "Creating share link…", "muted"));
+    try {
+      const body = await api("/api/advisor/clients/" + encodeURIComponent(client.clientId) + "/plan-selections", { method: "POST", body: "{}" });
+      const url = location.origin + "/share/" + body.selection.shareToken;
+      box.replaceChildren();
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.gap = "8px";
+      row.style.marginTop = "8px";
+      const input = document.createElement("input");
+      input.value = url;
+      input.readOnly = true;
+      input.addEventListener("click", () => input.select());
+      const copyButton = addText("button", "Copy", "secondary");
+      copyButton.type = "button";
+      copyButton.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(url); copyButton.textContent = "Copied"; setTimeout(() => { copyButton.textContent = "Copy"; }, 1500); }
+        catch { input.select(); }
+      });
+      const openLink = document.createElement("a");
+      openLink.href = url;
+      openLink.target = "_blank";
+      openLink.rel = "noopener";
+      openLink.className = "button-link secondary";
+      openLink.textContent = "Open";
+      row.append(input, copyButton, openLink);
+      box.appendChild(row);
+      const note = addText("p", "This link expires 15 minutes after your borrower opens it unless they pick and confirm a plan first — only send it once they’re ready to look at it. It is not password-protected, so treat it as sensitive.", "muted");
+      note.style.marginTop = "6px";
+      box.appendChild(note);
+    } catch (error) {
+      box.replaceChildren(addText("p", error instanceof Error ? error.message : "Unable to create a share link.", "muted"));
+    }
+  }
+
   function renderClients(clients) {
     clientList.replaceChildren();
     if (!clients.length) {
@@ -2829,8 +2866,14 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
       archiveButton.type = "button";
       archiveButton.disabled = client.lifecycleState === "archived";
       archiveButton.addEventListener("click", () => { void archiveClient(client); });
-      actions.append(open, exportButton, archiveButton);
+      const shareLinkBox = document.createElement("div");
+      shareLinkBox.hidden = true;
+      const shareButton = addText("button", "Share link", "secondary");
+      shareButton.type = "button";
+      shareButton.addEventListener("click", () => { void generateShareLink(client, shareLinkBox); });
+      actions.append(open, shareButton, exportButton, archiveButton);
       card.appendChild(actions);
+      card.appendChild(shareLinkBox);
       clientList.appendChild(card);
     });
   }
