@@ -1,6 +1,6 @@
 import { calculateRepayment, getPolicyStatus, ibrZeroPaymentAgiThreshold } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
-import { handleAdvisorApi } from "./advisor.ts";
+import { handleAdvisorApi, handleShareApi } from "./advisor.ts";
 import type { D1DatabaseBinding } from "./advisor.ts";
 import type {
   AdvisorClientDashboardSummary,
@@ -3475,6 +3475,7 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") return home(request, env);
     if (request.method === "GET" && url.pathname === "/api/ibr-zero-payment") return ibrZeroPaymentResponse(request, env);
     if (url.pathname.startsWith("/api/advisor/")) return handleAdvisorApi(request, env);
+    if (url.pathname.startsWith("/api/share/")) return handleShareApi(request, env);
     if (request.method === "POST" && url.pathname === "/api/calculate") return handleCalculatorApi(request, env);
     if (request.method === "POST" && url.pathname === "/api/document") return handleDocumentApi(request, env);
     if (url.pathname === "/mcp" && request.method === "GET") {
