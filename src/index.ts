@@ -2547,6 +2547,23 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
       </form>
     </section>
 
+    <section class="panel" aria-labelledby="studentaid-intake-title">
+      <h2 id="studentaid-intake-title">Create client from StudentAid file</h2>
+      <p class="muted">Choose the borrower’s <strong>Download My Aid Data</strong> file from StudentAid.gov. It is parsed only on this device; the raw file is never uploaded or retained.</p>
+      <label>StudentAid.gov My Aid Data file<input type="file" id="studentaid-intake-file" accept=".txt,text/plain"></label>
+      <p id="studentaid-intake-status" class="muted" role="status" aria-live="polite"></p>
+      <div id="studentaid-intake-preview" hidden>
+        <label>Client display name<input id="studentaid-intake-name" maxlength="120"></label>
+        <dl id="studentaid-intake-facts"></dl>
+        <div id="studentaid-intake-matches" hidden>
+          <p class="muted">Possible existing client match found. Open the existing client instead of creating a duplicate, or confirm this is a different person.</p>
+          <div id="studentaid-intake-match-list"></div>
+        </div>
+        <p class="muted">Raw StudentAid.gov file remains local and will not be retained. Review the facts above before creating a client.</p>
+        <div class="actions"><button type="button" id="studentaid-intake-create">Create separate client from this file</button></div>
+      </div>
+    </section>
+
     <section class="panel" aria-labelledby="clients-title">
       <div class="topbar">
         <div><h2 id="clients-title">Clients</h2><p class="muted">Dashboard cards show only the minimum workflow summary, never private contact, income, loan, evidence, note, or draft details.</p></div>
@@ -2573,6 +2590,153 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
   const clientList = document.getElementById("client-list");
   let csrfToken = null;
   let advisor = null;
+  const studentAidIntakeFile = document.getElementById("studentaid-intake-file");
+  const studentAidIntakeStatus = document.getElementById("studentaid-intake-status");
+  const studentAidIntakePreview = document.getElementById("studentaid-intake-preview");
+  const studentAidIntakeName = document.getElementById("studentaid-intake-name");
+  const studentAidIntakeFacts = document.getElementById("studentaid-intake-facts");
+  const studentAidIntakeMatches = document.getElementById("studentaid-intake-matches");
+  const studentAidIntakeMatchList = document.getElementById("studentaid-intake-match-list");
+  const studentAidIntakeCreate = document.getElementById("studentaid-intake-create");
+  let studentAidPortfolio = null;
+  let studentAidMatches = [];
+
+  function numericValue(value) {
+    if (!value) return undefined;
+    const normalized = value.replace(/[$,%]/g, "").replace(/,/g, "").trim();
+    if (!normalized) return undefined;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  function studentAidYesLocal(value) {
+    const normalized = String(value || "").trim().toUpperCase();
+    if (["Y", "YES", "TRUE", "1"].includes(normalized)) return true;
+    if (["N", "NO", "FALSE", "0"].includes(normalized)) return false;
+    return undefined;
+  }
+
+  function maskStudentAidIdentifierLocal(value) {
+    const normalized = String(value || "").trim();
+    return normalized ? "••••" + normalized.slice(-4) : null;
+  }
+
+  function mapLoanType(code, description, parentPlusIndicator) {
+    const c = String(code || "").trim().toUpperCase();
+    const value = String(description || "").toUpperCase();
+    const hasParentPlus = studentAidYesLocal(parentPlusIndicator);
+    if (["D0", "D1"].includes(c)) return "direct_subsidized";
+    if (["D2", "D8"].includes(c)) return "direct_unsubsidized";
+    if (c === "D3") return "direct_grad_plus";
+    if (c === "D4") return "direct_parent_plus";
+    if (["D5", "D6", "D9"].includes(c)) return hasParentPlus === true ? "direct_consolidation_with_parent_plus" : hasParentPlus === false ? "direct_consolidation_no_parent_plus" : null;
+    if (c === "GB") return "ffel_grad_plus";
+    if (c === "PL") return "ffel_parent_plus";
+    if (c === "SF") return "ffel_subsidized_stafford";
+    if (["SU", "SN"].includes(c)) return "ffel_unsubsidized_stafford";
+    if (c === "CL") return hasParentPlus === true ? "ffel_consolidation_with_parent_plus" : hasParentPlus === false ? "ffel_consolidation_no_parent_plus" : null;
+    if (["PU", "DU", "NU"].includes(c) || value.includes("PERKINS")) return "perkins";
+    if (!value || value.includes("CONSOLIDAT")) return null;
+    const isDirect = value.includes("DIRECT");
+    const isFfel = value.includes("FFEL") || value.includes("FEDERAL STAFFORD");
+    if (isDirect) {
+      if (value.includes("PARENT") && value.includes("PLUS")) return "direct_parent_plus";
+      if ((value.includes("GRAD") || value.includes("PROFESSIONAL")) && value.includes("PLUS")) return "direct_grad_plus";
+      if (value.includes("UNSUBSID")) return "direct_unsubsidized";
+      if (value.includes("SUBSID")) return "direct_subsidized";
+    }
+    if (isFfel) {
+      if (value.includes("PARENT") && value.includes("PLUS")) return "ffel_parent_plus";
+      if ((value.includes("GRAD") || value.includes("PROFESSIONAL")) && value.includes("PLUS")) return "ffel_grad_plus";
+      if (value.includes("UNSUBSID") || value.includes("NON-SUBSID")) return "ffel_unsubsidized_stafford";
+      if (value.includes("SUBSID")) return "ffel_subsidized_stafford";
+    }
+    return null;
+  }
+
+  function disbursementPeriod(value) {
+    const match = String(value || "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    const timestamp = match ? Date.UTC(Number(match[3]), Number(match[1]) - 1, Number(match[2])) : Date.parse(value || "");
+    if (!Number.isFinite(timestamp)) return null;
+    return timestamp >= Date.UTC(2026, 6, 1) ? "on_or_after_2026_07_01" : "before_2026_07_01";
+  }
+
+  function parseStudentAidData(text) {
+    const student = {};
+    const records = [];
+    let fileRequestDate = null;
+    let current = null;
+    let currentStatus = null;
+    let currentDisbursement = null;
+    let currentContact = null;
+    const pushCurrent = () => { if (current) records.push(current); current = null; currentStatus = null; currentDisbursement = null; currentContact = null; };
+    const textFields = {
+      "Loan Attending School Name":"attendingSchoolName", "Loan Attending School OPEID":"attendingSchoolOpeid", "Loan Date":"loanDate", "Loan Repayment Begin Date":"repaymentBeginDate", "Loan Period Begin Date":"periodBeginDate", "Loan Period End Date":"periodEndDate", "Loan Canceled Date":"canceledDate", "Loan Outstanding Principal Balance as of Date":"outstandingPrincipalAsOfDate", "Loan Outstanding Interest Balance as of Date":"outstandingInterestAsOfDate", "Loan Interest Rate Type Code":"interestRateTypeCode", "Loan Interest Rate Type Description":"interestRateTypeDescription", "Loan Repayment Plan Type Code":"repaymentPlanTypeCode", "Loan Repayment Plan Type Code Description":"repaymentPlanDescription", "Loan Repayment Plan Begin Date":"repaymentPlanBeginDate", "Loan Repayment Plan IDR Plan Anniversary Date":"repaymentPlanIdrAnniversaryDate", "Loan Confirmed Subsidy Status":"confirmedSubsidyStatus", "Loan Reaffirmation Date":"reaffirmationDate", "Loan Most Recent Payment Effective Date":"mostRecentPaymentEffectiveDate", "Loan Next Payment Due Date":"nextPaymentDueDate", "Academic Level":"academicLevel", "Award Year":"awardYear", "Reaffirmation flag":"reaffirmationFlag", "UpdtDt":"updateDate", "DelinqDate":"delinquencyDate", "Current Loan Status":"currentLoanStatusCode", "Current Loan Status Description":"currentLoanStatusDescription", "Parent Plus First Level Consolidation Indicator":"parentPlusFirstLevelConsolidationIndicator", "Consolidation Loan With Any Parent Plus Indicator":"consolidationLoanWithAnyParentPlusIndicator"
+    };
+    const numericFields = {
+      "Loan Amount":"originalAmount", "Loan Disbursed Amount":"disbursedAmount", "Loan Canceled Amount":"canceledAmount", "Loan Outstanding Principal Balance":"outstandingPrincipal", "Loan Outstanding Interest Balance":"outstandingInterest", "Loan Interest Rate":"interestRatePercent", "Loan Actual Interest Rate":"actualInterestRatePercent", "Loan Statutory Interest Rate":"statutoryInterestRatePercent", "Loan Repayment Plan Scheduled Amount":"repaymentPlanScheduledAmount", "Loan Subsidized Usage in Years":"subsidizedUsageYears", "Loan Cumulative Payment Amount":"cumulativePaymentAmount", "Loan PSLF Cumulative Matched Months":"pslfCumulativeMatchedMonths", "Capitalized Interest":"capitalizedInterest", "Net Loan Amount":"netLoanAmount", "Calculated Subsidized Aggregate OPB":"calculatedSubsidizedAggregateOpb", "Calculated Unsubsidized Aggregate OPB":"calculatedUnsubsidizedAggregateOpb", "Calculated Combined Aggregate OPB":"calculatedCombinedAggregateOpb", "Highest Historical Outstanding Principal Balance (OPB)":"highestHistoricalOutstandingPrincipalBalance", "Current Standard-Standard Schedule Payment Amount":"currentStandardSchedulePaymentAmount", "Permanent Standard-Standard Schedule Payment Amount":"permanentStandardSchedulePaymentAmount"
+    };
+    for (const rawLine of text.split(/\r?\n/)) {
+      const separator = rawLine.indexOf(":");
+      if (separator < 0) continue;
+      const key = rawLine.slice(0, separator).trim();
+      const value = rawLine.slice(separator + 1).trim();
+      if (key === "File Request Date") { fileRequestDate = value || null; continue; }
+      if (key.startsWith("Student ")) { student[key] = value; continue; }
+      if (key === "Loan Type Code" || key === "Loan Type") {
+        pushCurrent();
+        current = { loanTypeCode: key === "Loan Type Code" ? value : null, loanTypeDescription: key === "Loan Type" ? value : null, statuses: [], disbursements: [], contacts: [], provenance: {} };
+        if (value) current.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid";
+        continue;
+      }
+      if (!current) continue;
+      if (key === "Loan Type Description") { current.loanTypeDescription = value || null; if (value) current.provenance.loanTypeDescription = "imported_studentaid"; continue; }
+      if (key === "Loan Award ID") { const masked = maskStudentAidIdentifierLocal(value); if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; } continue; }
+      if (textFields[key]) { if (value) { current[textFields[key]] = value; current.provenance[textFields[key]] = "imported_studentaid"; } continue; }
+      if (numericFields[key]) { const number = numericValue(value); if (number !== undefined) { current[numericFields[key]] = number; current.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
+      if (key === "Loan Status") { currentStatus = { code: value || undefined }; current.statuses.push(currentStatus); continue; }
+      if (key === "Loan Status Description" && currentStatus) { currentStatus.description = value || undefined; continue; }
+      if (key === "Loan Status Effective Date" && currentStatus) { currentStatus.effectiveDate = value || undefined; continue; }
+      if (key === "Loan Disbursement Date") { currentDisbursement = { date: value || undefined }; current.disbursements.push(currentDisbursement); continue; }
+      if (key === "Loan Disbursement Amount" && currentDisbursement) { currentDisbursement.amount = numericValue(value); continue; }
+      if (key === "Loan Contact Type") { currentContact = { type: value || undefined }; current.contacts.push(currentContact); continue; }
+      if (currentContact && key.startsWith("Loan Contact ")) {
+        const contactFields = { "Loan Contact Code":"code", "Loan Contact Name":"name", "Loan Contact Street Address 1":"streetAddress1", "Loan Contact Street Address 2":"streetAddress2", "Loan Contact City":"city", "Loan Contact State Code":"stateCode", "Loan Contact Zip Code":"zipCode", "Loan Contact Phone Number":"phoneNumber", "Loan Contact Phone Extension":"phoneExtension", "Loan Contact Email Address":"emailAddress", "Loan Contact Web Site Address":"websiteAddress" };
+        if (contactFields[key] && value) currentContact[contactFields[key]] = value;
+        continue;
+      }
+      if (key === "Most Relevant" && currentContact) { currentContact.mostRelevant = studentAidYesLocal(value) === true; continue; }
+    }
+    pushCurrent();
+    const loans = records.map((loan, loanIndex) => {
+      const dateForPeriod = loan.disbursements.find((item) => item.date)?.date || loan.loanDate;
+      const mappedLoanType = mapLoanType(loan.loanTypeCode, loan.loanTypeDescription, loan.consolidationLoanWithAnyParentPlusIndicator);
+      const period = disbursementPeriod(dateForPeriod);
+      const status = String(loan.currentLoanStatusDescription || loan.statuses.at(-1)?.description || "").toUpperCase();
+      const inDefault = status.includes("DEFAULT") && !status.includes("NON-DEFAULT");
+      const provenance = { ...loan.provenance };
+      if (mappedLoanType) provenance.mappedLoanType = "derived_studentaid";
+      if (period) provenance.disbursementPeriod = "derived_studentaid";
+      provenance.inDefault = "derived_studentaid";
+      return { ...loan, loanIndex, mappedLoanType, disbursementPeriod: period, inDefault, provenance };
+    });
+    const active = loans.filter((loan) => typeof loan.outstandingPrincipal === "number" && loan.outstandingPrincipal > 0);
+    const repaymentLoans = active.filter((loan) => typeof loan.interestRatePercent === "number").map((loan) => ({ principal: loan.outstandingPrincipal, annualInterestRatePercent: loan.interestRatePercent }));
+    const fullyMappedForEligibility = active.length > 0 && active.every((loan) => loan.mappedLoanType && loan.disbursementPeriod);
+    const eligibilityLoans = fullyMappedForEligibility ? active.map((loan) => ({ loanType: loan.mappedLoanType, disbursementPeriod: loan.disbursementPeriod, ...(loan.inDefault ? { inDefault: true } : {}) })) : undefined;
+    const totalPrincipal = active.reduce((sum, loan) => sum + loan.outstandingPrincipal, 0);
+    const totalInterest = active.reduce((sum, loan) => sum + (loan.outstandingInterest || 0), 0);
+    const ambiguousCount = active.filter((loan) => !loan.mappedLoanType || !loan.disbursementPeriod).length;
+    const name = [student["Student First Name"], student["Student Middle Initial"], student["Student Last Name"]].filter(Boolean).join(" ").trim();
+    const preferredPhoneKeys = [["Student Cell Phone Number","Student Cell Phone Country Code","Student Cell Phone Preferred"],["Student Home Phone Number","Student Home Phone Country Code","Student Home Phone Preferred"],["Student Work Phone Number","Student Work Phone Country Code","Student Work Phone Preferred"]];
+    const phoneChoice = preferredPhoneKeys.find(([numberKey,,preferredKey]) => student[numberKey] && studentAidYesLocal(student[preferredKey]) === true) || preferredPhoneKeys.find(([numberKey]) => student[numberKey]);
+    const phone = phoneChoice ? [student[phoneChoice[1]] ? "+" + String(student[phoneChoice[1]]).replace(/^\+/,"") : "", student[phoneChoice[0]]].filter(Boolean).join(" ") : "";
+    const borrower = { provenance: {} };
+    [["displayName",name],["email",student["Student Email Address"]],["phone",phone],["streetAddress1",student["Student Street Address 1"]],["streetAddress2",student["Student Street Address 2"]],["city",student["Student City"]],["stateCode",student["Student State Code"]],["countryCode",student["Student Country Code"]],["zipCode",student["Student Zip Code"]]].forEach(([field,value]) => { if (value) { borrower[field] = String(value).trim(); borrower.provenance[field] = "imported_studentaid"; } });
+    const relevantContact = active.flatMap((loan) => loan.contacts || []).find((contact) => contact.mostRelevant && contact.name) || active.flatMap((loan) => loan.contacts || []).find((contact) => contact.name);
+    const summary = { loanCount: loans.length, activeLoanCount: active.length, totalOutstandingPrincipal: totalPrincipal, totalOutstandingInterest: totalInterest, repaymentLoanCount: repaymentLoans.length, eligibilityMappedLoanCount: active.length - ambiguousCount, ambiguousEligibilityLoanCount: ambiguousCount, hasLoanDisbursedOnOrAfterJuly1_2026: active.some((loan) => loan.disbursementPeriod === "on_or_after_2026_07_01") };
+    return { fileRequestDate, borrower, loans, repaymentLoans, eligibilityLoans, totalPrincipal, totalInterest, ambiguousCount, summary, servicerName: relevantContact?.name || null };
+  }
 
   async function api(path, init = {}) {
     const headers = new Headers(init.headers || {});
@@ -2713,6 +2877,85 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
       const body = await api("/api/advisor/clients", { method: "POST", body: JSON.stringify(payload) });
       window.location.href = "/?advisorClient=" + encodeURIComponent(body.client.clientId);
     } catch (error) { status.textContent = error instanceof Error ? error.message : "Unable to create client."; }
+  });
+  studentAidIntakeFile.addEventListener("change", async () => {
+    const file = studentAidIntakeFile.files && studentAidIntakeFile.files[0];
+    if (!file) return;
+    studentAidIntakeStatus.textContent = "Reading file locally…";
+    studentAidIntakePreview.hidden = true;
+    studentAidIntakeMatches.hidden = true;
+    studentAidMatches = [];
+    try {
+      const text = await file.text();
+      studentAidPortfolio = parseStudentAidData(text);
+      studentAidIntakeName.value = studentAidPortfolio.borrower.displayName || "";
+      const summary = studentAidPortfolio.summary;
+      studentAidIntakeFacts.innerHTML = "";
+      const addFact = (label, value) => {
+        const dt = document.createElement("dt"); dt.textContent = label;
+        const dd = document.createElement("dd"); dd.textContent = value;
+        studentAidIntakeFacts.append(dt, dd);
+      };
+      addFact("Loans found", String(summary.loanCount) + " (" + summary.activeLoanCount + " with an outstanding balance)");
+      addFact("Total outstanding principal", summary.totalOutstandingPrincipal ? ("$" + summary.totalOutstandingPrincipal.toLocaleString()) : "Not found");
+      if (studentAidPortfolio.servicerName) addFact("Servicer contact found", studentAidPortfolio.servicerName);
+      if (studentAidPortfolio.borrower.email) addFact("Email found", studentAidPortfolio.borrower.email);
+      if (studentAidPortfolio.borrower.phone) addFact("Phone found", studentAidPortfolio.borrower.phone);
+      if (summary.ambiguousEligibilityLoanCount) addFact("Needs review", summary.ambiguousEligibilityLoanCount + " loan(s) have ambiguous consolidation/eligibility facts and will need manual review after creation.");
+      studentAidIntakeStatus.textContent = "Raw file was read locally and will not be uploaded. Review the facts below, then create the client.";
+      studentAidIntakePreview.hidden = false;
+      const matchBody = {};
+      if (studentAidPortfolio.borrower.displayName) matchBody.displayName = studentAidPortfolio.borrower.displayName;
+      if (studentAidPortfolio.borrower.email) matchBody.email = studentAidPortfolio.borrower.email;
+      if (studentAidPortfolio.borrower.phone) matchBody.phone = studentAidPortfolio.borrower.phone;
+      if (Object.keys(matchBody).length) {
+        try {
+          const matchResult = await api("/api/advisor/clients/match", { method: "POST", body: JSON.stringify(matchBody) });
+          studentAidMatches = matchResult.matches || [];
+        } catch { studentAidMatches = []; }
+      }
+      studentAidIntakeMatchList.innerHTML = "";
+      if (studentAidMatches.length) {
+        studentAidMatches.forEach((match) => {
+          const row = document.createElement("div");
+          row.className = "client-head";
+          const label = document.createElement("span");
+          label.textContent = match.displayName + " — " + (match.matchStrength === "strong" ? "likely match" : "possible name match") + " (" + match.matchedOn.join(", ") + ")";
+          const open = document.createElement("button");
+          open.type = "button"; open.textContent = "Open existing client";
+          open.addEventListener("click", () => { window.location.href = "/?advisorClient=" + encodeURIComponent(match.clientId); });
+          row.append(label, open);
+          studentAidIntakeMatchList.appendChild(row);
+        });
+        studentAidIntakeMatches.hidden = false;
+      } else {
+        studentAidIntakeMatches.hidden = true;
+      }
+    } catch (error) {
+      studentAidIntakeStatus.textContent = error instanceof Error ? error.message : "Unable to read that file.";
+      studentAidPortfolio = null;
+    } finally {
+      studentAidIntakeFile.value = "";
+    }
+  });
+  studentAidIntakeCreate.addEventListener("click", async () => {
+    if (!studentAidPortfolio) { studentAidIntakeStatus.textContent = "Choose a StudentAid file first."; return; }
+    const name = studentAidIntakeName.value.trim();
+    if (!name) { studentAidIntakeStatus.textContent = "Enter a client display name before creating."; return; }
+    studentAidIntakeStatus.textContent = "Creating client…";
+    const borrower = studentAidPortfolio.borrower;
+    const contact = { displayName: name };
+    ["email","phone","streetAddress1","streetAddress2","city","stateCode","countryCode","zipCode"].forEach((field) => { if (borrower[field]) contact[field] = borrower[field]; });
+    const payload = { contact };
+    if (studentAidPortfolio.servicerName) payload.servicerName = studentAidPortfolio.servicerName;
+    if (studentAidPortfolio.loans && studentAidPortfolio.loans.length) {
+      payload.normalizedLoanPortfolio = { repaymentLoans: studentAidPortfolio.repaymentLoans || [], ...(studentAidPortfolio.eligibilityLoans ? { eligibilityLoans: studentAidPortfolio.eligibilityLoans } : {}), loans: studentAidPortfolio.loans, summary: studentAidPortfolio.summary };
+    }
+    payload.studentAidImport = { source: "studentaid_download", importedAt: new Date().toISOString(), mappingVersion: "2026-08-28-v1", rawFileRetained: false, ...(studentAidPortfolio.fileRequestDate ? { fileRequestDate: studentAidPortfolio.fileRequestDate } : {}) };
+    try {
+      const body = await api("/api/advisor/clients", { method: "POST", body: JSON.stringify(payload) });
+      window.location.href = "/?advisorClient=" + encodeURIComponent(body.client.clientId);
+    } catch (error) { studentAidIntakeStatus.textContent = error instanceof Error ? error.message : "Unable to create client."; }
   });
   logout.addEventListener("click", async () => {
     try { await api("/api/advisor/logout", { method: "POST", body: "{}" }); } catch {}
