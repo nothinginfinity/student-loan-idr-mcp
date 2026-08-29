@@ -3093,7 +3093,9 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
   <section id="signed-panel" class="panel" hidden>
     <h3>You're all set, for now</h3>
     <p id="signed-summary"></p>
-    <p class="muted">Your advisor will follow up to schedule enrollment. Booking and document download aren't available on this link yet — your advisor can help with next steps directly.</p>
+    <p class="muted">Your advisor will follow up to schedule enrollment. Booking through this page isn't available yet — your advisor can help schedule directly.</p>
+    <div class="actions"><button type="button" id="download-document">Download supporting document</button></div>
+    <p id="download-status" class="muted" role="status" aria-live="polite"></p>
   </section>
 
   <section id="closed-panel" class="panel" hidden>
@@ -3120,6 +3122,8 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
   const closedPanel = document.getElementById("closed-panel");
   const closedTitle = document.getElementById("closed-title");
   const closedBody = document.getElementById("closed-body");
+  const downloadDocumentButton = document.getElementById("download-document");
+  const downloadStatus = document.getElementById("download-status");
   const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 
   const match = location.pathname.match(/\/share\/([A-Za-z0-9_-]{16,128})$/);
@@ -3268,6 +3272,21 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
       currentState = { ...currentState, status: body.status, signedAt: body.signedAt, bookingDeadlineAt: body.bookingDeadlineAt };
       render(currentState);
     } catch (error) { statusLine.textContent = error instanceof Error ? error.message : "Unable to confirm that plan."; }
+  });
+
+  downloadDocumentButton.addEventListener("click", async () => {
+    downloadStatus.textContent = "Preparing your document\u2026";
+    try {
+      const body = await api("/api/share/" + encodeURIComponent(shareToken) + "/document");
+      const blob = new Blob([body.document.documentText], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "supporting-document.txt";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      downloadStatus.textContent = "Downloaded. Your advisor can help you fill in any missing details.";
+    } catch (error) { downloadStatus.textContent = error instanceof Error ? error.message : "Unable to prepare that document."; }
   });
 
   load();
