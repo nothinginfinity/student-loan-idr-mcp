@@ -550,7 +550,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     ul { padding-left: 22px; }
     a { color: inherit; }
     footer { margin-top: 36px; font-size: .9rem; color: color-mix(in srgb, CanvasText 65%, transparent); }
-    @media (max-width: 700px) { .grid, .summary, .fact-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } }
+    .jump-nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 24px; }
+    .jump-nav a { display: inline-flex; align-items: center; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 999px; padding: 8px 12px; text-decoration: none; font-weight: 700; background: color-mix(in srgb, CanvasText 4%, Canvas); }
+    .field-completion { margin: -8px 0 16px; font-size: .92rem; }
+    @media (max-width: 700px) { .grid, .summary, .fact-grid, .comparison-cards, .chart-grid, .history-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } .jump-nav { gap: 7px; } .jump-nav a { flex: 1 1 calc(50% - 7px); justify-content: center; } }
     .field-color-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 4px 0 18px; }
     .field-color-toggle input { width: auto; }
     label[data-fill-state] { border-left: 4px solid transparent; border-radius: 6px; padding-left: 10px; margin-left: -14px; transition: border-color .15s ease, background-color .15s ease; }
@@ -567,6 +570,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   <p class="lede">This calculator annualizes the income facts you enter and applies the same deterministic RAP, IBR, PAYE, and ICR formulas exposed by this Worker’s MCP tools. It is an estimate—not an official eligibility or billing decision.</p>
   <div class="notice"><strong>Privacy:</strong> this page has no analytics, no external assets, and no browser storage. Calculation inputs are sent only to this same Worker for the current request. A StudentAid.gov loan-data file is parsed locally in your browser and the raw file is never uploaded. Do not enter SSNs, account numbers, or fabricated facts.</div>
   <p class="muted">Working with multiple borrowers? <a href="/advisor">Open the advisor / manager workspace</a>. The direct borrower workflow remains available without an account.</p>
+  <nav class="jump-nav" aria-label="Jump to workflow section">
+    <a href="#guided-assistant">Guide</a>
+    <a href="#loan-import">Loan import</a>
+    <a href="#calculator-form">Calculator</a>
+    <a href="#results">Results</a>
+  </nav>
 
   <section class="advisor-savebar" id="advisor-client-bar" hidden aria-labelledby="advisor-client-title">
     <div class="advisor-savebar-head">
@@ -692,7 +701,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     </div>
   </section>
 
-  <section class="workspace" aria-labelledby="loan-import-title">
+  <section class="workspace" id="loan-import" aria-labelledby="loan-import-title">
     <h2 id="loan-import-title">Import your federal loan portfolio</h2>
     <p><span class="basis">Imported fact</span>Choose the <strong>Download My Aid Data</strong> text file from StudentAid.gov. The raw file can contain personal contact information, so this page reads it only on this device, extracts active loan balance/rate/type/date facts, and never uploads the raw text.</p>
     <label>StudentAid.gov My Aid Data file
@@ -714,7 +723,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   </section>
 
   <form id="calculator-form">
-    <label class="field-color-toggle"><input type="checkbox" id="field-color-toggle" checked> Show field-status colors (green = filled, red = required &amp; missing, purple = optional)</label>
+    <label class="field-color-toggle"><input type="checkbox" id="field-color-toggle" checked> Show field-status colors (green = has a value, red = required &amp; missing, purple = optional)</label>
+    <p id="field-completion" class="field-completion muted" role="status" aria-live="polite"></p>
+    <p class="muted"><strong>Field status shows completeness only.</strong> A filled field is not automatically correct, verified, eligible, or advisor-approved.</p>
     <p id="calculator-income-note" class="muted">If you use the guided source-by-source workflow, calculation uses every confirmed guided taxable income source. The visible income controls remain the manual fallback and the first-source preview. Hourly guided sources use the displayed hours-per-week and weeks-per-year controls, so review those before calculating.</p>
     <div class="grid">
       <label>Income cadence
@@ -2383,6 +2394,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 <script>
 (() => {
   var toggle = document.getElementById("field-color-toggle");
+  var completion = document.getElementById("field-completion");
   var fields = Array.prototype.slice.call(document.querySelectorAll("[data-fill-state]"));
   function isFilled(input) {
     if (!input) return false;
@@ -2402,13 +2414,24 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       label.classList.add("fill-purple");
     }
   }
-  function refreshAll() { fields.forEach(updateField); }
+  function updateCompletion() {
+    if (!completion) return;
+    var visible = fields.filter(function (label) { return !label.hidden; });
+    var required = visible.filter(function (label) { return label.getAttribute("data-fill-state") === "required"; });
+    var optional = visible.filter(function (label) { return label.getAttribute("data-fill-state") === "optional"; });
+    var requiredFilled = required.filter(function (label) { return isFilled(label.querySelector("input, select, textarea")); }).length;
+    var optionalFilled = optional.filter(function (label) { return isFilled(label.querySelector("input, select, textarea")); }).length;
+    completion.textContent = "Required: " + requiredFilled + "/" + required.length + " filled · Optional: " + optionalFilled + "/" + optional.length + " filled";
+  }
+  function refreshAll() { fields.forEach(updateField); updateCompletion(); }
   fields.forEach(function (label) {
     var input = label.querySelector("input, select, textarea");
     if (!input) return;
-    input.addEventListener("input", function () { updateField(label); });
-    input.addEventListener("change", function () { updateField(label); });
+    input.addEventListener("input", function () { updateField(label); updateCompletion(); });
+    input.addEventListener("change", function () { updateField(label); updateCompletion(); });
   });
+  var cadenceControl = document.getElementById("cadence");
+  if (cadenceControl) cadenceControl.addEventListener("change", function () { window.setTimeout(refreshAll, 0); });
   refreshAll();
   if (toggle) {
     toggle.addEventListener("change", function () {
