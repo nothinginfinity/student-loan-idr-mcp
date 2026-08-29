@@ -45,6 +45,15 @@ type SnapshotRow = {
   owner_advisor_id: string; client_id: string; snapshot_id: string; snapshot_kind: "calculation" | "comparison"; name: string;
   basis_json: string; result_json: string; policy_snapshot: string; engine_version: string; created_at: string;
 };
+type PlanSelectionRow = {
+  selection_id: string; owner_advisor_id: string; client_id: string; share_token_hash: string;
+  status: "issued" | "opened" | "selected" | "signed" | "booked" | "expired" | "revoked";
+  comparison_snapshot_json: string; selected_plan: string | null; selected_at: string | null;
+  sign_initials: string | null; signed_at: string | null; booking_url: string | null; booked_at: string | null;
+  link_opened_at: string | null; select_sign_deadline_at: string | null; booking_deadline_at: string | null;
+  revoked_at: string | null; created_at: string; updated_at: string;
+};
+
 type Auth = { principal: AdvisorPrincipal; account: AccountRow; session: SessionRow };
 
 class ApiError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
@@ -265,6 +274,155 @@ function retainedTemplateRequest(value: unknown): TemplateRequest {
 }
 function artifactSummary(row: ArtifactRow) { return { artifactId:row.artifact_id, artifactKind:row.artifact_kind, name:row.name, engineVersion:row.engine_version, createdAt:row.created_at }; }
 function artifactView(row: ArtifactRow) { return { ...artifactSummary(row), templateRequest:parseStoredJson<TemplateRequest>(row.template_request_json,"artifact template request"), documentText:row.document_text, documentHtml:row.document_html }; }
+const SELECT_SIGN_WINDOW_MS = 15 * 60 * 1000;
+const BOOKING_WINDOW_MS = 36 * 60 * 60 * 1000;
+
+function computeFlrsPlan(comparison: { projections: Array<{ plan: string; eligibilityStatus: string; currentMonthlyPayment: number | null }> }): string | null {
+  const candidates = comparison.projections.filter((p) => p.eligibilityStatus !== "ineligible" && typeof p.currentMonthlyPayment === "number");
+  if (!candidates.length) return null;
+  const min = Math.min(...candidates.map((p) => p.currentMonthlyPayment as number));
+  const winners = candidates.filter((p) => p.currentMonthlyPayment === min);
+  return winners.length === 1 ? winners[0]!.plan : null;
+}
+
+async function planSelectionRowByToken(database: D1DatabaseBinding, shareToken: string): Promise<PlanSelectionRow> {
+  const hash = await sha(shareToken);
+  const row = await database.prepare(
+    "SELECT selection_id,owner_advisor_id,client_id,share_token_hash,status,comparison_snapshot_json,selected_plan,selected_at,sign_initials,signed_at,booking_url,booked_at,link_opened_at,select_sign_deadline_at,booking_deadline_at,revoked_at,created_at,updated_at FROM advisor_client_plan_selections WHERE share_token_hash=?"
+  ).bind(hash).first<PlanSelectionRow>();
+  if (!row) throw new ApiError(404, "Share link not found.");
+  return row;
+}
+
+function shareView(row: PlanSelectionRow) {
+  const comparison = parseStoredJson<{ projections: Array<{ plan: string; eligibilityStatus: string; currentMonthlyPayment: number | null }>; [key: string]: unknown }>(row.comparison_snapshot_json, "comparison snapshot");
+  return {
+    status: row.status,
+    comparison,
+    flrsPlan: computeFlrsPlan(comparison),
+    selectedPlan: row.selected_plan,
+    selectedAt: row.selected_at,
+    signedAt: row.signed_at,
+    bookingUrl: row.booking_url,
+    bookedAt: row.booked_at,
+    linkOpenedAt: row.link_opened_at,
+    selectSignDeadlineAt: row.select_sign_deadline_at,
+    bookingDeadlineAt: row.booking_deadline_at
+  };
+}
+
+async function issueShareLink(request: Request, database: D1DatabaseBinding, a: Auth, id: string) {
+  sameOrigin(request);
+  const row = await owned(database, a.account.advisor_id, id);
+  const client = parseClient(row);
+  const comparison = compareClientPrograms(client);
+  const shareToken = token();
+  const selectionId = `selection_${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  await database.prepare(
+    "INSERT INTO advisor_client_plan_selections(selection_id,owner_advisor_id,client_id,share_token_hash,status,comparison_snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)"
+  ).bind(selectionId, a.account.advisor_id, id, await sha(shareToken), "issued", JSON.stringify(comparison), now, now).run();
+  await audit(database, a.account.advisor_id, "client.plan_selection.issue", id);
+  return json({ ok: true, selection: { selectionId, shareToken, status: "issued", createdAt: now, flrsPlan: computeFlrsPlan(comparison) } }, 201);
+}
+
+async function listShareLinks(database: D1DatabaseBinding, a: Auth, id: string) {
+  await owned(database, a.account.advisor_id, id);
+  const rows = await database.prepare(
+    "SELECT selection_id,owner_advisor_id,client_id,share_token_hash,status,comparison_snapshot_json,selected_plan,selected_at,sign_initials,signed_at,booking_url,booked_at,link_opened_at,select_sign_deadline_at,booking_deadline_at,revoked_at,created_at,updated_at FROM advisor_client_plan_selections WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC LIMIT 50"
+  ).bind(a.account.advisor_id, id).all<PlanSelectionRow>();
+  return json({ ok: true, selections: rows.results.map((r) => ({ selectionId: r.selection_id, status: r.status, selectedPlan: r.selected_plan, signedAt: r.signed_at, bookedAt: r.booked_at, createdAt: r.created_at, updatedAt: r.updated_at })) });
+}
+
+async function revokeShareLink(request: Request, database: D1DatabaseBinding, a: Auth, id: string, selectionId: string) {
+  sameOrigin(request);
+  await owned(database, a.account.advisor_id, id);
+  const now = new Date().toISOString();
+  const r = await database.prepare(
+    "UPDATE advisor_client_plan_selections SET status='revoked', revoked_at=?, updated_at=? WHERE owner_advisor_id=? AND client_id=? AND selection_id=? AND status NOT IN ('revoked','booked')"
+  ).bind(now, now, a.account.advisor_id, id, selectionId).run();
+  if ((r.meta?.changes ?? 0) !== 1) throw new ApiError(409, "Share link could not be revoked (already booked, revoked, or not found).");
+  await audit(database, a.account.advisor_id, "client.plan_selection.revoke", id);
+  return json({ ok: true, revokedSelectionId: selectionId });
+}
+
+function expireIfPastDeadline(row: PlanSelectionRow, nowIso: string): PlanSelectionRow["status"] | null {
+  const now = Date.parse(nowIso);
+  if ((row.status === "opened" || row.status === "selected") && row.select_sign_deadline_at && now > Date.parse(row.select_sign_deadline_at)) return "expired";
+  if (row.status === "signed" && row.booking_deadline_at && now > Date.parse(row.booking_deadline_at)) return "expired";
+  return null;
+}
+
+async function viewShare(database: D1DatabaseBinding, shareToken: string) {
+  let row = await planSelectionRowByToken(database, shareToken);
+  if (row.status === "revoked") return json({ ok: true, ...shareView(row) });
+  const now = new Date().toISOString();
+  const expired = expireIfPastDeadline(row, now);
+  if (expired) {
+    await database.prepare("UPDATE advisor_client_plan_selections SET status=?, updated_at=? WHERE selection_id=?").bind(expired, now, row.selection_id).run();
+    row = { ...row, status: expired, updated_at: now };
+    return json({ ok: true, ...shareView(row) });
+  }
+  if (row.status === "issued") {
+    const deadline = new Date(Date.parse(now) + SELECT_SIGN_WINDOW_MS).toISOString();
+    await database.prepare("UPDATE advisor_client_plan_selections SET status='opened', link_opened_at=?, select_sign_deadline_at=?, updated_at=? WHERE selection_id=?").bind(now, deadline, now, row.selection_id).run();
+    row = { ...row, status: "opened", link_opened_at: now, select_sign_deadline_at: deadline, updated_at: now };
+  }
+  return json({ ok: true, ...shareView(row) });
+}
+
+async function selectSharePlan(request: Request, database: D1DatabaseBinding, shareToken: string) {
+  sameOrigin(request);
+  const row = await planSelectionRowByToken(database, shareToken);
+  const now = new Date().toISOString();
+  const expired = expireIfPastDeadline(row, now);
+  if (expired) { await database.prepare("UPDATE advisor_client_plan_selections SET status=?, updated_at=? WHERE selection_id=?").bind(expired, now, row.selection_id).run(); throw new ApiError(410, "This link's 15-minute selection window has expired. Ask your advisor for a new link."); }
+  if (row.status !== "opened" && row.status !== "selected") throw new ApiError(409, `A plan cannot be selected while the link status is '${row.status}'.`);
+  const b = await body(request);
+  const allowed = new Set(["plan"]);
+  for (const k of Object.keys(b)) if (!allowed.has(k)) throw new ApiError(400, `Unexpected field: ${k}.`);
+  const plan = String(b.plan ?? "").trim();
+  const comparison = parseStoredJson<{ projections: Array<{ plan: string; eligibilityStatus: string }> }>(row.comparison_snapshot_json, "comparison snapshot");
+  const candidate = comparison.projections.find((p) => p.plan === plan);
+  if (!candidate) throw new ApiError(400, "That plan is not part of this comparison.");
+  if (candidate.eligibilityStatus === "ineligible") throw new ApiError(400, "That plan is currently modeled as ineligible and cannot be selected.");
+  await database.prepare("UPDATE advisor_client_plan_selections SET status='selected', selected_plan=?, selected_at=?, updated_at=? WHERE selection_id=?").bind(plan, now, now, row.selection_id).run();
+  await audit(database, row.owner_advisor_id, "client.plan_selection.select", row.client_id);
+  return json({ ok: true, status: "selected", selectedPlan: plan, selectedAt: now, selectSignDeadlineAt: row.select_sign_deadline_at });
+}
+
+async function signSharePlan(request: Request, database: D1DatabaseBinding, shareToken: string) {
+  sameOrigin(request);
+  const row = await planSelectionRowByToken(database, shareToken);
+  const now = new Date().toISOString();
+  const expired = expireIfPastDeadline(row, now);
+  if (expired) { await database.prepare("UPDATE advisor_client_plan_selections SET status=?, updated_at=? WHERE selection_id=?").bind(expired, now, row.selection_id).run(); throw new ApiError(410, "This link's 15-minute selection window has expired. Ask your advisor for a new link."); }
+  if (row.status !== "selected") throw new ApiError(409, "Select a plan before signing.");
+  const b = await body(request);
+  const allowed = new Set(["initials"]);
+  for (const k of Object.keys(b)) if (!allowed.has(k)) throw new ApiError(400, `Unexpected field: ${k}.`);
+  const initials = String(b.initials ?? "").trim().slice(0, 10);
+  if (!initials) throw new ApiError(400, "Initials are required to confirm your plan choice.");
+  const bookingDeadline = new Date(Date.parse(now) + BOOKING_WINDOW_MS).toISOString();
+  await database.prepare("UPDATE advisor_client_plan_selections SET status='signed', sign_initials=?, signed_at=?, booking_deadline_at=?, updated_at=? WHERE selection_id=?").bind(initials, now, bookingDeadline, now, row.selection_id).run();
+  await audit(database, row.owner_advisor_id, "client.plan_selection.sign", row.client_id);
+  return json({ ok: true, status: "signed", signedAt: now, bookingDeadlineAt: bookingDeadline, note: "This confirms the plan you'd like to move forward with. It is not a binding electronic signature or loan-program enrollment." });
+}
+
+export async function handleShareApi(request: Request, env: AdvisorWorkspaceEnv): Promise<Response> {
+  const database = db(env);
+  try {
+    const u = new URL(request.url);
+    const m = u.pathname.match(/^\/api\/share\/([A-Za-z0-9_-]{16,128})(\/select|\/sign)?$/);
+    if (!m) return json({ ok: false, error: "Share endpoint not found." }, 404);
+    const shareToken = m[1]!;
+    if (request.method === "GET" && !m[2]) return await viewShare(database, shareToken);
+    if (request.method === "POST" && m[2] === "/select") return await selectSharePlan(request, database, shareToken);
+    if (request.method === "POST" && m[2] === "/sign") return await signSharePlan(request, database, shareToken);
+    return json({ ok: false, error: "Share endpoint not found." }, 404);
+  } catch (error) { if (error instanceof ApiError) return json({ ok: false, error: error.message }, error.status); return json({ ok: false, error: "Share link request failed." }, 500); }
+}
+
 function snapshotSummary(row: SnapshotRow) { return { snapshotId:row.snapshot_id, snapshotKind:row.snapshot_kind, name:row.name, policySnapshot:row.policy_snapshot, engineVersion:row.engine_version, createdAt:row.created_at }; }
 function snapshotView(row: SnapshotRow) { return { ...snapshotSummary(row), basis:parseStoredJson<JsonObject>(row.basis_json,"snapshot basis"), result:parseStoredJson<unknown>(row.result_json,"snapshot result") }; }
 function snapshotBasis(client: AdvisorClientRecordV1): JsonObject { return safeJson({ confirmedFacts:client.confirmedFacts ?? {}, normalizedLoanPortfolio:client.normalizedLoanPortfolio ?? {}, consideredPlans:client.consideredPlans ?? [] }) as JsonObject; }
@@ -362,6 +520,10 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       if(request.method==="POST"&&r.suffix==="/artifacts") return await retainArtifact(request,database,a,r.id);
       const artifactMatch=r.suffix.match(/^\/artifacts\/(artifact_[0-9a-f-]{36})(\/regenerate)?$/i);
       if(artifactMatch){ if(request.method==="GET"&&!artifactMatch[2]) return json({ok:true,artifact:artifactView(await artifactRow(database,a.account.advisor_id,r.id,artifactMatch[1]!))}); if(request.method==="POST"&&artifactMatch[2]==="/regenerate") return await regenerateArtifact(request,database,a,r.id,artifactMatch[1]!); if(request.method==="DELETE"&&!artifactMatch[2]) return await deleteArtifact(request,database,a,r.id,artifactMatch[1]!); }
+      if(request.method==="GET"&&r.suffix==="/plan-selections") return await listShareLinks(database,a,r.id);
+      if(request.method==="POST"&&r.suffix==="/plan-selections") return await issueShareLink(request,database,a,r.id);
+      const planSelectionMatch=r.suffix.match(/^\/plan-selections\/(selection_[0-9a-f-]{36})\/revoke$/i);
+      if(planSelectionMatch&&request.method==="POST") return await revokeShareLink(request,database,a,r.id,planSelectionMatch[1]!);
       if(request.method==="GET"&&r.suffix==="/snapshots") return await listSnapshots(database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/snapshots") return await retainSnapshot(request,database,a,r.id);
       const snapshotMatch=r.suffix.match(/^\/snapshots\/(snapshot_[0-9a-f-]{36})(\/rerun)?$/i);
