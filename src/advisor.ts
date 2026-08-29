@@ -1,7 +1,7 @@
 import { scryptSync } from "node:crypto";
 import { calculateRepayment } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
-import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, RepaymentPlan, RepaymentLoanInput, TemplateRequest } from "./types.ts";
+import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, TemplateRequest } from "./types.ts";
 
 const COOKIE = "sl_advisor_session";
 const TTL_SECONDS = 12 * 60 * 60;
@@ -409,16 +409,37 @@ async function signSharePlan(request: Request, database: D1DatabaseBinding, shar
   return json({ ok: true, status: "signed", signedAt: now, bookingDeadlineAt: bookingDeadline, note: "This confirms the plan you'd like to move forward with. It is not a binding electronic signature or loan-program enrollment." });
 }
 
+function toDocumentationIncomeSources(sources: AdvisorClientIncomeSource[] | undefined): DocumentationIncomeSource[] | undefined {
+  if (!sources || !sources.length) return undefined;
+  return sources.map((s) => ({ ...(s.sourceType?{sourceType:s.sourceType}:{}), ...(s.name?{name:s.name}:{}), ...(s.address?{address:s.address}:{}), ...(s.grossAmount!==undefined?{grossAmount:s.grossAmount}:{}), ...(s.paymentFrequency?{paymentFrequency:s.paymentFrequency}:{}), ...(s.notes?{notes:s.notes}:{}) }));
+}
+
+async function shareDocument(database: D1DatabaseBinding, shareToken: string) {
+  const row = await planSelectionRowByToken(database, shareToken);
+  if (row.status !== "signed" && row.status !== "booked") throw new ApiError(409, "A supporting document is available after you confirm a plan.");
+  const clientRow = await owned(database, row.owner_advisor_id, row.client_id);
+  const client = parseClient(clientRow);
+  const incomeSources = toDocumentationIncomeSources(client.confirmedFacts?.incomeSources);
+  let documentText: string, documentHtml: string;
+  try {
+    const templateRequest: Omit<TemplateRequest, "outputFormat"> = { templateType: "current_income_statement", borrowerName: client.contact.displayName, documentDate: new Date().toISOString().slice(0, 10), ...(client.servicerName?{servicerName:client.servicerName}:{}), ...(incomeSources?{incomeSources}:{}) };
+    documentText = getDocumentationTemplate({ ...templateRequest, outputFormat: "text" });
+    documentHtml = getDocumentationTemplate({ ...templateRequest, outputFormat: "html" });
+  } catch (e) { throw new ApiError(400, e instanceof Error ? e.message : "Document generation failed."); }
+  return json({ ok: true, document: { documentText, documentHtml } });
+}
+
 export async function handleShareApi(request: Request, env: AdvisorWorkspaceEnv): Promise<Response> {
   const database = db(env);
   try {
     const u = new URL(request.url);
-    const m = u.pathname.match(/^\/api\/share\/([A-Za-z0-9_-]{16,128})(\/select|\/sign)?$/);
+    const m = u.pathname.match(/^\/api\/share\/([A-Za-z0-9_-]{16,128})(\/select|\/sign|\/document)?$/);
     if (!m) return json({ ok: false, error: "Share endpoint not found." }, 404);
     const shareToken = m[1]!;
     if (request.method === "GET" && !m[2]) return await viewShare(database, shareToken);
     if (request.method === "POST" && m[2] === "/select") return await selectSharePlan(request, database, shareToken);
     if (request.method === "POST" && m[2] === "/sign") return await signSharePlan(request, database, shareToken);
+    if (request.method === "GET" && m[2] === "/document") return await shareDocument(database, shareToken);
     return json({ ok: false, error: "Share endpoint not found." }, 404);
   } catch (error) { if (error instanceof ApiError) return json({ ok: false, error: error.message }, error.status); return json({ ok: false, error: "Share link request failed." }, 500); }
 }
