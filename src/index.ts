@@ -3055,6 +3055,8 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
     .badge.flrs { color: #1a8f5e; border-color: #1a8f5e; }
     [hidden] { display: none !important; }
     #status-line { min-height: 1.4em; }
+    #countdown-line { font-size: 1.05rem; font-weight: 750; margin: 4px 0 0; min-height: 1.3em; }
+    #countdown-line.countdown-urgent { color: #b3261e; }
     @media (max-width: 480px) { .plan-name { min-width: 60px; font-size: .92rem; } .plan-amount { min-width: 60px; } }
   </style>
 </head>
@@ -3065,6 +3067,7 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
   <p class="muted">This is a modeled estimate, not an official eligibility or billing decision. Your advisor prepared this comparison from the facts on file.</p>
 
   <p id="status-line" class="muted" role="status" aria-live="polite">Loading your comparison…</p>
+  <p id="countdown-line" aria-hidden="true"></p>
 
   <section id="chart-panel" class="panel" hidden>
     <h2>Monthly payment by plan</h2>
@@ -3106,6 +3109,8 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
 <script>
 (() => {
   const statusLine = document.getElementById("status-line");
+  const countdownLine = document.getElementById("countdown-line");
+  let countdownTimer = null;
   const chartPanel = document.getElementById("chart-panel");
   const planRows = document.getElementById("plan-rows");
   const flrsNote = document.getElementById("flrs-note");
@@ -3205,7 +3210,44 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
     try { return new Date(iso).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" }); } catch { return iso; }
   }
 
+  function clearCountdown() {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    countdownLine.textContent = "";
+    countdownLine.classList.remove("countdown-urgent");
+  }
+
+  function formatCountdown(ms, coarse) {
+    if (ms <= 0) return coarse ? "0m" : "0:00";
+    const totalSeconds = Math.floor(ms / 1000);
+    if (coarse) {
+      const totalMinutes = Math.floor(totalSeconds / 60);
+      const days = Math.floor(totalMinutes / 1440);
+      const hours = Math.floor((totalMinutes % 1440) / 60);
+      const minutes = totalMinutes % 60;
+      if (days > 0) return days + "d " + hours + "h";
+      if (hours > 0) return hours + "h " + minutes + "m";
+      return minutes + "m";
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes + ":" + String(seconds).padStart(2, "0");
+  }
+
+  function startCountdown(deadlineIso, coarse, suffix) {
+    clearCountdown();
+    const urgentThreshold = coarse ? 2 * 60 * 60 * 1000 : 60 * 1000;
+    const tick = () => {
+      const remaining = Date.parse(deadlineIso) - Date.now();
+      if (remaining <= 0) { clearCountdown(); load(); return; }
+      countdownLine.textContent = "\u23f1 " + formatCountdown(remaining, coarse) + " left" + suffix;
+      countdownLine.classList.toggle("countdown-urgent", remaining <= urgentThreshold);
+    };
+    tick();
+    countdownTimer = setInterval(tick, coarse ? 30000 : 1000);
+  }
+
   function render(state) {
+    clearCountdown();
     hideAll();
     if (state.status === "revoked") {
       statusLine.textContent = "";
@@ -3224,14 +3266,17 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
     renderChart(state);
     if (state.status === "opened") {
       statusLine.textContent = state.selectSignDeadlineAt ? ("Pick a plan by " + formatDeadline(state.selectSignDeadlineAt) + ".") : "";
+      if (state.selectSignDeadlineAt) startCountdown(state.selectSignDeadlineAt, false, " to pick a plan");
       renderSelect(state);
     } else if (state.status === "selected") {
       statusLine.textContent = state.selectSignDeadlineAt ? ("Confirm by " + formatDeadline(state.selectSignDeadlineAt) + ".") : "";
+      if (state.selectSignDeadlineAt) startCountdown(state.selectSignDeadlineAt, false, " to confirm");
       selectedPlanLabel.textContent = state.selectedPlan;
       signInitials.value = "";
       signPanel.hidden = false;
     } else if (state.status === "signed" || state.status === "booked") {
       statusLine.textContent = "";
+      if (state.status === "signed" && state.bookingDeadlineAt) startCountdown(state.bookingDeadlineAt, true, " to book");
       signedSummary.textContent = "You confirmed " + state.selectedPlan + " on " + formatDeadline(state.signedAt) + ".";
       signedPanel.hidden = false;
     } else {
