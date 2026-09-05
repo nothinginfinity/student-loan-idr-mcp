@@ -336,7 +336,7 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.8.6') break;
+              if (healthResponse.status === 200 && health?.version === '0.8.6' && health?.advisor_workspace?.max_normalized_client_request_bytes === 524288) break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
@@ -360,6 +360,7 @@ jobs:
             assert(health.advisor_workspace?.student_aid_per_loan_facts === true, 'StudentAid per-loan fact flag missing');
             assert(health.advisor_workspace?.fsa_portfolio_intelligence === true, 'FSA portfolio intelligence flag missing');
             assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
+            assert(health.advisor_workspace?.max_normalized_client_request_bytes === 524288, 'normalized advisor client request ceiling mismatch');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
 
             const livePassword = `Live-v082-${Date.now()}-Strong!`;
