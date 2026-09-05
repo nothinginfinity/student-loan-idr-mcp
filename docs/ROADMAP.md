@@ -359,7 +359,7 @@ Acceptance evidence:
 - The advisor UI now exposes a deterministic FSA portfolio intelligence panel with portfolio metrics, reconciliation/coverage warnings, servicer routing, repayment-plan state, and per-loan drilldown. The panel states that no LLM is used for chronology or balance math.
 - Parser mapping remains `2026-09-05-v2`; Parser V2's existing sanitized regressions continue to cover repeated status/delinquency/contact structures, scheduled-plan-payment labels, current-status disagreements, and value-free compatibility diagnostics underneath the new intelligence layer.
 
-### V0.9.4 — Advisor Intake → Client Case File — NEXT / PLANNED
+### V0.9.4 — Advisor Intake → Client Case File — COMPLETE
 
 Turn the successful FSA import into a professional case-creation workflow rather than leaving the advisor at an intake form.
 
@@ -372,7 +372,16 @@ Turn the successful FSA import into a professional case-creation workflow rather
 
 Acceptance should prove a real-size FSA file can go from local parse → duplicate review → client creation → immediate case workspace with the normalized portfolio, professional summary, provenance, and no raw-file retention.
 
-### V0.9.5 — Automatic Calculation History + Client Timeline — PLANNED
+Acceptance evidence:
+
+- Final V0.9.4 runtime/workflow source commit `bcf21720e6743fe748952ca90d9925498ca0d0e0` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in normal CI run `33996033908`.
+- Exact-SHA live deployment + production acceptance run `33996050577` succeeded from that immutable source. The deploy-live job passed the immutable-source guard, repeated typecheck/tests, D1 migration step, Wrangler deployment, and **226 dynamically counted production checks** against `https://student-loan-idr-mcp.jaredtechfit.workers.dev`.
+- Added versioned `student-loan-idr-client-case-context-v1`, an exact-owner-scoped read-only `/api/advisor/clients/:clientId/case-context` endpoint, export-v2 inclusion, and a professional saved-client case-file workspace. The case context exposes normalized facts, field/per-loan provenance, as-of dates, deterministic FSA portfolio intelligence, missing-information flags, coverage states, and warnings while retaining no raw StudentAid text.
+- Advisor FSA client creation now carries normalized imported contact provenance into the saved record, with advisor edits no longer masquerading as imported facts. Cross-advisor case-context access fails generically, repeated reads are deterministic for unchanged saved facts, and generating the derived context does not mutate the client record.
+- Parser V2's accepted professional-usefulness map already carries school/attending-school facts, academic level, award year, aggregate outstanding-balance fields, repayment-plan state/dates, status history, interest/capitalization facts, and servicer/contact routing. V0.9.4 reuses those normalized facts rather than introducing a second parser or an LLM-owned interpretation path.
+- No new D1 persistence model was required for the case-context contract: it is derived from the existing normalized owner-scoped client record and deterministic intelligence. Raw FSA downloads remain browser-local and unretained, borrower/private mode remains non-persistent, and the existing deterministic calculation/intelligence authority is unchanged.
+
+### V0.9.5 — Automatic Calculation History + Client Timeline — NEXT / PLANNED
 
 Make the client record behave like an actual professional case file instead of requiring the advisor to remember which useful events should be retained.
 
