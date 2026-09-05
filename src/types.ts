@@ -185,6 +185,21 @@ export interface StudentAidLoanDisbursementFact {
   amount?: number;
 }
 
+export interface StudentAidLoanDelinquencyFact {
+  date?: string;
+  endDate?: string;
+}
+
+export interface StudentAidParserDiagnostics {
+  mappingVersion: string;
+  rawLineCount: number;
+  parsedLineCount: number;
+  recognizedLabelCount: number;
+  unmappedLabels: string[];
+  structuralWarnings: string[];
+  validationIssues: string[];
+}
+
 export interface StudentAidLoanContactFact {
   type?: string;
   code?: string;
@@ -250,6 +265,12 @@ export interface StudentAidNormalizedLoanFact {
   calculatedCombinedAggregateOpb?: number;
   updateDate?: string;
   delinquencyDate?: string;
+  delinquencyEndDate?: string;
+  additionalUnsubsidizedLoanFlag?: string;
+  jointConsolidationLoanIndicator?: string;
+  jointConsolidationLoanSeparationIndicator?: string;
+  loanSpecialContactReason?: string;
+  loanSpecialContact?: string;
   currentLoanStatusCode?: string;
   currentLoanStatusDescription?: string;
   highestHistoricalOutstandingPrincipalBalance?: number;
@@ -259,6 +280,7 @@ export interface StudentAidNormalizedLoanFact {
   consolidationLoanWithAnyParentPlusIndicator?: string;
   statuses?: StudentAidLoanStatusFact[];
   disbursements?: StudentAidLoanDisbursementFact[];
+  delinquencies?: StudentAidLoanDelinquencyFact[];
   contacts?: StudentAidLoanContactFact[];
   provenance: Record<string, StudentAidFactProvenance>;
 }
