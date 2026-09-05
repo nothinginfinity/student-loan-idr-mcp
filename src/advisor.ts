@@ -1,7 +1,7 @@
 import { scryptSync } from "node:crypto";
 import { calculateRepayment } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
-import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, TemplateRequest } from "./types.ts";
+import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, StudentAidLoanContactFact, StudentAidNormalizedLoanFact, StudentAidPortfolioIntelligence, StudentAidStatusIntervalIntelligence, TemplateRequest } from "./types.ts";
 
 const COOKIE = "sl_advisor_session";
 const TTL_SECONDS = 12 * 60 * 60;
@@ -117,6 +117,187 @@ async function clearFailures(database: D1DatabaseBinding, e: string): Promise<vo
 
 function parseClient(row: ClientRow): AdvisorClientRecordV1 { let r: unknown; try { r=JSON.parse(row.record_json); } catch { throw new ApiError(500,"Stored client record is invalid."); } const x=r as AdvisorClientRecordV1; if (!x || x.schemaVersion!==1 || x.clientId!==row.client_id || x.ownerAdvisorId!==row.owner_advisor_id) throw new ApiError(500,"Stored client record failed integrity checks."); return x; }
 function summary(row: ClientRow): AdvisorClientDashboardSummary { return { clientId: row.client_id, displayName: row.display_name, lifecycleState: row.lifecycle_state, readinessState: row.readiness_state, updatedAt: row.updated_at }; }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+function fsaDateMs(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const parsed = match ? Date.UTC(Number(match[3]), Number(match[1]) - 1, Number(match[2])) : Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+function fsaIso(value: number): string { return new Date(value).toISOString().slice(0, 10); }
+function statusCategory(code?: string, description?: string): StudentAidStatusIntervalIntelligence["category"] {
+  const c = String(code ?? "").trim().toUpperCase();
+  const d = String(description ?? "").trim().toUpperCase();
+  if (c === "FB" || d.includes("FORBEAR")) return "forbearance";
+  if (c === "DF" || (d.includes("DEFAULT") && !d.includes("NON-DEFAULT"))) return "default";
+  if (c === "RP" || d.includes("REPAY")) return "repayment";
+  return "other";
+}
+function coverageState(count: number, total: number): "complete" | "partial" | "none" {
+  if (count <= 0) return "none";
+  return total > 0 && count >= total ? "complete" : "partial";
+}
+function portfolioAsOf(client: AdvisorClientRecordV1, loans: StudentAidNormalizedLoanFact[]): number | undefined {
+  const requestDate = fsaDateMs(client.studentAidImport?.fileRequestDate);
+  if (requestDate !== undefined) return requestDate;
+  const candidates: number[] = [];
+  for (const loan of loans) {
+    for (const value of [loan.updateDate, loan.outstandingPrincipalAsOfDate, loan.outstandingInterestAsOfDate]) {
+      const parsed = fsaDateMs(value); if (parsed !== undefined) candidates.push(parsed);
+    }
+    for (const fact of loan.statuses ?? []) { const parsed = fsaDateMs(fact.effectiveDate); if (parsed !== undefined) candidates.push(parsed); }
+    for (const delinquency of loan.delinquencies ?? []) {
+      for (const value of [delinquency.date, delinquency.endDate]) { const parsed = fsaDateMs(value); if (parsed !== undefined) candidates.push(parsed); }
+    }
+  }
+  return candidates.length ? Math.max(...candidates) : undefined;
+}
+function deriveLoanIntelligence(loan: StudentAidNormalizedLoanFact, asOf: number | undefined) {
+  const datedStatuses = (loan.statuses ?? []).flatMap((fact, sourceIndex) => {
+    const start = fsaDateMs(fact.effectiveDate);
+    return start === undefined ? [] : [{ fact, sourceIndex, start }];
+  }).sort((a, b) => a.start - b.start || a.sourceIndex - b.sourceIndex);
+  const statusIntervals: StudentAidStatusIntervalIntelligence[] = datedStatuses.map((item, index) => {
+    const next = datedStatuses[index + 1]?.start;
+    const end = next ?? (asOf !== undefined && asOf >= item.start ? asOf : undefined);
+    return {
+      startDate: fsaIso(item.start),
+      ...(end !== undefined ? { endDate: fsaIso(end), calendarDays: Math.max(0, Math.floor((end - item.start) / DAY_MS)) } : {}),
+      open: index === datedStatuses.length - 1,
+      ...(item.fact.code ? { code: item.fact.code } : {}),
+      ...(item.fact.description ? { description: item.fact.description } : {}),
+      category: statusCategory(item.fact.code, item.fact.description)
+    };
+  });
+  const forbearanceIntervals = statusIntervals.filter((interval) => interval.category === "forbearance");
+  const explicitCurrentCategory = statusCategory(loan.currentLoanStatusCode, loan.currentLoanStatusDescription);
+  const latestCategory = statusIntervals.length ? statusIntervals[statusIntervals.length - 1]!.category : "other";
+  const hasExplicitCurrent = Boolean(loan.currentLoanStatusCode || loan.currentLoanStatusDescription);
+  const currentlyInForbearance = (hasExplicitCurrent ? explicitCurrentCategory : latestCategory) === "forbearance";
+  const currentForbearance = currentlyInForbearance && latestCategory === "forbearance" ? forbearanceIntervals[forbearanceIntervals.length - 1] : undefined;
+  const delinquencyPeriods = (loan.delinquencies ?? []).flatMap((fact) => {
+    const start = fsaDateMs(fact.date), suppliedEnd = fsaDateMs(fact.endDate);
+    if (start === undefined) return [];
+    const open = suppliedEnd === undefined;
+    const end = suppliedEnd ?? (asOf !== undefined && asOf >= start ? asOf : undefined);
+    return [{ startDate: fsaIso(start), ...(end !== undefined ? { endDate: fsaIso(end), calendarDays: Math.max(0, Math.floor((end - start) / DAY_MS)) } : {}), open }];
+  });
+  const preferredServicerContact = [...(loan.contacts ?? [])].filter((contact) => Boolean(contact.name || contact.phoneNumber || contact.emailAddress || contact.websiteAddress)).sort((a, b) => Number(Boolean(b.mostRelevant)) - Number(Boolean(a.mostRelevant)) || Number(String(b.type ?? "").toUpperCase().includes("SERVICER")) - Number(String(a.type ?? "").toUpperCase().includes("SERVICER")))[0];
+  return {
+    loanIndex: loan.loanIndex,
+    active: typeof loan.outstandingPrincipal === "number" && loan.outstandingPrincipal > 0,
+    statusIntervals,
+    forbearance: {
+      intervals: forbearanceIntervals,
+      boundedCalendarDays: forbearanceIntervals.reduce((sum, interval) => sum + (interval.calendarDays ?? 0), 0),
+      complete: Boolean(asOf !== undefined && (loan.statuses ?? []).length > 0 && datedStatuses.length === (loan.statuses ?? []).length),
+      currentlyInForbearance,
+      ...(currentForbearance ? { currentStartDate: currentForbearance.startDate, ...(currentForbearance.calendarDays !== undefined ? { currentCalendarDays: currentForbearance.calendarDays } : {}) } : {})
+    },
+    delinquency: {
+      periods: delinquencyPeriods,
+      boundedCalendarDays: delinquencyPeriods.reduce((sum, period) => sum + (period.calendarDays ?? 0), 0),
+      complete: Boolean(asOf !== undefined && delinquencyPeriods.length === (loan.delinquencies ?? []).length),
+      currentlyDelinquent: delinquencyPeriods.some((period) => period.open)
+    },
+    ...((loan.repaymentPlanTypeCode || loan.repaymentPlanDescription || loan.repaymentPlanBeginDate || typeof loan.repaymentPlanScheduledAmount === "number" || loan.repaymentPlanIdrAnniversaryDate || loan.nextPaymentDueDate) ? { repaymentPlan: {
+      ...(loan.repaymentPlanTypeCode ? { code: loan.repaymentPlanTypeCode } : {}),
+      ...(loan.repaymentPlanDescription ? { description: loan.repaymentPlanDescription } : {}),
+      ...(loan.repaymentPlanBeginDate ? { beginDate: loan.repaymentPlanBeginDate } : {}),
+      ...(typeof loan.repaymentPlanScheduledAmount === "number" ? { scheduledAmount: loan.repaymentPlanScheduledAmount } : {}),
+      ...(loan.repaymentPlanIdrAnniversaryDate ? { idrAnniversaryDate: loan.repaymentPlanIdrAnniversaryDate } : {}),
+      ...(loan.nextPaymentDueDate ? { nextPaymentDueDate: loan.nextPaymentDueDate } : {})
+    } } : {}),
+    interest: {
+      ...(typeof loan.outstandingInterest === "number" ? { outstandingInterest: loan.outstandingInterest } : {}),
+      ...(typeof loan.capitalizedInterest === "number" ? { capitalizedInterest: loan.capitalizedInterest } : {})
+    },
+    ...(preferredServicerContact ? { preferredServicerContact } : {})
+  };
+}
+function mergeForbearanceIntervals(loans: ReturnType<typeof deriveLoanIntelligence>[]) {
+  const ranges = loans.flatMap((loan) => loan.forbearance.intervals.map((interval) => {
+    const start = fsaDateMs(interval.startDate), end = fsaDateMs(interval.endDate);
+    return start !== undefined && end !== undefined && end >= start ? [{ start, end, open: interval.open }] : [];
+  })).sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: Array<{ start: number; end: number; open: boolean }> = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.start <= previous.end) { previous.end = Math.max(previous.end, range.end); previous.open = previous.open || range.open; }
+    else merged.push({ ...range });
+  }
+  return merged.map((range) => ({ startDate: fsaIso(range.start), endDate: fsaIso(range.end), calendarDays: Math.max(0, Math.floor((range.end - range.start) / DAY_MS)), open: range.open }));
+}
+export function deriveStudentAidPortfolioIntelligence(client: AdvisorClientRecordV1): StudentAidPortfolioIntelligence {
+  const loans = client.normalizedLoanPortfolio?.loans ?? [];
+  const asOf = portfolioAsOf(client, loans);
+  const loanIntelligence = loans.map((loan) => deriveLoanIntelligence(loan, asOf));
+  const activeLoans = loans.filter((loan) => typeof loan.outstandingPrincipal === "number" && loan.outstandingPrincipal > 0);
+  const activeIntelligence = loanIntelligence.filter((loan) => loan.active);
+  const portfolioForbearance = mergeForbearanceIntervals(loanIntelligence);
+  const scheduledReported = activeLoans.filter((loan) => typeof loan.repaymentPlanScheduledAmount === "number");
+  const planGroups = new Map<string, { key: string; code?: string; description?: string; loanCount: number; outstandingPrincipal: number }>();
+  for (const loan of activeLoans) {
+    const key = loan.repaymentPlanTypeCode || loan.repaymentPlanDescription || "unreported";
+    const current = planGroups.get(key) ?? { key, ...(loan.repaymentPlanTypeCode ? { code: loan.repaymentPlanTypeCode } : {}), ...(loan.repaymentPlanDescription ? { description: loan.repaymentPlanDescription } : {}), loanCount: 0, outstandingPrincipal: 0 };
+    current.loanCount += 1; current.outstandingPrincipal = roundCents(current.outstandingPrincipal + (loan.outstandingPrincipal ?? 0)); planGroups.set(key, current);
+  }
+  const contacts = activeLoans.flatMap((loan) => (loan.contacts ?? []).map((contact) => ({ loanIndex: loan.loanIndex, contact }))).filter((candidate): candidate is { loanIndex: number; contact: StudentAidLoanContactFact } => Boolean(candidate.contact.name || candidate.contact.phoneNumber || candidate.contact.emailAddress || candidate.contact.websiteAddress));
+  contacts.sort((a, b) => Number(Boolean(b.contact.mostRelevant)) - Number(Boolean(a.contact.mostRelevant)) || Number(String(b.contact.type ?? "").toUpperCase().includes("SERVICER")) - Number(String(a.contact.type ?? "").toUpperCase().includes("SERVICER")));
+  const outstandingInterestCount = activeLoans.filter((loan) => typeof loan.outstandingInterest === "number").length;
+  const capitalizedInterestCount = activeLoans.filter((loan) => typeof loan.capitalizedInterest === "number").length;
+  const parsedPrincipalSum = roundCents(activeLoans.reduce((sum, loan) => sum + (loan.outstandingPrincipal ?? 0), 0));
+  const aggregateLoans = activeLoans.filter((loan) => typeof loan.calculatedCombinedAggregateOpb === "number");
+  const aggregateContributionSum = aggregateLoans.length ? roundCents(aggregateLoans.reduce((sum, loan) => sum + (loan.calculatedCombinedAggregateOpb ?? 0), 0)) : undefined;
+  const principalStatus = aggregateLoans.length === 0 ? "unavailable" : aggregateLoans.length < activeLoans.length ? "warning" : Math.abs((aggregateContributionSum ?? 0) - parsedPrincipalSum) <= 0.01 ? "pass" : "warning";
+  const warnings: string[] = [];
+  if (asOf === undefined) warnings.push("No reliable portfolio as-of date was available; open chronology durations remain unbounded.");
+  if (activeLoans.length && scheduledReported.length < activeLoans.length) warnings.push("Reported scheduled-payment coverage is incomplete across active loans; the sum is not a complete portfolio bill.");
+  if (loanIntelligence.some((loan, index) => (loans[index]?.statuses ?? []).length && !loan.forbearance.complete)) warnings.push("One or more status-history rows are missing usable dates; interval totals are bounded to dated source facts only.");
+  if (aggregateLoans.length && aggregateLoans.length < activeLoans.length) warnings.push("Calculated Combined Aggregate OPB coverage is partial; aggregate contribution totals are not treated as a complete portfolio balance.");
+  if (aggregateLoans.length === activeLoans.length && activeLoans.length && principalStatus === "warning") warnings.push("Calculated Combined Aggregate OPB contributions do not reconcile to the parsed active-loan principal sum; review consolidation and aggregate fields before relying on the difference.");
+  return {
+    schema: "student-aid-portfolio-intelligence-v1",
+    ...(asOf !== undefined ? { asOfDate: fsaIso(asOf) } : {}),
+    activeLoanCount: activeLoans.length,
+    loans: loanIntelligence,
+    forbearance: {
+      portfolioCalendarIntervals: portfolioForbearance,
+      boundedCalendarDays: portfolioForbearance.reduce((sum, interval) => sum + (interval.calendarDays ?? 0), 0),
+      complete: loanIntelligence.length > 0 && loanIntelligence.every((loan) => loan.forbearance.complete),
+      currentLoanCount: activeIntelligence.filter((loan) => loan.forbearance.currentlyInForbearance).length
+    },
+    scheduledPayment: {
+      coverage: coverageState(scheduledReported.length, activeLoans.length),
+      activeLoanCount: activeLoans.length,
+      reportedLoanCount: scheduledReported.length,
+      missingLoanCount: Math.max(0, activeLoans.length - scheduledReported.length),
+      ...(scheduledReported.length ? { reportedAmountSum: roundCents(scheduledReported.reduce((sum, loan) => sum + (loan.repaymentPlanScheduledAmount ?? 0), 0)) } : {})
+    },
+    planDistribution: [...planGroups.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    interest: {
+      outstandingInterestSum: roundCents(activeLoans.reduce((sum, loan) => sum + (loan.outstandingInterest ?? 0), 0)),
+      outstandingInterestCoverage: coverageState(outstandingInterestCount, activeLoans.length),
+      capitalizedInterestSum: roundCents(activeLoans.reduce((sum, loan) => sum + (loan.capitalizedInterest ?? 0), 0)),
+      capitalizedInterestCoverage: coverageState(capitalizedInterestCount, activeLoans.length)
+    },
+    servicerRouting: { ...(contacts[0] ? { preferred: contacts[0] } : {}), candidateCount: contacts.length },
+    reconciliation: {
+      principal: {
+        status: principalStatus,
+        parsedPrincipalSum,
+        ...(aggregateContributionSum !== undefined ? { aggregateContributionSum } : {}),
+        coveredActiveLoanCount: aggregateLoans.length,
+        activeLoanCount: activeLoans.length,
+        ...(aggregateLoans.length === activeLoans.length && activeLoans.length ? { delta: roundCents((aggregateContributionSum ?? 0) - parsedPrincipalSum) } : {}),
+        note: aggregateLoans.length === 0 ? "No Calculated Combined Aggregate OPB source facts were available." : aggregateLoans.length < activeLoans.length ? "Aggregate contribution coverage is partial; compare only after reviewing missing loan rows." : principalStatus === "pass" ? "Aggregate contribution sum reconciles to parsed active-loan principal within one cent." : "Aggregate contribution sum differs from parsed active-loan principal; review consolidation and aggregate source facts."
+      },
+      interest: { status: "unavailable", parsedInterestSum: roundCents(activeLoans.reduce((sum, loan) => sum + (loan.outstandingInterest ?? 0), 0)), note: "No separate portfolio aggregate-interest counterpart is stored in the current normalized FSA mapping, so interest is reported with coverage but not force-reconciled." }
+    },
+    warnings
+  };
+}
 
 type ComparisonPoint = { month: number; remainingBalance: number; cumulativeBorrowerPaid: number; cumulativeInterestWaived: number; cumulativePrincipalMatch: number };
 type ComparisonProjection = {
@@ -563,6 +744,7 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       if(request.method==="PUT"&&r.suffix==="") return await updateClient(request,database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/archive") return await archiveClient(request,database,a,r.id);
       if(request.method==="GET"&&r.suffix==="/comparison"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row),comparison=compareClientPrograms(client);await audit(database,a.account.advisor_id,"client.compare",r.id);return json({ok:true,comparison});}
+      if(request.method==="GET"&&r.suffix==="/intelligence"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row);if(!client.normalizedLoanPortfolio?.loans?.length) throw new ApiError(422,"Save normalized per-loan StudentAid facts before generating portfolio intelligence.");return json({ok:true,intelligence:deriveStudentAidPortfolioIntelligence(client)});}
       if(request.method==="GET"&&r.suffix==="/artifacts") return await listArtifacts(database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/artifacts") return await retainArtifact(request,database,a,r.id);
       const artifactMatch=r.suffix.match(/^\/artifacts\/(artifact_[0-9a-f-]{36})(\/regenerate)?$/i);
