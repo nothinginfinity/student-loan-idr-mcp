@@ -217,7 +217,7 @@ function deriveLoanIntelligence(loan: StudentAidNormalizedLoanFact, asOf: number
   };
 }
 function mergeForbearanceIntervals(loans: ReturnType<typeof deriveLoanIntelligence>[]) {
-  const ranges = loans.flatMap((loan) => loan.forbearance.intervals.map((interval) => {
+  const ranges = loans.flatMap((loan) => loan.forbearance.intervals.flatMap((interval) => {
     const start = fsaDateMs(interval.startDate), end = fsaDateMs(interval.endDate);
     return start !== undefined && end !== undefined && end >= start ? [{ start, end, open: interval.open }] : [];
   })).sort((a, b) => a.start - b.start || a.end - b.end);
