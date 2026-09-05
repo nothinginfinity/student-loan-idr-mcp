@@ -605,7 +605,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .readiness-card ul { margin-bottom: 0; }
     .readiness-actions { margin-top: 12px; }
     #portfolio-summary { margin-top: 12px; }
-    .comparison-workspace[hidden], .intelligence-workspace[hidden] { display: none; }
+    .case-workspace[hidden], .comparison-workspace[hidden], .intelligence-workspace[hidden] { display: none; }
     .comparison-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
     .comparison-card, .chart-panel { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 14px; padding: 14px; }
     .comparison-card h3, .chart-panel h3 { margin: 0 0 8px; }
@@ -668,6 +668,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       <div class="actions">
         <button type="button" id="advisor-save-progress">Save progress</button>
         <button type="button" id="advisor-regenerate-document">Regenerate document</button>
+        <button type="button" id="advisor-view-case-file">Case file</button>
         <button type="button" id="advisor-view-intelligence">Portfolio intelligence</button>
         <button type="button" id="advisor-compare-plans">Compare repayment paths</button>
         <button type="button" id="advisor-retain-calculation">Retain calculation</button>
@@ -676,6 +677,13 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       </div>
     </div>
     <p id="advisor-save-status" class="muted" role="status" aria-live="polite">Loading saved client facts…</p>
+  </section>
+
+  <section class="workspace case-workspace" id="advisor-case-workspace" hidden aria-labelledby="advisor-case-title">
+    <div class="guide-head"><div><h2 id="advisor-case-title">Client case file</h2><p class="muted">A professional working summary derived from the saved normalized client record. It is versioned for later structured retrieval and does not retain raw StudentAid or evidence files.</p></div><span class="badge">Case context v1</span></div>
+    <p id="advisor-case-status" class="muted" role="status" aria-live="polite">Loading case context…</p>
+    <div id="advisor-case-summary" class="summary"></div>
+    <div id="advisor-case-details" class="readiness-list"></div>
   </section>
 
   <section class="workspace intelligence-workspace" id="advisor-intelligence-workspace" hidden aria-labelledby="advisor-intelligence-title">
@@ -958,6 +966,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorClientName = document.getElementById("advisor-client-name");
   const advisorSaveProgress = document.getElementById("advisor-save-progress");
   const advisorRegenerateDocument = document.getElementById("advisor-regenerate-document");
+  const advisorViewCaseFile = document.getElementById("advisor-view-case-file");
   const advisorViewIntelligence = document.getElementById("advisor-view-intelligence");
   const advisorComparePlans = document.getElementById("advisor-compare-plans");
   const advisorRetainCalculation = document.getElementById("advisor-retain-calculation");
@@ -970,6 +979,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorSnapshotHistory = document.getElementById("advisor-snapshot-history");
   const advisorRefreshHistory = document.getElementById("advisor-refresh-history");
   const advisorSaveStatus = document.getElementById("advisor-save-status");
+  const advisorCaseWorkspace = document.getElementById("advisor-case-workspace");
+  const advisorCaseStatus = document.getElementById("advisor-case-status");
+  const advisorCaseSummary = document.getElementById("advisor-case-summary");
+  const advisorCaseDetails = document.getElementById("advisor-case-details");
   const advisorIntelligenceWorkspace = document.getElementById("advisor-intelligence-workspace");
   const advisorIntelligenceStatus = document.getElementById("advisor-intelligence-status");
   const advisorIntelligenceSummary = document.getElementById("advisor-intelligence-summary");
@@ -1508,6 +1521,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     }
     advisorComparisonWorkspace.hidden = false;
     advisorComparisonStatus.textContent = "Saved facts loaded. Compare after saving any changes you make in this session.";
+    void loadAdvisorCaseContext(false);
 
     if (client.normalizedLoanPortfolio?.repaymentLoans?.length || client.normalizedLoanPortfolio?.loans?.length) {
       const repaymentLoans = client.normalizedLoanPortfolio.repaymentLoans || [];
@@ -1569,6 +1583,103 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       guideTranscript.replaceChildren();
       guideAnswers.replaceChildren();
       guideSay("This saved client could not be loaded. Return to the advisor dashboard and reopen the client.");
+    }
+  }
+
+  function caseCoverageLabel(value) {
+    if (value === "complete") return "Complete";
+    if (value === "partial") return "Partial";
+    return "Missing";
+  }
+
+  function renderAdvisorCaseContext(context) {
+    advisorCaseWorkspace.hidden = false;
+    advisorCaseSummary.replaceChildren();
+    advisorCaseDetails.replaceChildren();
+    const summary = context.professionalSummary;
+    [
+      ["Active loans", String(summary.activeLoanCount)],
+      ["Outstanding principal", money.format(summary.totalOutstandingPrincipal || 0)],
+      ["Outstanding interest", money.format(summary.totalOutstandingInterest || 0)],
+      ["Reported payment", typeof summary.reportedScheduledPaymentSum === "number" ? money.format(summary.reportedScheduledPaymentSum) + "/mo" : "Not fully reported"],
+      ["Missing fact areas", String((context.missingInformation || []).length)],
+      ["Comparison readiness", caseCoverageLabel(context.coverage?.comparisonReadiness)]
+    ].forEach(([label, value]) => {
+      const metric = document.createElement("div");
+      metric.className = "metric";
+      metric.append(addText("span", label, "muted"), addText("strong", value));
+      advisorCaseSummary.appendChild(metric);
+    });
+
+    const identity = document.createElement("article");
+    identity.className = "readiness-card";
+    identity.appendChild(addText("h3", "Borrower & current portfolio"));
+    const identityList = document.createElement("ul");
+    identityList.appendChild(addText("li", "Borrower: " + summary.displayName));
+    if (summary.email) identityList.appendChild(addText("li", "Email: " + summary.email));
+    if (summary.phone) identityList.appendChild(addText("li", "Phone: " + summary.phone));
+    if (summary.servicerName) identityList.appendChild(addText("li", "Servicer: " + summary.servicerName));
+    identityList.appendChild(addText("li", "Current repayment plan(s): " + (summary.currentRepaymentPlans?.length ? summary.currentRepaymentPlans.join(", ") : "Not reported")));
+    identityList.appendChild(addText("li", "Current forbearance loans: " + summary.currentForbearanceLoanCount + " · current delinquency loans: " + summary.currentDelinquencyLoanCount));
+    identity.appendChild(identityList);
+    advisorCaseDetails.appendChild(identity);
+
+    const dates = document.createElement("article");
+    dates.className = "readiness-card";
+    dates.appendChild(addText("h3", "Dates & as-of context"));
+    const dateList = document.createElement("ul");
+    dateList.appendChild(addText("li", "Case updated: " + new Date(context.asOf.caseUpdatedAt).toLocaleString()));
+    if (context.asOf.studentAidFileRequestDate) dateList.appendChild(addText("li", "StudentAid file request date: " + context.asOf.studentAidFileRequestDate));
+    if (context.asOf.portfolioAsOfDate) dateList.appendChild(addText("li", "Portfolio intelligence as of: " + context.asOf.portfolioAsOfDate));
+    if (summary.idrAnniversaryDates?.length) dateList.appendChild(addText("li", "IDR anniversary date(s): " + summary.idrAnniversaryDates.join(", ")));
+    if (summary.nextPaymentDueDates?.length) dateList.appendChild(addText("li", "Next payment due date(s): " + summary.nextPaymentDueDates.join(", ")));
+    dates.appendChild(dateList);
+    advisorCaseDetails.appendChild(dates);
+
+    const missing = document.createElement("article");
+    missing.className = "readiness-card";
+    missing.appendChild(addText("h3", "Missing information / next intake facts"));
+    if (context.missingInformation?.length) {
+      const list = document.createElement("ul");
+      context.missingInformation.forEach((item) => list.appendChild(addText("li", (item.blocking ? "Blocking · " : "Review · ") + item.label + " · needed for " + item.requiredFor.join(", ").replace(/_/g, " "))));
+      missing.appendChild(list);
+    } else missing.appendChild(addText("p", "No modeled case-context fact gaps are currently flagged.", "muted"));
+    advisorCaseDetails.appendChild(missing);
+
+    const coverage = document.createElement("article");
+    coverage.className = "readiness-card";
+    coverage.appendChild(addText("h3", "Coverage & provenance"));
+    const coverageList = document.createElement("ul");
+    Object.entries(context.coverage || {}).forEach(([key, value]) => coverageList.appendChild(addText("li", key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()) + ": " + caseCoverageLabel(value))));
+    const provenanceValues = Object.values(context.provenance?.fields || {});
+    const importedCount = provenanceValues.filter((value) => value === "imported_studentaid" || value === "derived_studentaid").length;
+    const confirmedCount = provenanceValues.filter((value) => value === "advisor_entered" || value === "borrower_confirmed").length;
+    coverageList.appendChild(addText("li", "Field provenance tracked: " + provenanceValues.length + " · StudentAid/derived: " + importedCount + " · advisor/borrower confirmed: " + confirmedCount));
+    coverage.appendChild(coverageList);
+    advisorCaseDetails.appendChild(coverage);
+
+    if (context.warnings?.length) {
+      const warnings = document.createElement("details");
+      warnings.className = "readiness-card";
+      warnings.appendChild(addText("summary", "Warnings & review notes · " + context.warnings.length));
+      const list = document.createElement("ul");
+      context.warnings.forEach((warning) => list.appendChild(addText("li", warning)));
+      warnings.appendChild(list);
+      advisorCaseDetails.appendChild(warnings);
+    }
+    advisorCaseStatus.textContent = "Saved case context · " + context.schema + " · updated " + new Date(context.clientUpdatedAt).toLocaleString() + ".";
+  }
+
+  async function loadAdvisorCaseContext(scrollIntoView = false) {
+    if (!advisorClient) return;
+    advisorCaseWorkspace.hidden = false;
+    advisorCaseStatus.textContent = "Loading saved client case context…";
+    try {
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/case-context");
+      renderAdvisorCaseContext(body.caseContext);
+      if (scrollIntoView) advisorCaseWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+      advisorCaseStatus.textContent = error instanceof Error ? error.message : "Unable to load the client case file.";
     }
   }
 
@@ -1640,6 +1751,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       const saved = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId), { method: "PUT", body: JSON.stringify(body) });
       advisorClient = saved.client;
       advisorSaveStatus.textContent = "Saved " + new Date(saved.client.updatedAt).toLocaleString() + ". Raw StudentAid data and evidence files were not retained.";
+      void loadAdvisorCaseContext(false);
       if (saved.client.normalizedLoanPortfolio?.loans?.length) void loadAdvisorIntelligence(false);
       return true;
     } catch (error) {
@@ -2477,6 +2589,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     syncDocumentActions();
   });
   advisorSaveProgress.addEventListener("click", () => { void saveAdvisorClientProgress(); });
+  advisorViewCaseFile.addEventListener("click", async () => {
+    const saved = await saveAdvisorClientProgress();
+    if (saved) await loadAdvisorCaseContext(true);
+  });
   advisorViewIntelligence.addEventListener("click", async () => {
     const saved = await saveAdvisorClientProgress();
     if (saved) await loadAdvisorIntelligence(true);
@@ -3297,7 +3413,8 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
     const borrower = studentAidPortfolio.borrower;
     const contact = { displayName: name };
     ["email","phone","streetAddress1","streetAddress2","city","stateCode","countryCode","zipCode"].forEach((field) => { if (borrower[field]) contact[field] = borrower[field]; });
-    const payload = { contact };
+    const payload = { contact, fieldProvenance: { ...(borrower.provenance || {}) } };
+    if (name !== borrower.displayName) payload.fieldProvenance.displayName = "advisor_entered";
     if (studentAidPortfolio.servicerName) payload.servicerName = studentAidPortfolio.servicerName;
     if (studentAidPortfolio.loans && studentAidPortfolio.loans.length) {
       payload.normalizedLoanPortfolio = { repaymentLoans: studentAidPortfolio.repaymentLoans || [], ...(studentAidPortfolio.eligibilityLoans ? { eligibilityLoans: studentAidPortfolio.eligibilityLoans } : {}), loans: studentAidPortfolio.loans, summary: studentAidPortfolio.summary };
