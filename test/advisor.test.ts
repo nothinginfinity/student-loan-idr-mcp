@@ -457,3 +457,123 @@ test("V0.8.5 explicitly retains owner-scoped document and calculation history wi
   for (const action of ["client.artifact.retain","client.artifact.regenerate","client.artifact.delete","client.snapshot.retain","client.snapshot.rerun","client.snapshot.delete"]) assert.ok(auditRows.some(row=>row.action===action), action);
   assert.ok(auditRows.every(row=>row.metadata_json==="{}"));
 });
+
+test("V0.9.3 derives owner-scoped FSA portfolio intelligence without double-counting overlapping forbearance", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  const env = { ADVISOR_DB: d1 };
+  const alpha = await register(env, "intelligence-alpha@example.test", "Intelligence Alpha");
+  const beta = await register(env, "intelligence-beta@example.test", "Intelligence Beta");
+
+  const ui = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
+  const html = await ui.text();
+  assert.equal(ui.status, 200);
+  assert.match(html, /id="advisor-view-intelligence"/);
+  assert.match(html, /id="advisor-intelligence-workspace"/);
+  assert.match(html, /FSA portfolio intelligence/);
+  assert.match(html, /deterministic/i);
+
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, {
+    method: "POST",
+    body: JSON.stringify({
+      displayName: "Portfolio Intelligence Borrower",
+      normalizedLoanPortfolio: {
+        repaymentLoans: [
+          { principal: 10000, annualInterestRatePercent: 6.5 },
+          { principal: 5000, annualInterestRatePercent: 5.5 }
+        ],
+        loans: [
+          {
+            loanIndex: 0,
+            outstandingPrincipal: 10000,
+            outstandingInterest: 100,
+            capitalizedInterest: 50,
+            interestRatePercent: 6.5,
+            calculatedCombinedAggregateOpb: 10000,
+            currentLoanStatusCode: "RP",
+            currentLoanStatusDescription: "IN REPAYMENT",
+            repaymentPlanTypeCode: "IB",
+            repaymentPlanDescription: "INCOME-BASED REPAYMENT",
+            repaymentPlanBeginDate: "01/01/2026",
+            repaymentPlanScheduledAmount: 25,
+            repaymentPlanIdrAnniversaryDate: "05/01/2027",
+            nextPaymentDueDate: "04/15/2026",
+            statuses: [
+              { code: "RP", description: "IN REPAYMENT", effectiveDate: "03/01/2026" },
+              { code: "FB", description: "FORBEARANCE", effectiveDate: "01/01/2026" }
+            ],
+            delinquencies: [{ date: "01/15/2026", endDate: "02/15/2026" }],
+            contacts: [{ type: "Guaranty Agency", name: "Historical Contact" }],
+            provenance: {}
+          },
+          {
+            loanIndex: 1,
+            outstandingPrincipal: 5000,
+            outstandingInterest: 25,
+            interestRatePercent: 5.5,
+            calculatedCombinedAggregateOpb: 5000,
+            currentLoanStatusCode: "FB",
+            currentLoanStatusDescription: "FORBEARANCE",
+            repaymentPlanTypeCode: "IB",
+            repaymentPlanDescription: "INCOME-BASED REPAYMENT",
+            repaymentPlanBeginDate: "02/01/2026",
+            repaymentPlanIdrAnniversaryDate: "06/01/2027",
+            statuses: [{ code: "FB", description: "FORBEARANCE", effectiveDate: "02/01/2026" }],
+            contacts: [{ type: "Current Servicer", name: "Priority Servicer", phoneNumber: "555-0102", mostRelevant: true }],
+            provenance: {}
+          }
+        ],
+        summary: { loanCount: 2, activeLoanCount: 2, totalOutstandingPrincipal: 15000, totalOutstandingInterest: 125, repaymentLoanCount: 2, eligibilityMappedLoanCount: 0, ambiguousEligibilityLoanCount: 2, hasLoanDisbursedOnOrAfterJuly1_2026: false }
+      },
+      studentAidImport: { source: "studentaid_download", fileRequestDate: "04/01/2026", mappingVersion: "2026-09-05-v2", rawFileRetained: false }
+    })
+  });
+  const created = await create.json();
+  assert.equal(create.status, 201);
+  const clientId = created.client.clientId as string;
+  const updatedAt = created.client.updatedAt as string;
+
+  const response = await advisorFetch(`/api/advisor/clients/${clientId}/intelligence`, alpha, env);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  const intelligence = body.intelligence;
+  assert.equal(intelligence.schema, "student-aid-portfolio-intelligence-v1");
+  assert.equal(intelligence.asOfDate, "2026-04-01");
+  assert.equal(intelligence.activeLoanCount, 2);
+  assert.equal(intelligence.forbearance.boundedCalendarDays, 90, "overlapping loan forbearance must be unioned on the portfolio calendar");
+  assert.equal(intelligence.forbearance.currentLoanCount, 1);
+  assert.equal(intelligence.forbearance.portfolioCalendarIntervals.length, 1);
+  assert.equal(intelligence.loans[0].forbearance.boundedCalendarDays, 59);
+  assert.equal(intelligence.loans[1].forbearance.boundedCalendarDays, 59);
+  assert.equal(intelligence.loans[1].forbearance.currentlyInForbearance, true);
+  assert.equal(intelligence.loans[1].forbearance.currentStartDate, "2026-02-01");
+  assert.equal(intelligence.loans[1].forbearance.currentCalendarDays, 59);
+  assert.equal(intelligence.loans[0].delinquency.boundedCalendarDays, 31);
+  assert.equal(intelligence.loans[0].repaymentPlan.idrAnniversaryDate, "05/01/2027");
+  assert.equal(intelligence.scheduledPayment.coverage, "partial");
+  assert.equal(intelligence.scheduledPayment.reportedLoanCount, 1);
+  assert.equal(intelligence.scheduledPayment.missingLoanCount, 1);
+  assert.equal(intelligence.scheduledPayment.reportedAmountSum, 25);
+  assert.equal(intelligence.planDistribution.length, 1);
+  assert.equal(intelligence.planDistribution[0].loanCount, 2);
+  assert.equal(intelligence.planDistribution[0].outstandingPrincipal, 15000);
+  assert.equal(intelligence.interest.outstandingInterestSum, 125);
+  assert.equal(intelligence.interest.outstandingInterestCoverage, "complete");
+  assert.equal(intelligence.interest.capitalizedInterestSum, 50);
+  assert.equal(intelligence.interest.capitalizedInterestCoverage, "partial");
+  assert.equal(intelligence.servicerRouting.preferred.loanIndex, 1);
+  assert.equal(intelligence.servicerRouting.preferred.contact.name, "Priority Servicer");
+  assert.equal(intelligence.reconciliation.principal.status, "pass");
+  assert.equal(intelligence.reconciliation.principal.aggregateContributionSum, 15000);
+  assert.equal(intelligence.reconciliation.principal.delta, 0);
+  assert.equal(intelligence.reconciliation.interest.status, "unavailable");
+  assert.match(intelligence.warnings.join("\n"), /scheduled-payment coverage is incomplete/i);
+
+  const denied = await advisorFetch(`/api/advisor/clients/${clientId}/intelligence`, beta, env);
+  assert.equal(denied.status, 404);
+  assert.equal((await denied.json()).error, "Client not found or not accessible.");
+
+  const postRead = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env);
+  assert.equal(postRead.status, 200);
+  assert.equal((await postRead.json()).client.updatedAt, updatedAt, "portfolio intelligence must be a read-only derived view");
+});
