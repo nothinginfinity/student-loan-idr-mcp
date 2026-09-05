@@ -404,6 +404,69 @@ export interface StudentAidPortfolioIntelligence {
   warnings: string[];
 }
 
+export type AdvisorCaseContextNeed = "comparison" | "eligibility_review" | "forgiveness_projection" | "advisor_review";
+
+export interface AdvisorClientCaseContextV1 {
+  schema: "student-loan-idr-client-case-context-v1";
+  schemaVersion: 1;
+  clientId: string;
+  clientUpdatedAt: string;
+  lifecycleState: AdvisorClientLifecycleState;
+  readinessState: AdvisorClientReadinessState;
+  asOf: {
+    caseUpdatedAt: string;
+    studentAidImportedAt?: string;
+    studentAidFileRequestDate?: string;
+    portfolioAsOfDate?: string;
+  };
+  professionalSummary: {
+    displayName: string;
+    email?: string;
+    phone?: string;
+    servicerName?: string;
+    activeLoanCount: number;
+    totalOutstandingPrincipal: number;
+    totalOutstandingInterest: number;
+    currentRepaymentPlans: string[];
+    reportedScheduledPaymentSum?: number;
+    currentForbearanceLoanCount: number;
+    currentDelinquencyLoanCount: number;
+    idrAnniversaryDates: string[];
+    nextPaymentDueDates: string[];
+  };
+  normalizedFacts: {
+    contact: AdvisorClientRecordV1["contact"];
+    servicerName?: string;
+    confirmedFacts?: AdvisorClientRecordV1["confirmedFacts"];
+    loanPortfolio?: AdvisorClientRecordV1["normalizedLoanPortfolio"];
+    consideredPlans?: RepaymentPlan[];
+  };
+  provenance: {
+    fields: Record<string, StudentAidFactProvenance>;
+    loans: Array<{ loanIndex: number; fields: Record<string, StudentAidFactProvenance> }>;
+  };
+  deterministicIntelligence?: StudentAidPortfolioIntelligence;
+  missingInformation: Array<{
+    key: string;
+    label: string;
+    requiredFor: AdvisorCaseContextNeed[];
+    blocking: boolean;
+  }>;
+  coverage: {
+    contact: StudentAidCoverageState;
+    loanPortfolio: StudentAidCoverageState;
+    eligibilityMapping: StudentAidCoverageState;
+    currentIncome: StudentAidCoverageState;
+    familySize: StudentAidCoverageState;
+    dependents: StudentAidCoverageState;
+    region: StudentAidCoverageState;
+    comparisonReadiness: StudentAidCoverageState;
+    scheduledPayment: StudentAidCoverageState;
+    outstandingInterest: StudentAidCoverageState;
+  };
+  warnings: string[];
+}
+
 export interface AdvisorPrincipal {
   advisorId: string;
   status: AdvisorAccountStatus;
