@@ -360,6 +360,8 @@ jobs:
             assert(health.advisor_workspace?.student_aid_per_loan_facts === true, 'StudentAid per-loan fact flag missing');
             assert(health.advisor_workspace?.fsa_portfolio_intelligence === true, 'FSA portfolio intelligence flag missing');
             assert(health.advisor_workspace?.client_case_context_v1 === true, 'V0.9.4 client case-context capability flag missing');
+            assert(health.advisor_workspace?.client_timeline_v1 === true, 'V0.9.5 client timeline capability flag missing');
+            assert(health.advisor_workspace?.automatic_case_history === true, 'V0.9.5 automatic case-history flag missing');
             assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
             assert(health.advisor_workspace?.max_normalized_client_request_bytes === 524288, 'normalized advisor client request ceiling mismatch');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
@@ -530,6 +532,41 @@ jobs:
             const betaCaseContext = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/case-context`, {}, beta);
             assert(betaCaseContext.response.status === 404 && betaCaseContext.body?.error === 'Client not found or not accessible.', 'cross-advisor case-context access must fail generically');
 
+            const automaticCalculation = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/calculations`, { method: 'POST', body: JSON.stringify({ plans: ['RAP', 'IBR'] }) }, alpha);
+            assert(automaticCalculation.response.status === 201 && automaticCalculation.body?.event?.eventKind === 'calculation', 'V0.9.5 automatic calculation history failed');
+            assert(automaticCalculation.body?.event?.schema === 'student-loan-idr-client-timeline-event-v1', 'V0.9.5 timeline event schema mismatch');
+            assert(automaticCalculation.body?.snapshot?.basis?.confirmedFacts?.income?.[0]?.amount === 1200, 'V0.9.5 automatic calculation basis missing saved income');
+            assert(automaticCalculation.body?.result?.planEstimates?.length === 2, 'V0.9.5 automatic calculation selected-plan result mismatch');
+            const automaticCalculationEventId = automaticCalculation.body.event.eventId;
+            const automaticCalculationSnapshotId = automaticCalculation.body.snapshot.snapshotId;
+
+            const automaticComparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparisons`, { method: 'POST', body: '{}' }, alpha);
+            assert(automaticComparison.response.status === 201 && automaticComparison.body?.event?.eventKind === 'comparison', 'V0.9.5 automatic comparison history failed');
+            assert(automaticComparison.body?.comparison?.schema === 'student-loan-idr-advisor-comparison-v1', 'V0.9.5 automatic comparison result mismatch');
+
+            const automaticDocument = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/documents/generate`, { method: 'POST', body: JSON.stringify({ templateRequest: { templateType: 'current_income_statement', outputFormat: 'text', borrowerName: 'Live Private Borrower', incomeSources: [{ sourceType: 'employment', name: 'Example Employer', grossAmount: 1200, paymentFrequency: 'biweekly' }] } }) }, alpha);
+            assert(automaticDocument.response.status === 200 && automaticDocument.body?.event?.eventKind === 'document_generated', 'V0.9.5 automatic document history failed');
+            assert(automaticDocument.body?.event?.basis?.templateType === 'current_income_statement', 'V0.9.5 document timeline basis missing');
+            assert(automaticDocument.body?.document?.documentText?.includes('Example Employer'), 'V0.9.5 automatic document generation lost normalized source facts');
+            const automaticDocumentEventId = automaticDocument.body.event.eventId;
+
+            const automaticTimeline = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline`, {}, alpha);
+            assert(automaticTimeline.response.status === 200 && automaticTimeline.body?.schema === 'student-loan-idr-client-timeline-v1', 'V0.9.5 timeline list failed');
+            assert(automaticTimeline.body?.events?.length === 3, 'V0.9.5 initial automatic timeline count mismatch');
+            assert(automaticTimeline.body.events.every((event) => event.basis === undefined && event.result === undefined), 'V0.9.5 timeline list leaked detailed basis/result');
+            assert(automaticTimeline.body.events.some((event) => /income \$31,200 · family size 2 · policy snapshot 2026-08-27/.test(event.summary)), 'V0.9.5 scan-friendly calculation summary missing');
+
+            const automaticTimelineDetail = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline/${automaticCalculationEventId}`, {}, alpha);
+            assert(automaticTimelineDetail.response.status === 200, 'V0.9.5 timeline detail failed');
+            assert(automaticTimelineDetail.body?.event?.basis?.confirmedFacts?.income?.[0]?.amount === 1200, 'V0.9.5 timeline detail lost immutable income basis');
+            assert(automaticTimelineDetail.body?.event?.result?.policySnapshot === '2026-08-27', 'V0.9.5 timeline detail policy snapshot missing');
+            const betaTimelineDetail = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline/${automaticCalculationEventId}`, {}, beta);
+            assert(betaTimelineDetail.response.status === 404 && betaTimelineDetail.body?.error === 'Client not found or not accessible.', 'cross-advisor timeline detail must fail generically');
+
+            const updatedTimeline = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline/${automaticCalculationEventId}`, { method: 'PATCH', body: JSON.stringify({ name: 'Live repayment consult', starred: true, annotation: 'Live acceptance annotation' }) }, alpha);
+            assert(updatedTimeline.response.status === 200 && updatedTimeline.body?.event?.starred === true, 'V0.9.5 timeline starring failed');
+            assert(updatedTimeline.body?.event?.name === 'Live repayment consult' && updatedTimeline.body?.event?.annotation === 'Live acceptance annotation', 'V0.9.5 timeline rename/annotation failed');
+
             const comparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparison`, {}, alpha);
             assert(comparison.response.status === 200 && comparison.body?.ok === true, 'advisor comparison endpoint failed');
             assert(comparison.body?.comparison?.schema === 'student-loan-idr-advisor-comparison-v1', 'advisor comparison schema mismatch');
@@ -577,14 +614,23 @@ jobs:
             assert(snapshotList.response.status === 200 && snapshotList.body?.snapshots?.length === 2, 'retained snapshot list failed');
             assert(!JSON.stringify(snapshotList.body).includes('25000'), 'retained snapshot list leaked calculation basis/result payload');
             const rerunSnapshot = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots/${retainedSnapshotId}/rerun`, { method: 'POST', body: '{}' }, alpha);
-            assert(rerunSnapshot.response.status === 200 && rerunSnapshot.body?.rerun?.basis === 'retained_snapshot_basis', 'retained snapshot rerun failed');
+            assert(rerunSnapshot.response.status === 201 && rerunSnapshot.body?.rerun?.basis === 'retained_snapshot_basis', 'retained snapshot rerun failed');
+            assert(rerunSnapshot.body?.rerun?.snapshotId && rerunSnapshot.body.rerun.snapshotId !== retainedSnapshotId, 'V0.9.5 rerun must create a new immutable snapshot');
             const betaSnapshot = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots/${retainedSnapshotId}`, {}, beta);
             assert(betaSnapshot.response.status === 404 && betaSnapshot.body?.error === 'Client not found or not accessible.', 'cross-advisor retained snapshot read must fail generically');
 
             const exportedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/export`, {}, alpha);
-            assert(exportedClient.response.status === 200 && exportedClient.body?.schema === 'student-loan-idr-advisor-client-export-v2', 'advisor client export failed');
+            assert(exportedClient.response.status === 200 && exportedClient.body?.schema === 'student-loan-idr-advisor-client-export-v3', 'advisor client export failed');
             assert(exportedClient.body?.caseContext?.schema === 'student-loan-idr-client-case-context-v1', 'advisor client export omitted V0.9.4 case context');
-            assert(exportedClient.body?.retainedArtifacts?.length === 1 && exportedClient.body?.calculationSnapshots?.length === 2, 'advisor client export omitted retained history');
+            assert(exportedClient.body?.timelineEvents?.length === 8, 'advisor client export omitted V0.9.5 timeline history');
+            assert(exportedClient.body?.retainedArtifacts?.length === 1 && exportedClient.body?.calculationSnapshots?.length === 5, 'advisor client export omitted immutable calculation history');
+            assert(exportedClient.body.timelineEvents.some((event) => event.eventId === automaticCalculationEventId && event.starred === true && event.annotation === 'Live acceptance annotation'), 'advisor client export omitted timeline metadata');
+            assert(exportedClient.body.calculationSnapshots.some((snapshot) => snapshot.snapshotId === automaticCalculationSnapshotId), 'advisor client export omitted automatic calculation snapshot');
+
+            const deletedTimelineEvent = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline/${automaticDocumentEventId}`, { method: 'DELETE', body: '{}' }, alpha);
+            assert(deletedTimelineEvent.response.status === 200, 'V0.9.5 timeline deletion failed');
+            const afterTimelineDelete = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline`, {}, alpha);
+            assert(afterTimelineDelete.response.status === 200 && afterTimelineDelete.body?.events?.length === 7, 'V0.9.5 timeline deletion count mismatch');
 
             const deletedArtifact = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/artifacts/${retainedArtifactId}`, { method: 'DELETE', body: '{}' }, alpha);
             assert(deletedArtifact.response.status === 200, 'retained artifact deletion failed');
@@ -640,6 +686,9 @@ jobs:
             assert(uiHtml.includes('id="advisor-compare-plans"'), 'advisor repayment-comparison control missing');
             assert(uiHtml.includes('id="advisor-comparison-workspace"'), 'advisor comparison workspace missing');
             assert(uiHtml.includes('id="advisor-history-workspace"'), 'advisor retained-history workspace missing');
+            assert(uiHtml.includes('Client timeline & retained history') && uiHtml.includes('id="advisor-timeline-history"'), 'V0.9.5 client timeline workspace missing');
+            assert(uiHtml.includes('/calculations') && uiHtml.includes('/comparisons') && uiHtml.includes('/documents/generate'), 'V0.9.5 automatic advisor-history integrations missing');
+            assert(uiHtml.includes('Rename / annotate') && uiHtml.includes('added to the client timeline'), 'V0.9.5 timeline controls/status missing');
             assert(uiHtml.includes('id="advisor-retain-document"') && uiHtml.includes('id="advisor-retain-calculation"') && uiHtml.includes('id="advisor-retain-comparison"'), 'advisor explicit retention controls missing');
             assert(uiHtml.includes('Rerun retained basis') && uiHtml.includes('Raw StudentAid downloads and evidence files are never retained.'), 'advisor retained-history privacy/rerun controls missing');
             assert(uiHtml.includes('id="advisor-payment-chart"') && uiHtml.includes('id="advisor-paid-chart"') && uiHtml.includes('id="advisor-balance-chart"') && uiHtml.includes('id="advisor-forgiveness-chart"'), 'advisor comparison chart surfaces missing');
