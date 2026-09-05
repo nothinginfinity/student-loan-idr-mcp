@@ -306,7 +306,7 @@ Acceptance evidence:
 - Borrower plan selection/confirmation uses a bounded 15-minute review/signing window; confirmed borrowers receive a bounded 36-hour booking window, Cal.com booking surface, and supporting-document download flow.
 - Advisor/borrower Resend notifications are part of the accepted V0.9.1 workflow. Confirmation is explicitly non-binding and does not represent enrollment or an official servicer decision.
 
-### V0.9.2 — StudentAid Parser V2: real-export structural parsing + compatibility diagnostics — IN PROGRESS
+### V0.9.2 — StudentAid Parser V2: real-export structural parsing + compatibility diagnostics — COMPLETE
 
 Build the parser against the observed structure of real Federal Student Aid / NSLDS **My Aid Data** text exports used by professional advisors, not against a simplified synthetic ordering.
 
@@ -328,6 +328,14 @@ V0.9.2 acceptance gates:
 - Unknown labels fail visibly through diagnostics without retaining or logging their values.
 - Ambiguous consolidation / Parent PLUS history remains unresolved rather than guessed.
 - Strict TypeScript, the full deterministic regression suite, Wrangler dry-run, exact-SHA deployment, and production acceptance must pass before V0.9.2 is marked complete.
+
+Acceptance evidence:
+
+- Final V0.9.2 runtime source commit `10b23890a019c6fdaab9ee865fe73d7f479f1732` passed strict TypeScript, the full deterministic regression suite, and Wrangler dry-run in CI run `33990108243`.
+- Exact-SHA live deployment + production acceptance run `33990147056` succeeded from that immutable source, including the immutable-source guard, repeated typecheck/tests, D1 migrations, Worker deployment, and the live production MCP acceptance step.
+- Parser mapping version `2026-09-05-v2` tokenizes the actual flat FSA label/value grammar, uses `Loan Award ID` as a strong transient record anchor when the observed layout supports it, retains a conservative legacy fallback, and keeps raw award identifiers out of normalized/persisted records.
+- Sanitized real-layout regressions prove fields may precede `Loan Type Code`, current/legacy label aliases map correctly, repeated status/disbursement/contact/delinquency rows remain attached to their loan, newest status is date-derived, ambiguous consolidation/Parent PLUS history is not guessed, and unknown label **values** are not retained in diagnostics.
+- Both browser-local import implementations ship the V2 grammar. Borrower review now exposes mapping/structural diagnostics plus explicit delinquency rows, and advisor intake surfaces parser mapping, unmapped-label names, and structural/validation review counts before client creation. Raw StudentAid files remain browser-local and unretained.
 
 ### V0.9.3 — FSA Portfolio Intelligence for advisors — PLANNED
 
