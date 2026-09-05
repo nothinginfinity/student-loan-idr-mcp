@@ -182,6 +182,7 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
   assert.match(advisorHtml, /Parser mapping/);
   assert.match(advisorHtml, /Unmapped FSA labels/);
   assert.match(advisorHtml, /parser diagnostics below/i);
+  assert.ok(advisorHtml.includes("fieldProvenance: { ...(borrower.provenance || {}) }"), "one-click FSA client creation must carry imported contact provenance");
   assert.doesNotMatch(advisorHtml, /localStorage|sessionStorage/);
 
   const guidedUi = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
@@ -531,6 +532,8 @@ test("V0.8.5 explicitly retains owner-scoped document and calculation history wi
   const exported = await advisorFetch(`/api/advisor/clients/${clientId}/export`, alpha, env);
   const exportBody = await exported.json();
   assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v2");
+  assert.equal(exportBody.caseContext.schema, "student-loan-idr-client-case-context-v1");
+  assert.equal(exportBody.caseContext.schemaVersion, 1);
   assert.equal(exportBody.retainedArtifacts.length, 1);
   assert.equal(exportBody.calculationSnapshots.length, 2);
 
@@ -561,6 +564,11 @@ test("V0.9.3 derives owner-scoped FSA portfolio intelligence without double-coun
   assert.equal(ui.status, 200);
   assert.match(html, /id="advisor-view-intelligence"/);
   assert.match(html, /id="advisor-intelligence-workspace"/);
+  assert.match(html, /advisor-view-case-file/);
+  assert.match(html, /advisor-case-workspace/);
+  assert.match(html, /Client case file/);
+  assert.match(html, /Case context v1/);
+  assert.match(html, /case-context/);
   assert.match(html, /FSA portfolio intelligence/);
   assert.match(html, /deterministic/i);
 
@@ -664,7 +672,44 @@ test("V0.9.3 derives owner-scoped FSA portfolio intelligence without double-coun
   assert.equal(denied.status, 404);
   assert.equal((await denied.json()).error, "Client not found or not accessible.");
 
+  const caseResponse = await advisorFetch(`/api/advisor/clients/${clientId}/case-context`, alpha, env);
+  const caseBody = await caseResponse.json();
+  assert.equal(caseResponse.status, 200);
+  const caseContext = caseBody.caseContext;
+  assert.equal(caseContext.schema, "student-loan-idr-client-case-context-v1");
+  assert.equal(caseContext.schemaVersion, 1);
+  assert.equal(caseContext.clientId, clientId);
+  assert.equal(caseContext.clientUpdatedAt, updatedAt);
+  assert.equal(caseContext.asOf.caseUpdatedAt, updatedAt);
+  assert.equal(caseContext.asOf.studentAidFileRequestDate, "04/01/2026");
+  assert.equal(caseContext.asOf.portfolioAsOfDate, "2026-04-01");
+  assert.equal(caseContext.professionalSummary.displayName, "Portfolio Intelligence Borrower");
+  assert.equal(caseContext.professionalSummary.activeLoanCount, 2);
+  assert.equal(caseContext.professionalSummary.totalOutstandingPrincipal, 15000);
+  assert.equal(caseContext.professionalSummary.totalOutstandingInterest, 125);
+  assert.equal(caseContext.professionalSummary.reportedScheduledPaymentSum, 25);
+  assert.equal(caseContext.professionalSummary.currentForbearanceLoanCount, 1);
+  assert.deepEqual(caseContext.professionalSummary.currentRepaymentPlans, ["INCOME-BASED REPAYMENT"]);
+  assert.equal(caseContext.normalizedFacts.loanPortfolio.summary.totalOutstandingPrincipal, 15000);
+  assert.equal(caseContext.provenance.fields.displayName, "missing_review");
+  assert.equal(caseContext.provenance.loans.length, 2);
+  assert.deepEqual(caseContext.deterministicIntelligence, intelligence);
+  assert.equal(caseContext.coverage.loanPortfolio, "complete");
+  assert.equal(caseContext.coverage.eligibilityMapping, "none");
+  assert.equal(caseContext.coverage.comparisonReadiness, "partial");
+  assert.equal(caseContext.coverage.currentIncome, "none");
+  assert.ok(caseContext.missingInformation.some((item:any) => item.key === "current_income" && item.blocking));
+  assert.ok(caseContext.missingInformation.some((item:any) => item.key === "eligibility_mapping" && !item.blocking));
+  assert.match(caseContext.warnings.join("\n"), /blocking a complete repayment comparison/i);
+  assert.match(caseContext.warnings.join("\n"), /ambiguous eligibility mapping/i);
+  const secondCaseResponse = await advisorFetch(`/api/advisor/clients/${clientId}/case-context`, alpha, env);
+  assert.equal(secondCaseResponse.status, 200);
+  assert.deepEqual((await secondCaseResponse.json()).caseContext, caseContext, "case context must be deterministic for unchanged saved facts");
+  const deniedCase = await advisorFetch(`/api/advisor/clients/${clientId}/case-context`, beta, env);
+  assert.equal(deniedCase.status, 404);
+  assert.equal((await deniedCase.json()).error, "Client not found or not accessible.");
+
   const postRead = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env);
   assert.equal(postRead.status, 200);
-  assert.equal((await postRead.json()).client.updatedAt, updatedAt, "portfolio intelligence must be a read-only derived view");
+  assert.equal((await postRead.json()).client.updatedAt, updatedAt, "portfolio intelligence and case context must be read-only derived views");
 });
