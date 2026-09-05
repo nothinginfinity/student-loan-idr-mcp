@@ -23,7 +23,7 @@ export interface D1PreparedStatement {
   run(): Promise<{ meta?: { changes?: number } }>;
 }
 export interface D1DatabaseBinding { prepare(sql: string): D1PreparedStatement; }
-export interface AdvisorWorkspaceEnv { ADVISOR_DB?: D1DatabaseBinding; }
+export interface AdvisorWorkspaceEnv { ADVISOR_DB?: D1DatabaseBinding; RESEND_API_KEY?: string; }
 
 type JsonObject = Record<string, unknown>;
 type AccountRow = {
@@ -391,7 +391,18 @@ async function selectSharePlan(request: Request, database: D1DatabaseBinding, sh
   return json({ ok: true, status: "selected", selectedPlan: plan, selectedAt: now, selectSignDeadlineAt: row.select_sign_deadline_at });
 }
 
-async function signSharePlan(request: Request, database: D1DatabaseBinding, shareToken: string) {
+async function sendNotificationEmail(apiKey: string | undefined, to: string, subject: string, text: string): Promise<void> {
+  if (!apiKey || !to) return;
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { "authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ from: "Student Loan IDR <onboarding@resend.dev>", to: [to], subject, text })
+    });
+  } catch { /* best-effort notification only; never block the borrower's confirmation on email failure */ }
+}
+
+async function signSharePlan(request: Request, database: D1DatabaseBinding, shareToken: string, env: AdvisorWorkspaceEnv) {
   sameOrigin(request);
   const row = await planSelectionRowByToken(database, shareToken);
   const now = new Date().toISOString();
@@ -406,6 +417,17 @@ async function signSharePlan(request: Request, database: D1DatabaseBinding, shar
   const bookingDeadline = new Date(Date.parse(now) + BOOKING_WINDOW_MS).toISOString();
   await database.prepare("UPDATE advisor_client_plan_selections SET status='signed', sign_initials=?, signed_at=?, booking_deadline_at=?, updated_at=? WHERE selection_id=?").bind(initials, now, bookingDeadline, now, row.selection_id).run();
   await audit(database, row.owner_advisor_id, "client.plan_selection.sign", row.client_id);
+  try {
+    const clientRow = await owned(database, row.owner_advisor_id, row.client_id);
+    const client = parseClient(clientRow);
+    const account = await database.prepare("SELECT email_normalized, display_name FROM advisor_accounts WHERE advisor_id=?").bind(row.owner_advisor_id).first<{ email_normalized: string; display_name: string }>();
+    if (account) {
+      await sendNotificationEmail(env.RESEND_API_KEY, account.email_normalized, `${client.contact.displayName} confirmed a plan`, `${client.contact.displayName} confirmed the ${row.selected_plan} plan and is ready to schedule enrollment. Follow up to book a time.`);
+    }
+    if (client.contact.email) {
+      await sendNotificationEmail(env.RESEND_API_KEY, client.contact.email, "You confirmed your repayment plan", `You confirmed the ${row.selected_plan} plan. Your advisor will follow up to schedule enrollment. This is not a binding signature or loan-program enrollment.`);
+    }
+  } catch { /* notification failures never block the borrower's confirmation */ }
   return json({ ok: true, status: "signed", signedAt: now, bookingDeadlineAt: bookingDeadline, note: "This confirms the plan you'd like to move forward with. It is not a binding electronic signature or loan-program enrollment." });
 }
 
@@ -438,7 +460,7 @@ export async function handleShareApi(request: Request, env: AdvisorWorkspaceEnv)
     const shareToken = m[1]!;
     if (request.method === "GET" && !m[2]) return await viewShare(database, shareToken);
     if (request.method === "POST" && m[2] === "/select") return await selectSharePlan(request, database, shareToken);
-    if (request.method === "POST" && m[2] === "/sign") return await signSharePlan(request, database, shareToken);
+    if (request.method === "POST" && m[2] === "/sign") return await signSharePlan(request, database, shareToken, env);
     if (request.method === "GET" && m[2] === "/document") return await shareDocument(database, shareToken);
     return json({ ok: false, error: "Share endpoint not found." }, 404);
   } catch (error) { if (error instanceof ApiError) return json({ ok: false, error: error.message }, error.status); return json({ ok: false, error: "Share link request failed." }, 500); }
