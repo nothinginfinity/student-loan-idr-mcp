@@ -296,6 +296,114 @@ export interface StudentAidPortfolioSummary {
   hasLoanDisbursedOnOrAfterJuly1_2026: boolean;
 }
 
+export type StudentAidIntervalCategory = "forbearance" | "repayment" | "default" | "other";
+export type StudentAidCoverageState = "complete" | "partial" | "none";
+export type StudentAidReconciliationStatus = "pass" | "warning" | "unavailable";
+
+export interface StudentAidStatusIntervalIntelligence {
+  startDate: string;
+  endDate?: string;
+  open: boolean;
+  calendarDays?: number;
+  code?: string;
+  description?: string;
+  category: StudentAidIntervalCategory;
+}
+
+export interface StudentAidDelinquencyPeriodIntelligence {
+  startDate: string;
+  endDate?: string;
+  open: boolean;
+  calendarDays?: number;
+}
+
+export interface StudentAidLoanPortfolioIntelligence {
+  loanIndex: number;
+  active: boolean;
+  statusIntervals: StudentAidStatusIntervalIntelligence[];
+  forbearance: {
+    intervals: StudentAidStatusIntervalIntelligence[];
+    boundedCalendarDays: number;
+    complete: boolean;
+    currentlyInForbearance: boolean;
+    currentStartDate?: string;
+    currentCalendarDays?: number;
+  };
+  delinquency: {
+    periods: StudentAidDelinquencyPeriodIntelligence[];
+    boundedCalendarDays: number;
+    complete: boolean;
+    currentlyDelinquent: boolean;
+  };
+  repaymentPlan?: {
+    code?: string;
+    description?: string;
+    beginDate?: string;
+    scheduledAmount?: number;
+    idrAnniversaryDate?: string;
+    nextPaymentDueDate?: string;
+  };
+  interest: {
+    outstandingInterest?: number;
+    capitalizedInterest?: number;
+  };
+  preferredServicerContact?: StudentAidLoanContactFact;
+}
+
+export interface StudentAidPortfolioIntelligence {
+  schema: "student-aid-portfolio-intelligence-v1";
+  asOfDate?: string;
+  activeLoanCount: number;
+  loans: StudentAidLoanPortfolioIntelligence[];
+  forbearance: {
+    portfolioCalendarIntervals: Array<{ startDate: string; endDate?: string; calendarDays?: number; open: boolean }>;
+    boundedCalendarDays: number;
+    complete: boolean;
+    currentLoanCount: number;
+  };
+  scheduledPayment: {
+    coverage: StudentAidCoverageState;
+    activeLoanCount: number;
+    reportedLoanCount: number;
+    missingLoanCount: number;
+    reportedAmountSum?: number;
+  };
+  planDistribution: Array<{
+    key: string;
+    code?: string;
+    description?: string;
+    loanCount: number;
+    outstandingPrincipal: number;
+  }>;
+  interest: {
+    outstandingInterestSum: number;
+    outstandingInterestCoverage: StudentAidCoverageState;
+    capitalizedInterestSum: number;
+    capitalizedInterestCoverage: StudentAidCoverageState;
+  };
+  servicerRouting: {
+    preferred?: { loanIndex: number; contact: StudentAidLoanContactFact };
+    candidateCount: number;
+  };
+  reconciliation: {
+    principal: {
+      status: StudentAidReconciliationStatus;
+      parsedPrincipalSum: number;
+      aggregateContributionSum?: number;
+      coveredActiveLoanCount: number;
+      activeLoanCount: number;
+      delta?: number;
+      note: string;
+    };
+    interest: {
+      status: StudentAidReconciliationStatus;
+      parsedInterestSum: number;
+      note: string;
+    };
+  };
+  warnings: string[];
+}
+
 export interface AdvisorPrincipal {
   advisorId: string;
   status: AdvisorAccountStatus;
