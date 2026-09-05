@@ -4254,6 +4254,7 @@ function home(request: Request, env: Env): Response {
       student_aid_normalized_prefill: true,
       student_aid_per_loan_facts: true,
       fsa_portfolio_intelligence: true,
+      client_case_context_v1: true,
       student_aid_provenance_review: true,
       max_normalized_client_request_bytes: 512 * 1024,
       raw_student_aid_retention: false
