@@ -394,12 +394,19 @@ async function selectSharePlan(request: Request, database: D1DatabaseBinding, sh
 async function sendNotificationEmail(apiKey: string | undefined, to: string, subject: string, text: string): Promise<void> {
   if (!apiKey || !to) return;
   try {
-    await fetch("https://api.resend.com/emails", {
+    // NOTE: onboarding@resend.dev only delivers to the email address on the Resend account itself
+    // (Resend rejects other recipients with 403). Once a domain is verified in Resend, replace this
+    // "from" address with one on that domain so notifications can reach any advisor or borrower.
+    const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { "authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({ from: "Student Loan IDR <onboarding@resend.dev>", to: [to], subject, text })
     });
-  } catch { /* best-effort notification only; never block the borrower's confirmation on email failure */ }
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.error(`Resend notification to ${to} failed: ${response.status} ${detail.slice(0, 300)}`);
+    }
+  } catch (error) { console.error(`Resend notification to ${to} threw: ${error instanceof Error ? error.message : "unknown error"}`); }
 }
 
 async function signSharePlan(request: Request, database: D1DatabaseBinding, shareToken: string, env: AdvisorWorkspaceEnv) {
