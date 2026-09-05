@@ -337,7 +337,7 @@ Acceptance evidence:
 - Sanitized real-layout regressions prove fields may precede `Loan Type Code`, current/legacy label aliases map correctly, repeated status/disbursement/contact/delinquency rows remain attached to their loan, newest status is date-derived, ambiguous consolidation/Parent PLUS history is not guessed, and unknown label **values** are not retained in diagnostics.
 - Both browser-local import implementations ship the V2 grammar. Borrower review now exposes mapping/structural diagnostics plus explicit delinquency rows, and advisor intake surfaces parser mapping, unmapped-label names, and structural/validation review counts before client creation. Raw StudentAid files remain browser-local and unretained.
 
-### V0.9.3 — FSA Portfolio Intelligence for advisors — PLANNED
+### V0.9.3 — FSA Portfolio Intelligence for advisors — COMPLETE
 
 Layer deterministic advisory intelligence on top of Parser V2's normalized structure; do not ask an LLM to perform the underlying math or chronology.
 
@@ -348,6 +348,16 @@ Layer deterministic advisory intelligence on top of Parser V2's normalized struc
 5. Reconcile sums of parsed individual balances against FSA portfolio aggregate fields where those aggregates are present, producing explicit pass/warning diagnostics rather than overwriting either source.
 6. Add an advisor-facing portfolio intelligence panel showing useful operational facts, data quality/coverage, and per-loan drilldown without exposing one client's details in another client's dashboard.
 7. Keep policy interpretation separate from borrower PII. A later RAG/LLM explanation layer may explain normalized/derived facts using reviewed federal policy sources, but deterministic parsing, dates, balances, payment sums, and interval math remain code-owned.
+
+Acceptance evidence:
+
+- Final V0.9.3 runtime/workflow source commit `888576e66cc32d0fd50cf155c1dbf4d3c934484d` passed strict TypeScript, the full deterministic regression suite, and Wrangler dry-run in normal CI run `33992114154`.
+- Exact-SHA deployment + production acceptance run `33992149628` succeeded from that immutable source. The deploy-live job passed the immutable-source guard, repeated typecheck/tests, remote D1 migration, exact Wrangler deployment, and the strengthened live production acceptance step.
+- The owner-scoped `GET /api/advisor/clients/:clientId/intelligence` endpoint is a read-only derived view over saved normalized StudentAid facts. It does not retain raw StudentAid text or persist duplicate derived intelligence, and cross-advisor access fails with the existing generic owner-isolation response.
+- Deterministic regression coverage proves overlapping forbearance is unioned on a portfolio calendar rather than multiplied across parallel loans: two observed 59-day loan intervals resolve to a 90-day portfolio-calendar interval for the accepted fixture, not 118 days.
+- The intelligence object exposes per-loan chronology, current/cumulative observed forbearance, delinquency periods, reported scheduled-payment coverage and sums, repayment-plan/IDR dates, outstanding/capitalized-interest coverage, preferred servicer routing, plan distribution, and explicit principal-reconciliation pass/warning/unavailable states. Missing scheduled amounts remain missing rather than becoming `$0`, and interest is not force-reconciled when no separate aggregate-interest counterpart is mapped.
+- The advisor UI now exposes a deterministic FSA portfolio intelligence panel with portfolio metrics, reconciliation/coverage warnings, servicer routing, repayment-plan state, and per-loan drilldown. The panel states that no LLM is used for chronology or balance math.
+- Parser mapping remains `2026-09-05-v2`; Parser V2's existing sanitized regressions continue to cover repeated status/delinquency/contact structures, scheduled-plan-payment labels, current-status disagreements, and value-free compatibility diagnostics underneath the new intelligence layer.
 
 ## Deferred economic layer — x402 + signup-minted token
 
