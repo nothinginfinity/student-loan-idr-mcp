@@ -358,6 +358,7 @@ jobs:
             assert(health.advisor_workspace?.student_aid_dual_mode_import === true, 'dual-mode StudentAid import flag missing');
             assert(health.advisor_workspace?.student_aid_normalized_prefill === true, 'StudentAid normalized prefill flag missing');
             assert(health.advisor_workspace?.student_aid_per_loan_facts === true, 'StudentAid per-loan fact flag missing');
+            assert(health.advisor_workspace?.fsa_portfolio_intelligence === true, 'FSA portfolio intelligence flag missing');
             assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
 
@@ -467,6 +468,18 @@ jobs:
             assert(resumedClient.body?.client?.normalizedLoanPortfolio?.loans?.[0]?.maskedAwardId === '••••0001', 'advisor resumed masked loan row identity missing');
             assert(resumedClient.body?.client?.studentAidImport?.mappingVersion === '2026-08-28-v1', 'advisor resumed StudentAid mapping metadata missing');
 
+            const intelligence = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/intelligence`, {}, alpha);
+            assert(intelligence.response.status === 200 && intelligence.body?.ok === true, 'advisor portfolio intelligence endpoint failed');
+            assert(intelligence.body?.intelligence?.schema === 'student-aid-portfolio-intelligence-v1', 'advisor portfolio intelligence schema mismatch');
+            assert(intelligence.body?.intelligence?.activeLoanCount === 2, 'advisor portfolio intelligence active-loan count mismatch');
+            assert(intelligence.body?.intelligence?.asOfDate === '2026-08-28', 'advisor portfolio intelligence as-of date mismatch');
+            assert(intelligence.body?.intelligence?.interest?.outstandingInterestSum === 175, 'advisor portfolio intelligence interest sum mismatch');
+            assert(intelligence.body?.intelligence?.scheduledPayment?.coverage === 'none', 'advisor portfolio intelligence payment coverage mismatch');
+            assert(intelligence.body?.intelligence?.servicerRouting?.preferred?.contact?.name === 'Example Servicer', 'advisor portfolio intelligence servicer routing mismatch');
+            assert(intelligence.body?.intelligence?.reconciliation?.principal?.status === 'unavailable', 'advisor portfolio intelligence must not invent missing aggregate reconciliation');
+            const betaIntelligence = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/intelligence`, {}, beta);
+            assert(betaIntelligence.response.status === 404 && betaIntelligence.body?.error === 'Client not found or not accessible.', 'cross-advisor portfolio intelligence must fail generically');
+
             const comparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparison`, {}, alpha);
             assert(comparison.response.status === 200 && comparison.body?.ok === true, 'advisor comparison endpoint failed');
             assert(comparison.body?.comparison?.schema === 'student-loan-idr-advisor-comparison-v1', 'advisor comparison schema mismatch');
@@ -568,6 +581,8 @@ jobs:
             assert(uiHtml.includes('id="advisor-client-bar"'), 'saved advisor-client workflow bar missing');
             assert(uiHtml.includes('id="advisor-save-progress"'), 'saved advisor-client progress control missing');
             assert(uiHtml.includes('id="advisor-regenerate-document"'), 'advisor document-regeneration control missing');
+            assert(uiHtml.includes('id="advisor-view-intelligence"'), 'advisor portfolio-intelligence control missing');
+            assert(uiHtml.includes('id="advisor-intelligence-workspace"') && uiHtml.includes('FSA portfolio intelligence'), 'advisor portfolio-intelligence workspace missing');
             assert(uiHtml.includes('id="advisor-compare-plans"'), 'advisor repayment-comparison control missing');
             assert(uiHtml.includes('id="advisor-comparison-workspace"'), 'advisor comparison workspace missing');
             assert(uiHtml.includes('id="advisor-history-workspace"'), 'advisor retained-history workspace missing');
