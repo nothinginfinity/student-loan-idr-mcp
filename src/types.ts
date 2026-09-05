@@ -509,6 +509,8 @@ export interface AdvisorClientRecordV1 {
     region?: Region;
     familySize?: number;
     dependentsClaimedOnFederalTaxReturn?: number;
+    estimatedAboveTheLineAdjustments?: number;
+    adjustedGrossIncomeOverride?: number;
     taxFilingStatus?: TaxFilingStatus;
     newBorrowerOnOrAfterJuly1_2014?: boolean;
   };
