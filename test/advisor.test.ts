@@ -31,6 +31,7 @@ const BASE = "https://student-loan-idr-mcp.example";
 const migration = [
   readFileSync(new URL("../migrations/0001_v0_8_2_advisor_workspace.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../migrations/0002_v0_8_5_client_history.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../migrations/0003_v0_9_1_plan_selections.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../migrations/0004_v0_9_5_case_timeline.sql", import.meta.url), "utf8")
 ].join("\n");
 
