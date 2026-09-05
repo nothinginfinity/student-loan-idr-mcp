@@ -293,6 +293,54 @@ Acceptance evidence:
 8. Define authentication, advisor/client authorization, consent, retention, deletion/export, encryption, session security, access/audit history, and account recovery boundaries before treating the service as a system of record. A future team/organization model can extend this with roles and client assignment without weakening single-advisor isolation.
 9. Preserve the privacy-first direct borrower workflow as a separate no-account path where practical; V0.8 adds advisor-managed persistence rather than making an advisor account mandatory for every calculator user.
 
+## V0.9 — Professional advisor delivery + FSA intelligence — IN PROGRESS
+
+### V0.9.0 — Advisor StudentAid intake — COMPLETE
+
+- Advisor dashboard intake can create a borrower client directly from a StudentAid.gov **Download My Aid Data** file while keeping the raw file browser-local and persisting only normalized facts.
+- Duplicate/match review remains part of advisor intake so a real-file import does not casually create parallel records for the same borrower.
+
+### V0.9.1 — Chart-first borrower review, confirmation, booking, and supporting-document handoff — COMPLETE
+
+- Advisor-created borrower share links present the repayment comparison chart first, identify the unique lowest modeled monthly payment as FLRs, and show genuine ties as tied rather than assigning a false winner.
+- Borrower plan selection/confirmation uses a bounded 15-minute review/signing window; confirmed borrowers receive a bounded 36-hour booking window, Cal.com booking surface, and supporting-document download flow.
+- Advisor/borrower Resend notifications are part of the accepted V0.9.1 workflow. Confirmation is explicitly non-binding and does not represent enrollment or an official servicer decision.
+
+### V0.9.2 — StudentAid Parser V2: real-export structural parsing + compatibility diagnostics — IN PROGRESS
+
+Build the parser against the observed structure of real Federal Student Aid / NSLDS **My Aid Data** text exports used by professional advisors, not against a simplified synthetic ordering.
+
+1. Replace the current `Loan Type Code`-as-record-boundary assumption with deterministic tokenization and record assembly. Treat `Loan Award ID` as a strong loan anchor when present, support fields that precede the type code, and preserve conservative fallback boundaries for records where an award ID is absent.
+2. Maintain an explicit exact-label compatibility map for current and legacy field names. Initial real-export variants include `Loan Updated Date`, `Loan Delinquency Date`, `Loan Delinquency End Date`, `Additional Unsubsidized Loan Flag`, `Joint Consolidation Loan Indicator`, `Joint Consolidation Loan Separation Indicator`, `Loan Special Contact Reason`, and `Loan Special Contact`, while retaining accepted aliases such as `UpdtDt` and `DelinqDate`.
+3. Preserve repeating child structures per loan instead of flattening them away: status events, disbursements, and servicer/contact blocks. Never merge parallel loans into one fabricated loan record.
+4. Preserve source order but derive the newest status by date rather than array position. Compare any explicit current-status fields with the newest dated timeline entry and flag a mismatch instead of guessing which source is correct.
+5. Add parser diagnostics that expose recognized/unmapped **labels only**, mapping version, structural warnings, and validation issues without echoing unknown-field values or raw borrower identifiers.
+6. Keep raw award IDs out of retained advisor records. They may be used transiently to assemble records, but persisted normalized data retains only the existing masked row hint (or a future explicitly reviewed one-way fingerprint if needed for duplicate detection).
+7. Keep the privacy boundary unchanged: borrower/private and advisor/client imports parse the raw `.txt` locally in the browser; there is no raw-file upload endpoint and no raw FSA file retention in D1/history.
+8. Build deterministic sanitized regression fixtures that preserve the real FSA label/order/repetition grammar while replacing names, IDs, addresses, phones, emails, and other borrower PII.
+9. Acceptance must cover both actual browser-local parser copies plus the server/test parser so advisor intake, saved-client import, and borrower-private import cannot drift onto different grammars.
+
+V0.9.2 acceptance gates:
+
+- A sanitized real-layout fixture with `Loan Award ID` and other loan fields before `Loan Type Code` parses into the correct number of complete loan records.
+- Current and legacy label aliases map to the same normalized fields.
+- Repeated status/disbursement/contact rows remain attached to the correct loan.
+- Unknown labels fail visibly through diagnostics without retaining or logging their values.
+- Ambiguous consolidation / Parent PLUS history remains unresolved rather than guessed.
+- Strict TypeScript, the full deterministic regression suite, Wrangler dry-run, exact-SHA deployment, and production acceptance must pass before V0.9.2 is marked complete.
+
+### V0.9.3 — FSA Portfolio Intelligence for advisors — PLANNED
+
+Layer deterministic advisory intelligence on top of Parser V2's normalized structure; do not ask an LLM to perform the underlying math or chronology.
+
+1. Derive chronological status intervals from the parsed status timeline. Use the FSA **File Request Date** as the authoritative `as_of_date` when the newest state remains open so historical calculations are reproducible.
+2. Compute per-loan and portfolio-calendar forbearance history, including current forbearance start/duration and cumulative observed forbearance. Do not multiply one calendar interval merely because several loans were simultaneously in forbearance.
+3. Compute **reported scheduled plan payment** from active loans' `Loan Repayment Plan Scheduled Amount` values with explicit coverage counts. Missing scheduled amounts remain missing; they are never silently treated as `$0`. Current/permanent Standard schedule fields remain separate reference values.
+4. Normalize delinquency periods, repayment-plan state, IDR anniversary/next-payment dates, capitalization/current-interest facts, plan distribution, and servicer routing. Prefer a `Most Relevant: Yes` current ED servicer/lender contact while preserving all per-loan contacts.
+5. Reconcile sums of parsed individual balances against FSA portfolio aggregate fields where those aggregates are present, producing explicit pass/warning diagnostics rather than overwriting either source.
+6. Add an advisor-facing portfolio intelligence panel showing useful operational facts, data quality/coverage, and per-loan drilldown without exposing one client's details in another client's dashboard.
+7. Keep policy interpretation separate from borrower PII. A later RAG/LLM explanation layer may explain normalized/derived facts using reviewed federal policy sources, but deterministic parsing, dates, balances, payment sums, and interval math remain code-owned.
+
 ## Deferred economic layer — x402 + signup-minted token
 
 x402 is intentionally **not** the next implementation slice. Future paid agent-to-agent access is gated on a separate accepted design for an account-linked crypto asset that is minted/allocated through the advisor/account signup flow.
