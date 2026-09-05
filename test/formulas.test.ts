@@ -512,6 +512,9 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(html, /2026-09-05-v2/);
   assert.match(html, /awardFirstLayout/);
   assert.match(html, /Loan Delinquency End Date/);
+  assert.match(html, /Parser diagnostics/);
+  assert.match(html, /Unmapped FSA labels/);
+  assert.match(html, /Imported from StudentAid · Delinquency/);
   assert.match(html, /raw file is never uploaded/i);
   assert.match(html, /no six-person cap/i);
   assert.match(html, /90 days/i);
