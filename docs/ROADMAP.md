@@ -359,6 +359,57 @@ Acceptance evidence:
 - The advisor UI now exposes a deterministic FSA portfolio intelligence panel with portfolio metrics, reconciliation/coverage warnings, servicer routing, repayment-plan state, and per-loan drilldown. The panel states that no LLM is used for chronology or balance math.
 - Parser mapping remains `2026-09-05-v2`; Parser V2's existing sanitized regressions continue to cover repeated status/delinquency/contact structures, scheduled-plan-payment labels, current-status disagreements, and value-free compatibility diagnostics underneath the new intelligence layer.
 
+### V0.9.4 — Advisor Intake → Client Case File — NEXT / PLANNED
+
+Turn the successful FSA import into a professional case-creation workflow rather than leaving the advisor at an intake form.
+
+1. After browser-local StudentAid parsing and duplicate/match review, create the normalized borrower client and immediately open that client's case workspace. The advisor should not have to manually recreate contact/loan facts already established by the FSA file.
+2. Add a case-summary header that prioritizes professional decision facts: borrower identity/contact, preferred servicer, total outstanding principal/interest, active-loan count, current repayment-plan state, reported scheduled payment coverage, current forbearance/delinquency flags, IDR anniversary/next-payment dates, and missing facts needed for deterministic comparison.
+3. Move parser compatibility diagnostics behind a collapsed **Advanced / parser diagnostics** surface. Unmapped label names remain available for debugging/compatibility work, but they must not dominate the advisor's normal client workflow and unknown values remain unretained.
+4. Expand Parser V2 mapping by professional usefulness rather than raw label count. Prioritize enrollment/school/program facts, aggregate borrowing totals, award-year facts, repayment-plan fields, status history, interest/capitalization facts, servicer routing, and other fields that materially affect case understanding or eligibility review.
+5. Define a versioned **client case-context contract** that exposes normalized facts, provenance, as-of dates, coverage/warning states, deterministic intelligence, and missing-information flags for downstream advisor UI and later chat retrieval. It must never include raw StudentAid text, FSA credentials, SSNs, or raw award identifiers.
+6. Preserve exact-owner authorization, browser-local raw-file handling, borrower/private non-persistence, and deterministic calculator/intelligence authority.
+
+Acceptance should prove a real-size FSA file can go from local parse → duplicate review → client creation → immediate case workspace with the normalized portfolio, professional summary, provenance, and no raw-file retention.
+
+### V0.9.5 — Automatic Calculation History + Client Timeline — PLANNED
+
+Make the client record behave like an actual professional case file instead of requiring the advisor to remember which useful events should be retained.
+
+1. In authenticated advisor case mode, automatically create a bounded case-timeline event when the advisor runs a repayment calculation, repayment/forgiveness comparison, generates/retains a supporting document, records borrower plan confirmation, or completes another material workflow action.
+2. Calculation/comparison timeline entries should retain the exact deterministic basis needed for reproducibility, policy snapshot, engine version, timestamp, and a compact human-readable summary. Raw StudentAid downloads and raw evidence files remain excluded.
+3. Preserve historical immutability: rerunning a calculation creates a new event/result rather than rewriting the historical one. Advisors may rename, star, annotate, export, or delete case-history items under the existing owner-scoped controls.
+4. Make the case timeline easy to scan: e.g. `Sep 5 · IBR/RAP comparison · income $42,000 · family size 3 · policy snapshot 2026-08-27`, while keeping full sensitive basis/results behind the client workspace rather than in minimized dashboard cards.
+5. Borrower/private mode remains non-persistent unless the user explicitly enters an advisor-owned shared workflow.
+
+### V0.9.6 — Advisor Action Dashboard / Next-Best-Action Workflow — PLANNED
+
+Turn the advisor dashboard into an operational work queue across clients.
+
+1. Derive deterministic client states such as **Needs income**, **Needs family size**, **Needs evidence**, **Document ready**, **Application ready**, **Borrower review pending**, **Plan selected**, **Booking pending**, **IDR anniversary approaching**, **In forbearance**, **Delinquency attention**, and **Completed / archived** from saved case state and dates.
+2. Show the advisor who needs attention and why, with owner-scoped minimized summaries only. Do not aggregate private loan/income/contact details across clients beyond what is required to manage workflow.
+3. Generate next-best-action suggestions from explicit state-machine rules and due dates first. An LLM may later explain or phrase those actions, but it must not invent case status or silently mutate client data.
+4. Connect dashboard actions directly to the client case, calculation workflow, document workflow, borrower review/share flow, and booking flow.
+
+### V0.9.7 — Structured Retrieval + Policy RAG + Chat-Native Consultation — PLANNED
+
+Make advisor and borrower consultation substantially chat-native while preserving deterministic authority and privacy.
+
+The screenshot's central design principle is accepted: **pre-parse and structure the FSA data before the LLM sees it, then retrieve only the facts and policy evidence needed for the current question.** The implementation should use the existing Parser V2/client intelligence architecture rather than adding a second regex/Python parser or asking an LLM to interpret the raw `My Aid Data` file.
+
+1. **Structured client retrieval, not vector search over borrower PII.** Build an owner-scoped retrieval layer over the versioned client case-context contract, normalized per-loan portfolio, FSA intelligence, case timeline, saved calculations, documents, and workflow state. A chat turn should request the smallest relevant structured fact set by client ID and intent.
+2. **Versioned FSA data dictionary.** Maintain a reviewed machine-readable dictionary of exact FSA labels/aliases, normalized target fields, meaning/category, parser mapping version, retention policy, and whether each field may influence deterministic logic. This captures the screenshot's metadata-dictionary concept without treating a prompt or vector embedding as parser authority.
+3. **Source-backed loan/plan rule registry.** Maintain reviewed, policy-snapshot-versioned rule cards for loan families and repayment-plan transitions (for example Direct loans, Parent PLUS, FFEL/Perkins, consolidation history, IBR/ICR/RAP, and legacy SAVE/REPAYE state). Rules that affect eligibility/calculation remain deterministic code-owned; the RAG layer may explain them with citations but cannot override them.
+4. **Reviewed policy retrieval corpus.** Index only reviewed official federal policy material and internally accepted policy notes/snapshots for explanatory retrieval. Each chunk must carry source URL/document identity, effective date/range, policy snapshot, section/page or stable locator, and content hash. Prefer hybrid exact-keyword + semantic retrieval so exact program names/FSA labels do not depend on embedding similarity alone.
+5. **No raw FSA embeddings.** Raw StudentAid downloads stay browser-local and are never placed into a vector database, prompt-history store, or cross-client retrieval corpus. Normalized client facts stay in owner-scoped structured storage; policy material belongs in the shared retrieval corpus.
+6. **Evidence assembler.** Before an LLM answers, assemble a bounded evidence packet containing: relevant structured client facts with provenance/as-of date, deterministic calculation/intelligence outputs, missing/ambiguous facts, and retrieved policy passages with citations. Monetary values, dates, chronology, eligibility state, and repayment projections come from deterministic functions, not model arithmetic.
+7. **Chat-native advisor workspace.** Let an advisor ask questions such as: `What are the most important facts in this client's FSA history?`, `What is still missing before I can compare plans?`, `Why is IBR showing the lowest modeled payment?`, `What does this Parent PLUS history change?`, or `What should I ask the borrower next?` Answers must identify fact provenance and policy citations and offer explicit actions rather than silently editing the case.
+8. **Chat-native borrower experience.** Reuse the same evidence architecture with a narrower borrower-safe context. The borrower can ask about their modeled options, missing application facts, supporting documents, plan differences, and next steps without exposing advisor-only notes, other clients, or unsupported internal policy conclusions.
+9. **Mutation boundary.** Chat may propose field updates, document generation, calculation runs, plan selections, or workflow actions, but saved client mutations require an explicit user/advisor action and continue through the existing validated deterministic APIs.
+10. **Retrieval quality and safety acceptance.** Build regression question sets covering exact FSA labels, Parent PLUS/consolidation edge cases, FFEL/Perkins distinctions, legacy/transitioning repayment-plan terminology, missing facts, stale policy snapshots, and cross-client isolation. Acceptance must prove cited answers are grounded in supplied evidence, old policy cannot silently outrank the current accepted snapshot, and no borrower PII leaks into shared retrieval infrastructure.
+
+Architecture boundary: **structured retrieval owns client facts; deterministic code owns parsing/math/chronology/eligibility; RAG owns policy/evidence lookup; the LLM owns conversational synthesis only.** This is the intended foundation for an advisor/borrower experience where most consultation can happen naturally in chat without sacrificing inspectability or correctness.
+
 ## Deferred economic layer — x402 + signup-minted token
 
 x402 is intentionally **not** the next implementation slice. Future paid agent-to-agent access is gated on a separate accepted design for an account-linked crypto asset that is minted/allocated through the advisor/account signup flow.
