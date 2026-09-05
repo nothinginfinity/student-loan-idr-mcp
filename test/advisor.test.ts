@@ -30,7 +30,8 @@ class SqliteD1 implements D1DatabaseBinding {
 const BASE = "https://student-loan-idr-mcp.example";
 const migration = [
   readFileSync(new URL("../migrations/0001_v0_8_2_advisor_workspace.sql", import.meta.url), "utf8"),
-  readFileSync(new URL("../migrations/0002_v0_8_5_client_history.sql", import.meta.url), "utf8")
+  readFileSync(new URL("../migrations/0002_v0_8_5_client_history.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../migrations/0004_v0_9_5_case_timeline.sql", import.meta.url), "utf8")
 ].join("\n");
 
 function cookieHeader(response: Response): string {
@@ -130,7 +131,8 @@ test("V0.8.2 advisor sessions and D1 client CRUD are exact-owner scoped", async 
   const exported = await advisorFetch(`/api/advisor/clients/${clientId}/export`, alpha, env);
   const exportBody = await exported.json();
   assert.equal(exported.status, 200);
-  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v2");
+  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v3");
+  assert.deepEqual(exportBody.timelineEvents, []);
   assert.deepEqual(exportBody.retainedArtifacts, []);
   assert.deepEqual(exportBody.calculationSnapshots, []);
   assert.equal(exportBody.client.notes, "Advisor-only workflow note");
@@ -518,24 +520,26 @@ test("V0.8.5 explicitly retains owner-scoped document and calculation history wi
   assert.equal(changed.status, 200);
   const rerun = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/rerun`, alpha, env, { method:"POST", body:"{}" });
   const rerunBody = await rerun.json();
-  assert.equal(rerun.status, 200);
+  assert.equal(rerun.status, 201);
   assert.equal(rerunBody.rerun.basis, "retained_snapshot_basis");
+  assert.notEqual(rerunBody.rerun.snapshotId, snapshotId, "rerun must create a new immutable snapshot");
   assert.equal(rerunBody.rerun.result.projections.find((p:any)=>p.plan==="RAP").currentMonthlyPayment, retainedRapPayment, "rerun must use retained basis rather than the later client update");
 
   const snapshots = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots`, alpha, env);
   const snapshotsBody = await snapshots.json();
-  assert.equal(snapshotsBody.snapshots.length, 2);
+  assert.equal(snapshotsBody.snapshots.length, 3);
   assert.deepEqual(Object.keys(snapshotsBody.snapshots[0]).sort(), ["createdAt","engineVersion","name","policySnapshot","snapshotId","snapshotKind"].sort());
   assert.doesNotMatch(JSON.stringify(snapshotsBody), /90000|25000/);
   assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}`, beta, env)).status, 404);
 
   const exported = await advisorFetch(`/api/advisor/clients/${clientId}/export`, alpha, env);
   const exportBody = await exported.json();
-  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v2");
+  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v3");
   assert.equal(exportBody.caseContext.schema, "student-loan-idr-client-case-context-v1");
   assert.equal(exportBody.caseContext.schemaVersion, 1);
+  assert.equal(exportBody.timelineEvents.length, 5);
   assert.equal(exportBody.retainedArtifacts.length, 1);
-  assert.equal(exportBody.calculationSnapshots.length, 2);
+  assert.equal(exportBody.calculationSnapshots.length, 3);
 
   assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/artifacts/${artifactId}`, alpha, env, { method:"DELETE", body:"{}" })).status, 200);
   assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}`, alpha, env, { method:"DELETE", body:"{}" })).status, 200);
@@ -550,6 +554,128 @@ test("V0.8.5 explicitly retains owner-scoped document and calculation history wi
   const auditRows = d1.database.prepare("SELECT action,metadata_json FROM advisor_audit_events WHERE advisor_id=?").all(alpha.advisor.advisorId) as Array<{action:string;metadata_json:string}>;
   for (const action of ["client.artifact.retain","client.artifact.regenerate","client.artifact.delete","client.snapshot.retain","client.snapshot.rerun","client.snapshot.delete"]) assert.ok(auditRows.some(row=>row.action===action), action);
   assert.ok(auditRows.every(row=>row.metadata_json==="{}"));
+});
+
+test("V0.9.5 automatically records owner-scoped material case events with immutable reproducible basis", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  d1.database.exec("PRAGMA foreign_keys = ON");
+  const env = { ADVISOR_DB: d1 };
+  const alpha = await register(env, "timeline-alpha@example.test", "Timeline Alpha");
+  const beta = await register(env, "timeline-beta@example.test", "Timeline Beta");
+
+  const health = await worker.fetch(new Request(`${BASE}/health`), env);
+  const healthBody = await health.json();
+  assert.equal(healthBody.advisor_workspace.client_timeline_v1, true);
+  assert.equal(healthBody.advisor_workspace.automatic_case_history, true);
+
+  const ui = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
+  const html = await ui.text();
+  assert.match(html, /Client timeline & retained history/);
+  assert.match(html, /id="advisor-timeline-history"/);
+  assert.match(html, /Rename \/ annotate/);
+  assert.match(html, /added to the client timeline/);
+  assert.match(html, /\/calculations/);
+  assert.match(html, /\/comparisons/);
+  assert.match(html, /\/documents\/generate/);
+  assert.doesNotMatch(html, /localStorage|sessionStorage/);
+
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({
+    displayName:"Timeline Borrower",
+    confirmedFacts:{ income:[{cadence:"annual",amount:42000}], region:"contiguous_us", familySize:3, dependentsClaimedOnFederalTaxReturn:1, estimatedAboveTheLineAdjustments:1200, adjustedGrossIncomeOverride:40500, taxFilingStatus:"single", newBorrowerOnOrAfterJuly1_2014:true },
+    normalizedLoanPortfolio:{ repaymentLoans:[{principal:30000,annualInterestRatePercent:6.5}], eligibilityLoans:[{loanType:"direct_unsubsidized",disbursementPeriod:"before_2026_07_01"}] },
+    consideredPlans:["RAP","IBR"]
+  }) });
+  const created = await create.json();
+  assert.equal(create.status, 201);
+  const clientId = created.client.clientId as string;
+
+  const automaticCalculation = await advisorFetch(`/api/advisor/clients/${clientId}/calculations`, alpha, env, { method:"POST", body:JSON.stringify({ plans:["RAP","IBR"] }) });
+  const calculationBody = await automaticCalculation.json();
+  assert.equal(automaticCalculation.status, 201);
+  assert.equal(calculationBody.event.schema, "student-loan-idr-client-timeline-event-v1");
+  assert.equal(calculationBody.event.eventKind, "calculation");
+  assert.deepEqual(calculationBody.result.planEstimates.map((plan:any)=>plan.plan), ["RAP","IBR"]);
+  assert.equal(calculationBody.snapshot.basis.confirmedFacts.estimatedAboveTheLineAdjustments, 1200);
+  assert.equal(calculationBody.snapshot.basis.confirmedFacts.adjustedGrossIncomeOverride, 40500);
+  const calculationEventId = calculationBody.event.eventId as string;
+  const calculationSnapshotId = calculationBody.snapshot.snapshotId as string;
+
+  const automaticComparison = await advisorFetch(`/api/advisor/clients/${clientId}/comparisons`, alpha, env, { method:"POST", body:"{}" });
+  const comparisonBody = await automaticComparison.json();
+  assert.equal(automaticComparison.status, 201);
+  assert.equal(comparisonBody.event.eventKind, "comparison");
+  assert.equal(comparisonBody.comparison.schema, "student-loan-idr-advisor-comparison-v1");
+
+  const generatedDocument = await advisorFetch(`/api/advisor/clients/${clientId}/documents/generate`, alpha, env, { method:"POST", body:JSON.stringify({ templateRequest:{ templateType:"current_income_statement", outputFormat:"text", borrowerName:"Timeline Borrower", incomeSources:[{sourceType:"employment",name:"Timeline Employer",grossAmount:1600,paymentFrequency:"biweekly"}] } }) });
+  const documentBody = await generatedDocument.json();
+  assert.equal(generatedDocument.status, 200);
+  assert.equal(documentBody.event.eventKind, "document_generated");
+  assert.equal(documentBody.event.basis.templateType, "current_income_statement");
+  assert.match(documentBody.document.documentText, /Timeline Employer/);
+
+  const issued = await advisorFetch(`/api/advisor/clients/${clientId}/plan-selections`, alpha, env, { method:"POST", body:"{}" });
+  const issuedBody = await issued.json();
+  assert.equal(issued.status, 201);
+  const shareToken = issuedBody.selection.shareToken as string;
+  const opened = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}`), env);
+  assert.equal(opened.status, 200);
+  const selected = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}/select`, { method:"POST", headers:{"content-type":"application/json",origin:BASE}, body:JSON.stringify({plan:"IBR"}) }), env);
+  assert.equal(selected.status, 200);
+  const signed = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}/sign`, { method:"POST", headers:{"content-type":"application/json",origin:BASE}, body:JSON.stringify({initials:"TB"}) }), env);
+  assert.equal(signed.status, 200);
+
+  const timeline = await advisorFetch(`/api/advisor/clients/${clientId}/timeline`, alpha, env);
+  const timelineBody = await timeline.json();
+  assert.equal(timeline.status, 200);
+  assert.equal(timelineBody.schema, "student-loan-idr-client-timeline-v1");
+  assert.equal(timelineBody.events.length, 6);
+  assert.ok(timelineBody.events.some((event:any)=>event.eventKind==="calculation"));
+  assert.ok(timelineBody.events.some((event:any)=>event.eventKind==="comparison"));
+  assert.ok(timelineBody.events.some((event:any)=>event.eventKind==="document_generated"));
+  assert.ok(timelineBody.events.some((event:any)=>event.eventKind==="plan_selected"));
+  assert.ok(timelineBody.events.some((event:any)=>event.eventKind==="plan_confirmed"));
+  assert.ok(timelineBody.events.every((event:any)=>event.basis===undefined && event.result===undefined), "timeline list must remain compact");
+  assert.match(timelineBody.events.find((event:any)=>event.eventKind==="calculation").summary, /income \$42,000 · family size 3 · policy snapshot 2026-08-27/);
+
+  const detailed = await advisorFetch(`/api/advisor/clients/${clientId}/timeline/${calculationEventId}`, alpha, env);
+  const detailedBody = await detailed.json();
+  assert.equal(detailed.status, 200);
+  assert.equal(detailedBody.event.basis.confirmedFacts.income[0].amount, 42000);
+  assert.equal(detailedBody.event.basis.confirmedFacts.adjustedGrossIncomeOverride, 40500);
+  assert.equal(detailedBody.event.result.policySnapshot, "2026-08-27");
+  assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/timeline/${calculationEventId}`, beta, env)).status, 404);
+
+  const renamed = await advisorFetch(`/api/advisor/clients/${clientId}/timeline/${calculationEventId}`, alpha, env, { method:"PATCH", body:JSON.stringify({ name:"September IBR/RAP consult", starred:true, annotation:"Borrower wants the lowest sustainable payment before enrollment." }) });
+  const renamedBody = await renamed.json();
+  assert.equal(renamed.status, 200);
+  assert.equal(renamedBody.event.name, "September IBR/RAP consult");
+  assert.equal(renamedBody.event.starred, true);
+  assert.match(renamedBody.event.annotation, /lowest sustainable payment/);
+
+  const publicCalculation = await worker.fetch(new Request(`${BASE}/api/calculate`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({income:[{cadence:"annual",amount:50000}],region:"contiguous_us",familySize:2,plans:["RAP"]}) }), env);
+  assert.equal(publicCalculation.status, 200);
+  const timelineAfterPrivate = await advisorFetch(`/api/advisor/clients/${clientId}/timeline`, alpha, env).then((response)=>response.json());
+  assert.equal(timelineAfterPrivate.events.length, 6, "private borrower calculation must remain non-persistent");
+
+  const changed = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:created.client.updatedAt, confirmedFacts:{ ...created.client.confirmedFacts, income:[{cadence:"annual",amount:90000}], adjustedGrossIncomeOverride:90000 } }) });
+  assert.equal(changed.status, 200);
+  const immutableDetailed = await advisorFetch(`/api/advisor/clients/${clientId}/timeline/${calculationEventId}`, alpha, env).then((response)=>response.json());
+  assert.equal(immutableDetailed.event.basis.confirmedFacts.income[0].amount, 42000, "historical event basis must remain immutable after client facts change");
+
+  const snapshotsBeforeTimelineDelete = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots`, alpha, env).then((response)=>response.json());
+  assert.ok(snapshotsBeforeTimelineDelete.snapshots.some((snapshot:any)=>snapshot.snapshotId===calculationSnapshotId));
+  const deletedTimeline = await advisorFetch(`/api/advisor/clients/${clientId}/timeline/${calculationEventId}`, alpha, env, { method:"DELETE", body:"{}" });
+  assert.equal(deletedTimeline.status, 200);
+  const snapshotsAfterTimelineDelete = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots`, alpha, env).then((response)=>response.json());
+  assert.ok(snapshotsAfterTimelineDelete.snapshots.some((snapshot:any)=>snapshot.snapshotId===calculationSnapshotId), "deleting timeline metadata must not delete its immutable calculation snapshot");
+
+  const exported = await advisorFetch(`/api/advisor/clients/${clientId}/export`, alpha, env);
+  const exportBody = await exported.json();
+  assert.equal(exportBody.schema, "student-loan-idr-advisor-client-export-v3");
+  assert.ok(exportBody.timelineEvents.length >= 5);
+  assert.ok(exportBody.calculationSnapshots.length >= 2);
+  assert.doesNotMatch(JSON.stringify(exportBody), /RAW-STUDENTAID|socialsecuritynumber|sessiontoken/i);
 });
 
 test("V0.9.3 derives owner-scoped FSA portfolio intelligence without double-counting overlapping forbearance", async () => {
