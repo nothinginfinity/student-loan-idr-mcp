@@ -696,7 +696,7 @@ test("borrower calculator API is same-origin and keeps the 64 KiB body ceiling",
   assert.equal(oversized.status, 413);
 });
 
-test("V0.8.6 StudentAid parser preserves borrower facts, mixed per-loan facts, derived cutoffs, and provenance", () => {
+test("V0.9.2 StudentAid parser preserves borrower facts, mixed per-loan facts, derived cutoffs, and provenance", () => {
   const sample = `File Request Date:08/28/2026
 Student First Name:Avery
 Student Middle Initial:Q
@@ -739,7 +739,7 @@ Loan Status:RP
 Loan Status Description:IN REPAYMENT
 `;
   const parsed = parseStudentAidDataText(sample);
-  assert.equal(STUDENTAID_MAPPING_VERSION, "2026-08-28-v1");
+  assert.equal(STUDENTAID_MAPPING_VERSION, "2026-09-05-v2");
   assert.equal(parsed.fileRequestDate, "08/28/2026");
   assert.equal(parsed.borrower.displayName, "Avery Q Example");
   assert.equal(parsed.borrower.email, "avery@example.test");
@@ -762,7 +762,140 @@ Loan Status Description:IN REPAYMENT
   assert.equal(parsed.ambiguousCount, 0);
 });
 
-test("V0.8.6 StudentAid parser refuses to guess consolidation Parent PLUS history", () => {
+test("V0.9.2 StudentAid Parser V2 assembles real-layout award records, maps current labels, and keeps diagnostics value-free", () => {
+  const parsed = parseStudentAidDataText(`File Request Date:09/04/2026
+Student First Name:Alex
+Student Last Name:Example
+Loan Award ID:SANITIZED-LOAN-0001
+Loan Attending School Name:Example Technical College
+Loan Date:11/12/2018
+Loan Repayment Begin Date:06/04/2019
+Loan Amount:$2,250.00
+Loan Disbursed Amount:$2,250.00
+Loan Outstanding Principal Balance:$2,241.88
+Loan Outstanding Principal Balance as of Date:08/03/2026
+Loan Outstanding Interest Balance:$11.25
+Loan Outstanding Interest Balance as of Date:08/03/2026
+Loan Interest Rate Type Code:F
+Loan Interest Rate Type Description:FIXED
+Loan Interest Rate:5.05%
+Loan Repayment Plan Type Code:SF
+Loan Repayment Plan Type Code Description:STANDARD REPAYMENT
+Loan Repayment Plan Begin Date:04/15/2026
+Loan Repayment Plan Scheduled Amount:$30.00
+Loan Updated Date:08/04/2026
+Loan Delinquency Date:06/25/2026
+Loan Delinquency End Date:07/25/2026
+Current Loan Status:RP
+Current Loan Status Description:IN REPAYMENT
+Loan Status:RP
+Loan Status Description:IN REPAYMENT
+Loan Status Effective Date:04/15/2026
+Loan Status:FB
+Loan Status Description:FORBEARANCE
+Loan Status Effective Date:01/24/2026
+Loan Disbursement Date:11/12/2018
+Loan Disbursement Amount:$2,250.00
+Loan Contact Type:Current ED Servicer
+Loan Contact Code:513
+Loan Contact Name:Example Servicer
+Loan Contact Phone Number:8005550101
+Most Relevant:Yes
+Additional Unsubsidized Loan Flag:No Denial
+Joint Consolidation Loan Indicator:N
+Joint Consolidation Loan Separation Indicator:N
+Loan Special Contact Reason:REVIEW
+Loan Special Contact:N
+Loan Type Code:D2
+Loan Type Description:DIRECT STAFFORD UNSUBSIDIZED
+Unexpected New FSA Label:SENSITIVE-VALUE-MUST-NOT-APPEAR
+Loan Award ID:SANITIZED-LOAN-0002
+Loan Outstanding Principal Balance:$2,114.38
+Loan Outstanding Interest Balance:$359.53
+Loan Interest Rate:5.05%
+Loan Disbursement Date:11/12/2018
+Loan Disbursement Amount:$2,147.00
+Loan Status:RP
+Loan Status Description:IN REPAYMENT
+Loan Status Effective Date:04/15/2026
+Loan Type Code:D2
+Loan Type Description:DIRECT STAFFORD UNSUBSIDIZED
+`);
+  assert.equal(parsed.loans.length, 2);
+  assert.equal(parsed.loans[0]?.maskedAwardId, "••••0001");
+  assert.equal(parsed.loans[0]?.loanTypeCode, "D2");
+  assert.equal(parsed.loans[0]?.mappedLoanType, "direct_unsubsidized");
+  assert.equal(parsed.loans[0]?.updateDate, "08/04/2026");
+  assert.equal(parsed.loans[0]?.delinquencyDate, "06/25/2026");
+  assert.equal(parsed.loans[0]?.delinquencyEndDate, "07/25/2026");
+  assert.deepEqual(parsed.loans[0]?.delinquencies, [{ date: "06/25/2026", endDate: "07/25/2026" }]);
+  assert.equal(parsed.loans[0]?.additionalUnsubsidizedLoanFlag, "No Denial");
+  assert.equal(parsed.loans[0]?.jointConsolidationLoanIndicator, "N");
+  assert.equal(parsed.loans[0]?.jointConsolidationLoanSeparationIndicator, "N");
+  assert.equal(parsed.loans[0]?.loanSpecialContactReason, "REVIEW");
+  assert.equal(parsed.loans[0]?.loanSpecialContact, "N");
+  assert.deepEqual(parsed.loans[0]?.statuses?.map((status) => status.code), ["RP", "FB"]);
+  assert.equal(parsed.loans[0]?.contacts?.[0]?.name, "Example Servicer");
+  assert.equal(parsed.loans[1]?.maskedAwardId, "••••0002");
+  assert.equal(parsed.summary.activeLoanCount, 2);
+  assert.equal(parsed.diagnostics.mappingVersion, "2026-09-05-v2");
+  assert.ok(parsed.diagnostics.recognizedLabelCount > 20);
+  assert.deepEqual(parsed.diagnostics.unmappedLabels, ["Unexpected New FSA Label"]);
+  assert.doesNotMatch(JSON.stringify(parsed.diagnostics), /SENSITIVE-VALUE-MUST-NOT-APPEAR/);
+  assert.doesNotMatch(JSON.stringify(parsed.loans), /SANITIZED-LOAN-0001/);
+});
+
+test("V0.9.2 StudentAid Parser V2 chooses newest dated status and flags explicit-current disagreement", () => {
+  const derived = parseStudentAidDataText(`Loan Award ID:SANITIZED-STATUS-0001
+Loan Outstanding Principal Balance:$10,000
+Loan Interest Rate:6.00%
+Loan Disbursement Date:01/15/2020
+Loan Status:DF
+Loan Status Description:DEFAULT
+Loan Status Effective Date:08/01/2026
+Loan Status:RP
+Loan Status Description:IN REPAYMENT
+Loan Status Effective Date:05/01/2026
+Loan Type Code:D2
+Loan Type Description:DIRECT UNSUBSIDIZED LOAN
+`);
+  assert.equal(derived.loans[0]?.inDefault, true);
+
+  const mismatch = parseStudentAidDataText(`Loan Award ID:SANITIZED-STATUS-0002
+Loan Outstanding Principal Balance:$10,000
+Loan Interest Rate:6.00%
+Loan Disbursement Date:01/15/2020
+Current Loan Status:RP
+Current Loan Status Description:IN REPAYMENT
+Loan Status:DF
+Loan Status Description:DEFAULT
+Loan Status Effective Date:08/01/2026
+Loan Status:RP
+Loan Status Description:IN REPAYMENT
+Loan Status Effective Date:05/01/2026
+Loan Type Code:D2
+Loan Type Description:DIRECT UNSUBSIDIZED LOAN
+`);
+  assert.notEqual(mismatch.loans[0]?.inDefault, true);
+  assert.ok(mismatch.diagnostics.structuralWarnings.some((warning) => warning.includes("explicit current status differs")));
+});
+
+test("V0.9.2 StudentAid Parser V2 keeps legacy update/delinquency aliases and no-award fallback", () => {
+  const parsed = parseStudentAidDataText(`Loan Type Code:D2
+Loan Type Description:DIRECT UNSUBSIDIZED LOAN
+Loan Outstanding Principal Balance:$5,000
+Loan Interest Rate:5.50%
+Loan Disbursement Date:01/15/2025
+UpdtDt:08/04/2026
+DelinqDate:07/01/2026
+Loan Delinquency End Date:07/20/2026
+`);
+  assert.equal(parsed.loans[0]?.updateDate, "08/04/2026");
+  assert.deepEqual(parsed.loans[0]?.delinquencies, [{ date: "07/01/2026", endDate: "07/20/2026" }]);
+  assert.ok(parsed.diagnostics.structuralWarnings.some((warning) => warning.includes("legacy loan-boundary fallback")));
+});
+
+test("V0.9.2 StudentAid parser refuses to guess consolidation Parent PLUS history", () => {
   const parsed = parseStudentAidDataText(`Loan Type Code:D5
 Loan Type Description:DIRECT CONSOLIDATION LOAN
 Loan Outstanding Principal Balance:$20,000
