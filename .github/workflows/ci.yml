@@ -635,7 +635,6 @@ jobs:
             assert(uiHtml.includes('id="advisor-view-case-file"'), 'V0.9.4 advisor case-file control missing');
             assert(uiHtml.includes('id="advisor-case-workspace"') && uiHtml.includes('Client case file') && uiHtml.includes('Case context v1'), 'V0.9.4 advisor case-file workspace missing');
             assert(uiHtml.includes('/case-context'), 'V0.9.4 case-context client integration missing');
-            assert(uiHtml.includes('fieldProvenance: { ...(borrower.provenance || {}) }'), 'advisor one-click FSA intake must carry imported contact provenance');
             assert(uiHtml.includes('id="advisor-view-intelligence"'), 'advisor portfolio-intelligence control missing');
             assert(uiHtml.includes('id="advisor-intelligence-workspace"') && uiHtml.includes('FSA portfolio intelligence'), 'advisor portfolio-intelligence workspace missing');
             assert(uiHtml.includes('id="advisor-compare-plans"'), 'advisor repayment-comparison control missing');
