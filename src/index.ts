@@ -605,7 +605,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .readiness-card ul { margin-bottom: 0; }
     .readiness-actions { margin-top: 12px; }
     #portfolio-summary { margin-top: 12px; }
-    .comparison-workspace[hidden] { display: none; }
+    .comparison-workspace[hidden], .intelligence-workspace[hidden] { display: none; }
     .comparison-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
     .comparison-card, .chart-panel { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 14px; padding: 14px; }
     .comparison-card h3, .chart-panel h3 { margin: 0 0 8px; }
@@ -668,6 +668,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       <div class="actions">
         <button type="button" id="advisor-save-progress">Save progress</button>
         <button type="button" id="advisor-regenerate-document">Regenerate document</button>
+        <button type="button" id="advisor-view-intelligence">Portfolio intelligence</button>
         <button type="button" id="advisor-compare-plans">Compare repayment paths</button>
         <button type="button" id="advisor-retain-calculation">Retain calculation</button>
         <button type="button" id="advisor-open-history">History</button>
@@ -675,6 +676,14 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       </div>
     </div>
     <p id="advisor-save-status" class="muted" role="status" aria-live="polite">Loading saved client facts…</p>
+  </section>
+
+  <section class="workspace intelligence-workspace" id="advisor-intelligence-workspace" hidden aria-labelledby="advisor-intelligence-title">
+    <h2 id="advisor-intelligence-title">FSA portfolio intelligence</h2>
+    <p><span class="basis">Deterministic derived facts</span>Status chronology, forbearance windows, reported payments, delinquency, repayment-plan state, interest, servicer routing, and reconciliation are computed from saved normalized StudentAid facts. No LLM is used for chronology or balance math.</p>
+    <p id="advisor-intelligence-status" class="muted" role="status" aria-live="polite">Save normalized per-loan StudentAid facts to derive portfolio intelligence.</p>
+    <div id="advisor-intelligence-summary" class="summary"></div>
+    <div id="advisor-intelligence-details" class="readiness-list"></div>
   </section>
 
   <section class="workspace comparison-workspace" id="advisor-comparison-workspace" hidden aria-labelledby="advisor-comparison-title">
@@ -949,6 +958,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorClientName = document.getElementById("advisor-client-name");
   const advisorSaveProgress = document.getElementById("advisor-save-progress");
   const advisorRegenerateDocument = document.getElementById("advisor-regenerate-document");
+  const advisorViewIntelligence = document.getElementById("advisor-view-intelligence");
   const advisorComparePlans = document.getElementById("advisor-compare-plans");
   const advisorRetainCalculation = document.getElementById("advisor-retain-calculation");
   const advisorOpenHistory = document.getElementById("advisor-open-history");
@@ -960,6 +970,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorSnapshotHistory = document.getElementById("advisor-snapshot-history");
   const advisorRefreshHistory = document.getElementById("advisor-refresh-history");
   const advisorSaveStatus = document.getElementById("advisor-save-status");
+  const advisorIntelligenceWorkspace = document.getElementById("advisor-intelligence-workspace");
+  const advisorIntelligenceStatus = document.getElementById("advisor-intelligence-status");
+  const advisorIntelligenceSummary = document.getElementById("advisor-intelligence-summary");
+  const advisorIntelligenceDetails = document.getElementById("advisor-intelligence-details");
   const advisorComparisonWorkspace = document.getElementById("advisor-comparison-workspace");
   const advisorComparisonStatus = document.getElementById("advisor-comparison-status");
   const advisorComparisonCards = document.getElementById("advisor-comparison-cards");
@@ -1518,6 +1532,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       };
       renderPortfolio(importedPortfolio);
       importStatus.textContent = "Saved normalized StudentAid facts loaded. The raw StudentAid.gov file was never stored on the server.";
+      void loadAdvisorIntelligence(false);
     }
 
     renderIncomeReadiness();
@@ -1625,6 +1640,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       const saved = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId), { method: "PUT", body: JSON.stringify(body) });
       advisorClient = saved.client;
       advisorSaveStatus.textContent = "Saved " + new Date(saved.client.updatedAt).toLocaleString() + ". Raw StudentAid data and evidence files were not retained.";
+      if (saved.client.normalizedLoanPortfolio?.loans?.length) void loadAdvisorIntelligence(false);
       return true;
     } catch (error) {
       advisorSaveStatus.textContent = error instanceof Error ? error.message : "Unable to save client progress.";
@@ -1806,6 +1822,88 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       advisorHistoryStatus.textContent = artifactBody.artifacts.length + " document draft(s) and " + snapshotBody.snapshots.length + " snapshot(s) retained.";
     } catch (error) { advisorHistoryStatus.textContent = error instanceof Error ? error.message : "Unable to load retained history."; }
   }
+  function renderAdvisorIntelligence(intelligence) {
+    advisorIntelligenceWorkspace.hidden = false;
+    advisorIntelligenceSummary.replaceChildren();
+    advisorIntelligenceDetails.replaceChildren();
+    const paymentValue = typeof intelligence.scheduledPayment.reportedAmountSum === "number"
+      ? money.format(intelligence.scheduledPayment.reportedAmountSum) + " · " + intelligence.scheduledPayment.coverage
+      : "Not reported";
+    [
+      ["Active loans", String(intelligence.activeLoanCount)],
+      ["Portfolio-calendar forbearance", String(intelligence.forbearance.boundedCalendarDays) + " days"],
+      ["Currently in forbearance", String(intelligence.forbearance.currentLoanCount) + " loan(s)"],
+      ["Reported scheduled payment", paymentValue]
+    ].forEach(([label, value]) => {
+      const metric = document.createElement("div");
+      metric.className = "metric";
+      metric.append(addText("span", label, "muted"), addText("strong", value));
+      advisorIntelligenceSummary.appendChild(metric);
+    });
+
+    const reconciliation = document.createElement("article");
+    reconciliation.className = "readiness-card";
+    reconciliation.append(addText("strong", "Balance reconciliation · " + intelligence.reconciliation.principal.status));
+    const reconciliationList = document.createElement("ul");
+    reconciliationList.appendChild(addText("li", "Parsed active-loan principal: " + money.format(intelligence.reconciliation.principal.parsedPrincipalSum)));
+    if (typeof intelligence.reconciliation.principal.aggregateContributionSum === "number") reconciliationList.appendChild(addText("li", "Calculated aggregate OPB contribution sum: " + money.format(intelligence.reconciliation.principal.aggregateContributionSum)));
+    if (typeof intelligence.reconciliation.principal.delta === "number") reconciliationList.appendChild(addText("li", "Difference: " + money.format(intelligence.reconciliation.principal.delta)));
+    reconciliationList.appendChild(addText("li", intelligence.reconciliation.principal.note));
+    reconciliation.appendChild(reconciliationList);
+    advisorIntelligenceDetails.appendChild(reconciliation);
+
+    const routing = document.createElement("article");
+    routing.className = "readiness-card";
+    routing.append(addText("strong", "Servicer routing"));
+    if (intelligence.servicerRouting.preferred) {
+      const contact = intelligence.servicerRouting.preferred.contact;
+      routing.appendChild(addText("p", [contact.name, contact.phoneNumber, contact.emailAddress, contact.websiteAddress].filter(Boolean).join(" · ") || "Most relevant contact found", "muted"));
+    } else routing.appendChild(addText("p", "No usable servicer/contact route was reported in the saved loan facts.", "muted"));
+    advisorIntelligenceDetails.appendChild(routing);
+
+    const plans = document.createElement("article");
+    plans.className = "readiness-card";
+    plans.append(addText("strong", "Reported repayment-plan state"));
+    const planList = document.createElement("ul");
+    intelligence.planDistribution.forEach((plan) => planList.appendChild(addText("li", (plan.description || plan.code || "Unreported plan") + " · " + plan.loanCount + " loan(s) · " + money.format(plan.outstandingPrincipal))));
+    if (!intelligence.planDistribution.length) planList.appendChild(addText("li", "No repayment-plan state was reported for active loans."));
+    plans.appendChild(planList);
+    advisorIntelligenceDetails.appendChild(plans);
+
+    intelligence.loans.forEach((loan) => {
+      const card = document.createElement("details");
+      card.className = "readiness-card";
+      const heading = document.createElement("summary");
+      heading.textContent = "Loan " + (loan.loanIndex + 1) + " · " + (loan.active ? "active" : "inactive") + " · " + loan.forbearance.boundedCalendarDays + " bounded forbearance day(s)";
+      card.appendChild(heading);
+      const list = document.createElement("ul");
+      loan.statusIntervals.forEach((interval) => list.appendChild(addText("li", "Status · " + interval.startDate + " → " + (interval.endDate || "open") + " · " + (interval.description || interval.code || interval.category) + (typeof interval.calendarDays === "number" ? " · " + interval.calendarDays + " day(s)" : ""))));
+      loan.delinquency.periods.forEach((period) => list.appendChild(addText("li", "Delinquency · " + period.startDate + " → " + (period.endDate || "open") + (typeof period.calendarDays === "number" ? " · " + period.calendarDays + " day(s)" : ""))));
+      if (loan.repaymentPlan) list.appendChild(addText("li", "Plan · " + (loan.repaymentPlan.description || loan.repaymentPlan.code || "reported") + (loan.repaymentPlan.beginDate ? " · began " + loan.repaymentPlan.beginDate : "") + (loan.repaymentPlan.idrAnniversaryDate ? " · IDR anniversary " + loan.repaymentPlan.idrAnniversaryDate : "") + (loan.repaymentPlan.nextPaymentDueDate ? " · next due " + loan.repaymentPlan.nextPaymentDueDate : "")));
+      if (typeof loan.interest.outstandingInterest === "number") list.appendChild(addText("li", "Outstanding interest · " + money.format(loan.interest.outstandingInterest)));
+      if (typeof loan.interest.capitalizedInterest === "number") list.appendChild(addText("li", "Capitalized interest reported · " + money.format(loan.interest.capitalizedInterest)));
+      card.appendChild(list);
+      advisorIntelligenceDetails.appendChild(card);
+    });
+    const warningText = (intelligence.warnings || []).length ? " · " + intelligence.warnings.join(" · ") : "";
+    advisorIntelligenceStatus.textContent = "Derived from saved normalized StudentAid facts" + (intelligence.asOfDate ? " as of " + intelligence.asOfDate : "") + ". Portfolio-calendar intervals union overlapping loans instead of double-counting them." + warningText;
+  }
+  async function loadAdvisorIntelligence(scroll = false) {
+    if (!advisorClient) return;
+    advisorIntelligenceWorkspace.hidden = false;
+    advisorIntelligenceStatus.textContent = "Deriving deterministic portfolio intelligence…";
+    try {
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/intelligence");
+      renderAdvisorIntelligence(body.intelligence);
+      if (scroll) advisorIntelligenceWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+      advisorIntelligenceSummary.replaceChildren();
+      advisorIntelligenceDetails.replaceChildren();
+      advisorIntelligenceStatus.textContent = error instanceof Error ? error.message : "Unable to derive portfolio intelligence.";
+      if (scroll) advisorIntelligenceWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
   async function runAdvisorComparison() {
     if (!advisorClient) return;
     advisorComparePlans.disabled = true;
@@ -2379,6 +2477,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     syncDocumentActions();
   });
   advisorSaveProgress.addEventListener("click", () => { void saveAdvisorClientProgress(); });
+  advisorViewIntelligence.addEventListener("click", async () => {
+    const saved = await saveAdvisorClientProgress();
+    if (saved) await loadAdvisorIntelligence(true);
+  });
   advisorRetainDocument.addEventListener("click", () => { void retainCurrentDocument(); });
   advisorRetainCalculation.addEventListener("click", () => { void retainCurrentSnapshot("calculation"); });
   advisorRetainComparison.addEventListener("click", () => { void retainCurrentSnapshot("comparison"); });
@@ -4021,7 +4123,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
@@ -4034,6 +4136,7 @@ function home(request: Request, env: Env): Response {
       student_aid_dual_mode_import: true,
       student_aid_normalized_prefill: true,
       student_aid_per_loan_facts: true,
+      fsa_portfolio_intelligence: true,
       student_aid_provenance_review: true,
       raw_student_aid_retention: false
     },
