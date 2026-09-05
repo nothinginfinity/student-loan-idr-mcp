@@ -394,13 +394,10 @@ async function selectSharePlan(request: Request, database: D1DatabaseBinding, sh
 async function sendNotificationEmail(apiKey: string | undefined, to: string, subject: string, text: string): Promise<void> {
   if (!apiKey || !to) return;
   try {
-    // NOTE: onboarding@resend.dev only delivers to the email address on the Resend account itself
-    // (Resend rejects other recipients with 403). Once a domain is verified in Resend, replace this
-    // "from" address with one on that domain so notifications can reach any advisor or borrower.
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { "authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ from: "Student Loan IDR <onboarding@resend.dev>", to: [to], subject, text })
+      body: JSON.stringify({ from: "Student Loan IDR <notifications@agentfeedoptimization.com>", to: [to], subject, text })
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
