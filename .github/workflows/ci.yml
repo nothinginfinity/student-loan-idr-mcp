@@ -611,7 +611,7 @@ jobs:
             const retainedCalculation = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots`, { method: 'POST', body: JSON.stringify({ name: 'Live repayment calculation', snapshotKind: 'calculation' }) }, alpha);
             assert(retainedCalculation.response.status === 201 && retainedCalculation.body?.snapshot?.result?.planEstimates?.length === 4, 'retained calculation snapshot failed');
             const snapshotList = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots`, {}, alpha);
-            assert(snapshotList.response.status === 200 && snapshotList.body?.snapshots?.length === 3, 'retained snapshot list failed');
+            assert(snapshotList.response.status === 200 && snapshotList.body?.snapshots?.length === 4, 'retained snapshot list failed');
             assert(!JSON.stringify(snapshotList.body).includes('25000'), 'retained snapshot list leaked calculation basis/result payload');
             const rerunSnapshot = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots/${retainedSnapshotId}/rerun`, { method: 'POST', body: '{}' }, alpha);
             assert(rerunSnapshot.response.status === 201 && rerunSnapshot.body?.rerun?.basis === 'retained_snapshot_basis', 'retained snapshot rerun failed');
