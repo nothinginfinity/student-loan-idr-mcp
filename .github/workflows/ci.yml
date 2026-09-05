@@ -405,6 +405,36 @@ jobs:
             const listText = JSON.stringify(alphaList.body);
             assert(!listText.includes('private-borrower@example.test') && !listText.includes('555-0199'), 'advisor dashboard list leaked private contact detail');
 
+            const largeLoans = Array.from({ length: 32 }, (_, loanIndex) => ({
+              loanIndex,
+              maskedAwardId: `••••${String(loanIndex).padStart(4, '0')}`,
+              loanTypeCode: 'D2', loanTypeDescription: 'DIRECT STAFFORD UNSUBSIDIZED', mappedLoanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01',
+              outstandingPrincipal: loanIndex < 6 ? 1000 : 0, outstandingInterest: loanIndex < 6 ? 25 : 0, interestRatePercent: 6.5,
+              currentLoanStatusCode: 'RP', currentLoanStatusDescription: 'IN REPAYMENT', repaymentPlanTypeCode: 'IB', repaymentPlanDescription: 'INCOME-BASED REPAYMENT',
+              repaymentPlanBeginDate: '01/01/2026', repaymentPlanScheduledAmount: 25, repaymentPlanIdrAnniversaryDate: '05/01/2027', nextPaymentDueDate: '04/15/2026',
+              statuses: Array.from({ length: 10 }, (_, statusIndex) => ({ code: statusIndex % 2 === 0 ? 'RP' : 'FB', description: statusIndex % 2 === 0 ? 'IN REPAYMENT' : 'FORBEARANCE', effectiveDate: `${String((statusIndex % 9) + 1).padStart(2, '0')}/01/2025` })),
+              disbursements: [{ date: '08/15/2024', amount: 1500 }, { date: '01/15/2025', amount: 1500 }, { date: '08/15/2025', amount: 1500 }],
+              contacts: [{ type: 'Current Servicer', name: 'Example Department of Education Servicer', phoneNumber: '8005550101', mostRelevant: true }, { type: 'School', name: 'Example State University', websiteAddress: 'https://example.invalid/school' }],
+              provenance: { maskedAwardId: 'derived_studentaid', loanTypeCode: 'imported_studentaid', loanTypeDescription: 'imported_studentaid', mappedLoanType: 'derived_studentaid', disbursementPeriod: 'derived_studentaid', outstandingPrincipal: 'imported_studentaid', outstandingInterest: 'imported_studentaid', interestRatePercent: 'imported_studentaid', currentLoanStatusCode: 'imported_studentaid', currentLoanStatusDescription: 'imported_studentaid', repaymentPlanTypeCode: 'imported_studentaid', repaymentPlanDescription: 'imported_studentaid', repaymentPlanBeginDate: 'imported_studentaid', repaymentPlanScheduledAmount: 'imported_studentaid', repaymentPlanIdrAnniversaryDate: 'imported_studentaid', nextPaymentDueDate: 'imported_studentaid', statuses: 'imported_studentaid', disbursements: 'imported_studentaid', contacts: 'imported_studentaid' }
+            }));
+            const largeNormalizedPortfolio = {
+              repaymentLoans: Array.from({ length: 6 }, () => ({ principal: 1000, annualInterestRatePercent: 6.5 })),
+              eligibilityLoans: Array.from({ length: 32 }, () => ({ loanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01' })),
+              loans: largeLoans,
+              summary: { loanCount: 32, activeLoanCount: 6, totalOutstandingPrincipal: 6000, totalOutstandingInterest: 150, repaymentLoanCount: 6, eligibilityMappedLoanCount: 32, ambiguousEligibilityLoanCount: 0, hasLoanDisbursedOnOrAfterJuly1_2026: false }
+            };
+            const largeClientPayload = JSON.stringify({
+              contact: { displayName: 'Live Large FSA Borrower', email: 'large-fsa-borrower@example.test', phone: '555-0188' },
+              servicerName: 'Example Department of Education Servicer', normalizedLoanPortfolio: largeNormalizedPortfolio,
+              studentAidImport: { source: 'studentaid_download', fileRequestDate: '09/05/2026', mappingVersion: '2026-09-05-v2', rawFileRetained: false }
+            });
+            assert(new TextEncoder().encode(largeClientPayload).byteLength > 65536, 'large live normalized FSA fixture must exceed the legacy 64 KiB limit');
+            const largeImportClient = await advisorRequest('/api/advisor/clients', { method: 'POST', body: largeClientPayload }, alpha);
+            assert(largeImportClient.response.status === 201 && largeImportClient.body?.client?.normalizedLoanPortfolio?.loans?.length === 32, `large normalized FSA client creation failed: ${largeImportClient.response.status} ${largeImportClient.text}`);
+            assert(largeImportClient.body?.client?.studentAidImport?.rawFileRetained === false, 'large normalized FSA client crossed the raw-file retention boundary');
+            const deletedLargeImportClient = await advisorRequest(`/api/advisor/clients/${largeImportClient.body.client.clientId}`, { method: 'DELETE', body: JSON.stringify({ confirm: 'delete', expectedUpdatedAt: largeImportClient.body.client.updatedAt }) }, alpha);
+            assert(deletedLargeImportClient.response.status === 200, 'large normalized FSA acceptance client cleanup failed');
+
             const betaRead = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {}, beta);
             assert(betaRead.response.status === 404 && betaRead.body?.error === 'Client not found or not accessible.', 'cross-advisor read must fail generically');
             const betaWrite = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {
