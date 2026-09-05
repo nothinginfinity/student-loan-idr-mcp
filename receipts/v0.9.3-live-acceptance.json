@@ -1,0 +1,65 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "student-loan-idr-mcp",
+    "branch": "main",
+    "path": ".github/workflows/ci.yml"
+  },
+  "source_sha": "5aa5b99b6969668eb38be6ad74bb315c32c0ed64",
+  "result_sha": "2fbd03dd7f5a5995b0ee452edf4ad30e074fb30b",
+  "commit_sha": "888576e66cc32d0fd50cf155c1dbf4d3c934484d",
+  "diff": {
+    "before_length": 57068,
+    "after_length": 59185,
+    "delta": 2117,
+    "common_prefix": 16574,
+    "common_suffix": 17395,
+    "before_fingerprint": "d54b1fe1",
+    "after_fingerprint": "0e01f3b2"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_1",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_2",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-05T21:07:39.296Z"
+}
