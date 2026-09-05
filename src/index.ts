@@ -13,6 +13,7 @@ import type {
   LoanDisbursementPeriod,
   StudentAidFactProvenance,
   StudentAidNormalizedLoanFact,
+  StudentAidParserDiagnostics,
   StudentAidPortfolioSummary
 } from "./types.ts";
 
@@ -211,7 +212,7 @@ const toolDefinitions = [
   }
 ] as const;
 
-export const STUDENTAID_MAPPING_VERSION = "2026-08-28-v1";
+export const STUDENTAID_MAPPING_VERSION = "2026-09-05-v2";
 
 type ParsedStudentAidBorrower = {
   displayName?: string;
@@ -236,6 +237,7 @@ export type ParsedStudentAidPortfolio = {
   totalPrincipal: number;
   totalInterest: number;
   ambiguousCount: number;
+  diagnostics: StudentAidParserDiagnostics;
 };
 
 function studentAidNumber(value: string | undefined): number | undefined {
@@ -254,6 +256,28 @@ function studentAidDateToPeriod(value: string | undefined): LoanDisbursementPeri
     : Date.parse(value);
   if (!Number.isFinite(timestamp)) return undefined;
   return timestamp >= Date.UTC(2026, 6, 1) ? "on_or_after_2026_07_01" : "before_2026_07_01";
+}
+
+function studentAidDateTimestamp(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const timestamp = match
+    ? Date.UTC(Number(match[3]), Number(match[1]) - 1, Number(match[2]))
+    : Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function latestStudentAidStatus(statuses: Array<{ code?: string; description?: string; effectiveDate?: string }>): { code?: string; description?: string; effectiveDate?: string } | undefined {
+  let latest: { code?: string; description?: string; effectiveDate?: string } | undefined;
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+  for (const status of statuses) {
+    const timestamp = studentAidDateTimestamp(status.effectiveDate);
+    if (timestamp !== undefined && timestamp > latestTimestamp) {
+      latest = status;
+      latestTimestamp = timestamp;
+    }
+  }
+  return latest ?? statuses[0];
 }
 
 function studentAidYes(value: string | undefined): boolean | undefined {
@@ -329,12 +353,29 @@ function studentAidPreferredPhone(student: Record<string, string>): string | und
 export function parseStudentAidDataText(text: string): ParsedStudentAidPortfolio {
   const student: Record<string, string> = {};
   const rawLoans: any[] = [];
+  const rawLines = text.split(/\r?\n/);
+  const tokens = rawLines.flatMap((rawLine, lineIndex) => {
+    const separator = rawLine.indexOf(":");
+    if (separator < 0) return [];
+    return [{ lineNumber: lineIndex + 1, key: rawLine.slice(0, separator).trim(), value: rawLine.slice(separator + 1).trim() }];
+  });
+  const hasAwardAnchors = tokens.some((token) => token.key === "Loan Award ID");
+  const firstAwardIndex = tokens.findIndex((token) => token.key === "Loan Award ID");
+  const firstTypeIndex = tokens.findIndex((token) => token.key === "Loan Type Code" || token.key === "Loan Type");
+  const awardFirstLayout = hasAwardAnchors && (firstTypeIndex < 0 || firstAwardIndex < firstTypeIndex);
+  const recognizedLabels = new Set<string>();
+  const unmappedLabels = new Set<string>();
+  const structuralWarnings: string[] = [];
+  const validationIssues: string[] = [];
   let fileRequestDate: string | undefined;
   let current: any = null;
   let currentStatus: any = null;
   let currentDisbursement: any = null;
+  let currentDelinquency: any = null;
   let currentContact: any = null;
-  const pushCurrent = () => { if (current) rawLoans.push(current); current = null; currentStatus = null; currentDisbursement = null; currentContact = null; };
+  const newLoan = () => ({ statuses: [], disbursements: [], delinquencies: [], contacts: [], provenance: {} });
+  const ensureCurrent = () => { if (!current) current = newLoan(); return current; };
+  const pushCurrent = () => { if (current) rawLoans.push(current); current = null; currentStatus = null; currentDisbursement = null; currentDelinquency = null; currentContact = null; };
   const textFields: Record<string, string> = {
     "Loan Attending School Name": "attendingSchoolName",
     "Loan Attending School OPEID": "attendingSchoolOpeid",
@@ -359,7 +400,12 @@ export function parseStudentAidDataText(text: string): ParsedStudentAidPortfolio
     "Award Year": "awardYear",
     "Reaffirmation flag": "reaffirmationFlag",
     "UpdtDt": "updateDate",
-    "DelinqDate": "delinquencyDate",
+    "Loan Updated Date": "updateDate",
+    "Additional Unsubsidized Loan Flag": "additionalUnsubsidizedLoanFlag",
+    "Joint Consolidation Loan Indicator": "jointConsolidationLoanIndicator",
+    "Joint Consolidation Loan Separation Indicator": "jointConsolidationLoanSeparationIndicator",
+    "Loan Special Contact Reason": "loanSpecialContactReason",
+    "Loan Special Contact": "loanSpecialContact",
     "Current Loan Status": "currentLoanStatusCode",
     "Current Loan Status Description": "currentLoanStatusDescription",
     "Parent Plus First Level Consolidation Indicator": "parentPlusFirstLevelConsolidationIndicator",
@@ -388,50 +434,71 @@ export function parseStudentAidDataText(text: string): ParsedStudentAidPortfolio
     "Permanent Standard-Standard Schedule Payment Amount": "permanentStandardSchedulePaymentAmount"
   };
 
-  for (const rawLine of text.split(/\r?\n/)) {
-    const separator = rawLine.indexOf(":");
-    if (separator < 0) continue;
-    const key = rawLine.slice(0, separator).trim();
-    const value = rawLine.slice(separator + 1).trim();
-    if (key === "File Request Date") { fileRequestDate = value || undefined; continue; }
-    if (key.startsWith("Student ")) { student[key] = value; continue; }
-    if (key === "Loan Type Code" || key === "Loan Type") {
+  for (const token of tokens) {
+    const { key, value, lineNumber } = token;
+    if (!key) continue;
+    if (key === "File Request Date") { recognizedLabels.add(key); fileRequestDate = value || undefined; continue; }
+    if (key.startsWith("Student ") || key.startsWith("Grant ")) { recognizedLabels.add(key); if (key.startsWith("Student ")) student[key] = value; continue; }
+    if (key === "Loan Award ID") {
+      recognizedLabels.add(key);
+      if (!current) current = newLoan();
+      else if (current.__hasAwardAnchor) { pushCurrent(); current = newLoan(); }
+      current.__hasAwardAnchor = true;
+      const masked = maskStudentAidIdentifier(value);
+      if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; }
+      continue;
+    }
+    if ((!hasAwardAnchors || !awardFirstLayout) && (key === "Loan Type Code" || key === "Loan Type")) {
+      recognizedLabels.add(key);
       pushCurrent();
-      current = { loanTypeCode: key === "Loan Type Code" ? value : undefined, loanTypeDescription: key === "Loan Type" ? value : undefined, statuses: [], disbursements: [], contacts: [], provenance: {} };
+      current = newLoan();
+      current[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = value || undefined;
       if (value) current.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid";
       continue;
     }
-    if (!current) continue;
-    if (key === "Loan Type Description") { current.loanTypeDescription = value || undefined; if (value) current.provenance.loanTypeDescription = "imported_studentaid"; continue; }
-    if (key === "Loan Award ID") { const masked = maskStudentAidIdentifier(value); if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; } continue; }
-    if (textFields[key]) { current[textFields[key]] = value || undefined; if (value) current.provenance[textFields[key]] = "imported_studentaid"; continue; }
-    if (numericFields[key]) { const number = studentAidNumber(value); if (number !== undefined) { current[numericFields[key]] = number; current.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
-    if (key === "Loan Status") { currentStatus = { code: value || undefined }; current.statuses.push(currentStatus); continue; }
-    if (key === "Loan Status Description" && currentStatus) { currentStatus.description = value || undefined; continue; }
-    if (key === "Loan Status Effective Date" && currentStatus) { currentStatus.effectiveDate = value || undefined; continue; }
-    if (key === "Loan Disbursement Date") { currentDisbursement = { date: value || undefined }; current.disbursements.push(currentDisbursement); continue; }
-    if (key === "Loan Disbursement Amount" && currentDisbursement) { currentDisbursement.amount = studentAidNumber(value); continue; }
-    if (key === "Loan Contact Type") { currentContact = { type: value || undefined }; current.contacts.push(currentContact); continue; }
-    if (currentContact && key.startsWith("Loan Contact ")) {
+    if (key === "Loan Type Code" || key === "Loan Type") { recognizedLabels.add(key); const loan = ensureCurrent(); loan[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = value || undefined; if (value) loan.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid"; continue; }
+    if (key === "Loan Type Description") { recognizedLabels.add(key); const loan = ensureCurrent(); loan.loanTypeDescription = value || undefined; if (value) loan.provenance.loanTypeDescription = "imported_studentaid"; continue; }
+    if (textFields[key]) { recognizedLabels.add(key); const loan = ensureCurrent(); loan[textFields[key]] = value || undefined; if (value) loan.provenance[textFields[key]] = "imported_studentaid"; continue; }
+    if (numericFields[key]) { recognizedLabels.add(key); const loan = ensureCurrent(); const number = studentAidNumber(value); if (number !== undefined) { loan[numericFields[key]] = number; loan.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
+    if (key === "Loan Delinquency Date" || key === "DelinqDate") { recognizedLabels.add(key); const loan = ensureCurrent(); currentDelinquency = { date: value || undefined }; loan.delinquencies.push(currentDelinquency); loan.delinquencyDate = value || undefined; if (value) loan.provenance.delinquencyDate = "imported_studentaid"; continue; }
+    if (key === "Loan Delinquency End Date") { recognizedLabels.add(key); const loan = ensureCurrent(); loan.delinquencyEndDate = value || undefined; if (value) loan.provenance.delinquencyEndDate = "imported_studentaid"; if (currentDelinquency) currentDelinquency.endDate = value || undefined; else structuralWarnings.push(`Line ${lineNumber}: Loan Delinquency End Date appeared without a preceding delinquency start date.`); continue; }
+    if (key === "Loan Status") { recognizedLabels.add(key); const loan = ensureCurrent(); currentStatus = { code: value || undefined }; loan.statuses.push(currentStatus); continue; }
+    if (key === "Loan Status Description") { recognizedLabels.add(key); if (currentStatus) currentStatus.description = value || undefined; else structuralWarnings.push(`Line ${lineNumber}: Loan Status Description appeared without a preceding Loan Status.`); continue; }
+    if (key === "Loan Status Effective Date") { recognizedLabels.add(key); if (currentStatus) currentStatus.effectiveDate = value || undefined; else structuralWarnings.push(`Line ${lineNumber}: Loan Status Effective Date appeared without a preceding Loan Status.`); continue; }
+    if (key === "Loan Disbursement Date") { recognizedLabels.add(key); const loan = ensureCurrent(); currentDisbursement = { date: value || undefined }; loan.disbursements.push(currentDisbursement); continue; }
+    if (key === "Loan Disbursement Amount") { recognizedLabels.add(key); if (currentDisbursement) currentDisbursement.amount = studentAidNumber(value); else structuralWarnings.push(`Line ${lineNumber}: Loan Disbursement Amount appeared without a preceding disbursement date.`); continue; }
+    if (key === "Loan Contact Type") { recognizedLabels.add(key); const loan = ensureCurrent(); currentContact = { type: value || undefined }; loan.contacts.push(currentContact); continue; }
+    if (key.startsWith("Loan Contact ")) {
       const contactFields: Record<string, string> = { "Loan Contact Code":"code", "Loan Contact Name":"name", "Loan Contact Street Address 1":"streetAddress1", "Loan Contact Street Address 2":"streetAddress2", "Loan Contact City":"city", "Loan Contact State Code":"stateCode", "Loan Contact Zip Code":"zipCode", "Loan Contact Phone Number":"phoneNumber", "Loan Contact Phone Extension":"phoneExtension", "Loan Contact Email Address":"emailAddress", "Loan Contact Web Site Address":"websiteAddress" };
-      if (contactFields[key]) currentContact[contactFields[key]] = value || undefined;
+      if (contactFields[key]) { recognizedLabels.add(key); if (currentContact) currentContact[contactFields[key]] = value || undefined; else structuralWarnings.push(`Line ${lineNumber}: ${key} appeared without a preceding Loan Contact Type.`); }
+      else unmappedLabels.add(key);
       continue;
     }
-    if (key === "Most Relevant" && currentContact) { currentContact.mostRelevant = studentAidYes(value) === true; continue; }
+    if (key === "Most Relevant") { recognizedLabels.add(key); if (currentContact) currentContact.mostRelevant = studentAidYes(value) === true; else structuralWarnings.push(`Line ${lineNumber}: Most Relevant appeared without a preceding Loan Contact Type.`); continue; }
+    unmappedLabels.add(key);
   }
   pushCurrent();
+  if (!hasAwardAnchors && rawLoans.length) structuralWarnings.push("Loan Award ID anchors were not present; parser used the conservative legacy loan-boundary fallback.");
+  if (!rawLoans.length) validationIssues.push("No loan records were assembled from the StudentAid data.");
 
   const loans = rawLoans.map((raw, index): StudentAidNormalizedLoanFact => {
     const dateForPeriod = raw.disbursements.find((item: any) => item.date)?.date || raw.loanDate;
     const mappedLoanType = mapStudentAidLoanType(raw.loanTypeCode, raw.loanTypeDescription, raw.consolidationLoanWithAnyParentPlusIndicator);
     const disbursementPeriod = studentAidDateToPeriod(dateForPeriod);
-    const statusDescription = String(raw.currentLoanStatusDescription || raw.statuses.at(-1)?.description || "").toUpperCase();
+    const newestStatus = latestStudentAidStatus(raw.statuses || []);
+    const explicitCode = String(raw.currentLoanStatusCode || "").trim().toUpperCase();
+    const explicitDescription = String(raw.currentLoanStatusDescription || "").trim().toUpperCase();
+    const newestCode = String(newestStatus?.code || "").trim().toUpperCase();
+    const newestDescription = String(newestStatus?.description || "").trim().toUpperCase();
+    if ((explicitCode && newestCode && explicitCode !== newestCode) || (explicitDescription && newestDescription && explicitDescription !== newestDescription)) structuralWarnings.push(`Loan ${index + 1}: explicit current status differs from the newest dated status timeline entry.`);
+    const statusDescription = explicitDescription || newestDescription;
     const inDefault = statusDescription.includes("DEFAULT") && !statusDescription.includes("NON-DEFAULT");
     const provenance = { ...(raw.provenance || {}) } as Record<string, StudentAidFactProvenance>;
     if (mappedLoanType) provenance.mappedLoanType = "derived_studentaid";
     if (disbursementPeriod) provenance.disbursementPeriod = "derived_studentaid";
     provenance.inDefault = "derived_studentaid";
-    return { ...raw, loanIndex: index, ...(mappedLoanType ? { mappedLoanType } : {}), ...(disbursementPeriod ? { disbursementPeriod } : {}), ...(inDefault ? { inDefault: true } : {}), provenance };
+    const { __hasAwardAnchor: _hasAwardAnchor, ...normalizedRaw } = raw;
+    return { ...normalizedRaw, loanIndex: index, ...(mappedLoanType ? { mappedLoanType } : {}), ...(disbursementPeriod ? { disbursementPeriod } : {}), ...(inDefault ? { inDefault: true } : {}), provenance };
   });
   const active = loans.filter((loan) => typeof loan.outstandingPrincipal === "number" && loan.outstandingPrincipal > 0);
   const repaymentLoans = active.filter((loan) => typeof loan.interestRatePercent === "number").map((loan) => ({ principal: loan.outstandingPrincipal!, annualInterestRatePercent: loan.interestRatePercent! }));
@@ -450,7 +517,16 @@ export function parseStudentAidDataText(text: string): ParsedStudentAidPortfolio
     const value = typeof rawValue === "string" ? rawValue.trim() : rawValue;
     if (value) { (borrower as any)[field] = value; borrower.provenance[String(field)] = "imported_studentaid"; }
   }
-  return { ...(fileRequestDate ? { fileRequestDate } : {}), borrower, loans, repaymentLoans, ...(eligibilityLoans ? { eligibilityLoans } : {}), summary, totalPrincipal, totalInterest, ambiguousCount };
+  const diagnostics: StudentAidParserDiagnostics = {
+    mappingVersion: STUDENTAID_MAPPING_VERSION,
+    rawLineCount: rawLines.length,
+    parsedLineCount: tokens.length,
+    recognizedLabelCount: recognizedLabels.size,
+    unmappedLabels: [...unmappedLabels].filter(Boolean).sort(),
+    structuralWarnings,
+    validationIssues
+  };
+  return { ...(fileRequestDate ? { fileRequestDate } : {}), borrower, loans, repaymentLoans, ...(eligibilityLoans ? { eligibilityLoans } : {}), summary, totalPrincipal, totalInterest, ambiguousCount, diagnostics };
 }
 
 const BORROWER_UI_HTML = String.raw`<!doctype html>
@@ -973,61 +1049,114 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   function parseStudentAidData(text) {
     const student = {};
     const records = [];
+    const rawLines = text.split(/\r?\n/);
+    const tokens = rawLines.flatMap((rawLine, lineIndex) => {
+      const separator = rawLine.indexOf(":");
+      if (separator < 0) return [];
+      return [{ lineNumber: lineIndex + 1, key: rawLine.slice(0, separator).trim(), value: rawLine.slice(separator + 1).trim() }];
+    });
+    const hasAwardAnchors = tokens.some((token) => token.key === "Loan Award ID");
+    const firstAwardIndex = tokens.findIndex((token) => token.key === "Loan Award ID");
+    const firstTypeIndex = tokens.findIndex((token) => token.key === "Loan Type Code" || token.key === "Loan Type");
+    const awardFirstLayout = hasAwardAnchors && (firstTypeIndex < 0 || firstAwardIndex < firstTypeIndex);
+    const recognizedLabels = new Set();
+    const unmappedLabels = new Set();
+    const structuralWarnings = [];
+    const validationIssues = [];
     let fileRequestDate = null;
     let current = null;
     let currentStatus = null;
     let currentDisbursement = null;
+    let currentDelinquency = null;
     let currentContact = null;
-    const pushCurrent = () => { if (current) records.push(current); current = null; currentStatus = null; currentDisbursement = null; currentContact = null; };
+    const newLoan = () => ({ statuses: [], disbursements: [], delinquencies: [], contacts: [], provenance: {} });
+    const ensureCurrent = () => { if (!current) current = newLoan(); return current; };
+    const pushCurrent = () => { if (current) records.push(current); current = null; currentStatus = null; currentDisbursement = null; currentDelinquency = null; currentContact = null; };
+    const dateTimestamp = (value) => {
+      if (!value) return undefined;
+      const match = String(value).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      const timestamp = match ? Date.UTC(Number(match[3]), Number(match[1]) - 1, Number(match[2])) : Date.parse(value);
+      return Number.isFinite(timestamp) ? timestamp : undefined;
+    };
+    const latestStatus = (statuses) => {
+      let latest = undefined;
+      let latestTimestamp = Number.NEGATIVE_INFINITY;
+      (statuses || []).forEach((statusFact) => {
+        const timestamp = dateTimestamp(statusFact.effectiveDate);
+        if (timestamp !== undefined && timestamp > latestTimestamp) { latest = statusFact; latestTimestamp = timestamp; }
+      });
+      return latest || (statuses || [])[0];
+    };
     const textFields = {
-      "Loan Attending School Name":"attendingSchoolName", "Loan Attending School OPEID":"attendingSchoolOpeid", "Loan Date":"loanDate", "Loan Repayment Begin Date":"repaymentBeginDate", "Loan Period Begin Date":"periodBeginDate", "Loan Period End Date":"periodEndDate", "Loan Canceled Date":"canceledDate", "Loan Outstanding Principal Balance as of Date":"outstandingPrincipalAsOfDate", "Loan Outstanding Interest Balance as of Date":"outstandingInterestAsOfDate", "Loan Interest Rate Type Code":"interestRateTypeCode", "Loan Interest Rate Type Description":"interestRateTypeDescription", "Loan Repayment Plan Type Code":"repaymentPlanTypeCode", "Loan Repayment Plan Type Code Description":"repaymentPlanDescription", "Loan Repayment Plan Begin Date":"repaymentPlanBeginDate", "Loan Repayment Plan IDR Plan Anniversary Date":"repaymentPlanIdrAnniversaryDate", "Loan Confirmed Subsidy Status":"confirmedSubsidyStatus", "Loan Reaffirmation Date":"reaffirmationDate", "Loan Most Recent Payment Effective Date":"mostRecentPaymentEffectiveDate", "Loan Next Payment Due Date":"nextPaymentDueDate", "Academic Level":"academicLevel", "Award Year":"awardYear", "Reaffirmation flag":"reaffirmationFlag", "UpdtDt":"updateDate", "DelinqDate":"delinquencyDate", "Current Loan Status":"currentLoanStatusCode", "Current Loan Status Description":"currentLoanStatusDescription", "Parent Plus First Level Consolidation Indicator":"parentPlusFirstLevelConsolidationIndicator", "Consolidation Loan With Any Parent Plus Indicator":"consolidationLoanWithAnyParentPlusIndicator"
+      "Loan Attending School Name":"attendingSchoolName", "Loan Attending School OPEID":"attendingSchoolOpeid", "Loan Date":"loanDate", "Loan Repayment Begin Date":"repaymentBeginDate", "Loan Period Begin Date":"periodBeginDate", "Loan Period End Date":"periodEndDate", "Loan Canceled Date":"canceledDate", "Loan Outstanding Principal Balance as of Date":"outstandingPrincipalAsOfDate", "Loan Outstanding Interest Balance as of Date":"outstandingInterestAsOfDate", "Loan Interest Rate Type Code":"interestRateTypeCode", "Loan Interest Rate Type Description":"interestRateTypeDescription", "Loan Repayment Plan Type Code":"repaymentPlanTypeCode", "Loan Repayment Plan Type Code Description":"repaymentPlanDescription", "Loan Repayment Plan Begin Date":"repaymentPlanBeginDate", "Loan Repayment Plan IDR Plan Anniversary Date":"repaymentPlanIdrAnniversaryDate", "Loan Confirmed Subsidy Status":"confirmedSubsidyStatus", "Loan Reaffirmation Date":"reaffirmationDate", "Loan Most Recent Payment Effective Date":"mostRecentPaymentEffectiveDate", "Loan Next Payment Due Date":"nextPaymentDueDate", "Academic Level":"academicLevel", "Award Year":"awardYear", "Reaffirmation flag":"reaffirmationFlag", "UpdtDt":"updateDate", "Loan Updated Date":"updateDate", "Additional Unsubsidized Loan Flag":"additionalUnsubsidizedLoanFlag", "Joint Consolidation Loan Indicator":"jointConsolidationLoanIndicator", "Joint Consolidation Loan Separation Indicator":"jointConsolidationLoanSeparationIndicator", "Loan Special Contact Reason":"loanSpecialContactReason", "Loan Special Contact":"loanSpecialContact", "Current Loan Status":"currentLoanStatusCode", "Current Loan Status Description":"currentLoanStatusDescription", "Parent Plus First Level Consolidation Indicator":"parentPlusFirstLevelConsolidationIndicator", "Consolidation Loan With Any Parent Plus Indicator":"consolidationLoanWithAnyParentPlusIndicator"
     };
     const numericFields = {
       "Loan Amount":"originalAmount", "Loan Disbursed Amount":"disbursedAmount", "Loan Canceled Amount":"canceledAmount", "Loan Outstanding Principal Balance":"outstandingPrincipal", "Loan Outstanding Interest Balance":"outstandingInterest", "Loan Interest Rate":"interestRatePercent", "Loan Actual Interest Rate":"actualInterestRatePercent", "Loan Statutory Interest Rate":"statutoryInterestRatePercent", "Loan Repayment Plan Scheduled Amount":"repaymentPlanScheduledAmount", "Loan Subsidized Usage in Years":"subsidizedUsageYears", "Loan Cumulative Payment Amount":"cumulativePaymentAmount", "Loan PSLF Cumulative Matched Months":"pslfCumulativeMatchedMonths", "Capitalized Interest":"capitalizedInterest", "Net Loan Amount":"netLoanAmount", "Calculated Subsidized Aggregate OPB":"calculatedSubsidizedAggregateOpb", "Calculated Unsubsidized Aggregate OPB":"calculatedUnsubsidizedAggregateOpb", "Calculated Combined Aggregate OPB":"calculatedCombinedAggregateOpb", "Highest Historical Outstanding Principal Balance (OPB)":"highestHistoricalOutstandingPrincipalBalance", "Current Standard-Standard Schedule Payment Amount":"currentStandardSchedulePaymentAmount", "Permanent Standard-Standard Schedule Payment Amount":"permanentStandardSchedulePaymentAmount"
     };
-    for (const rawLine of text.split(/\r?\n/)) {
-      const separator = rawLine.indexOf(":");
-      if (separator < 0) continue;
-      const key = rawLine.slice(0, separator).trim();
-      const value = rawLine.slice(separator + 1).trim();
-      if (key === "File Request Date") { fileRequestDate = value || null; continue; }
-      if (key.startsWith("Student ")) { student[key] = value; continue; }
-      if (key === "Loan Type Code" || key === "Loan Type") {
+    for (const token of tokens) {
+      const { key, value, lineNumber } = token;
+      if (!key) continue;
+      if (key === "File Request Date") { recognizedLabels.add(key); fileRequestDate = value || null; continue; }
+      if (key.startsWith("Student ") || key.startsWith("Grant ")) { recognizedLabels.add(key); if (key.startsWith("Student ")) student[key] = value; continue; }
+      if (key === "Loan Award ID") {
+        recognizedLabels.add(key);
+        if (!current) current = newLoan();
+        else if (current.__hasAwardAnchor) { pushCurrent(); current = newLoan(); }
+        current.__hasAwardAnchor = true;
+        const masked = maskStudentAidIdentifierLocal(value);
+        if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; }
+        continue;
+      }
+      if ((!hasAwardAnchors || !awardFirstLayout) && (key === "Loan Type Code" || key === "Loan Type")) {
+        recognizedLabels.add(key);
         pushCurrent();
-        current = { loanTypeCode: key === "Loan Type Code" ? value : null, loanTypeDescription: key === "Loan Type" ? value : null, statuses: [], disbursements: [], contacts: [], provenance: {} };
+        current = newLoan();
+        current[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = value || null;
         if (value) current.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid";
         continue;
       }
-      if (!current) continue;
-      if (key === "Loan Type Description") { current.loanTypeDescription = value || null; if (value) current.provenance.loanTypeDescription = "imported_studentaid"; continue; }
-      if (key === "Loan Award ID") { const masked = maskStudentAidIdentifierLocal(value); if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; } continue; }
-      if (textFields[key]) { if (value) { current[textFields[key]] = value; current.provenance[textFields[key]] = "imported_studentaid"; } continue; }
-      if (numericFields[key]) { const number = numericValue(value); if (number !== undefined) { current[numericFields[key]] = number; current.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
-      if (key === "Loan Status") { currentStatus = { code: value || undefined }; current.statuses.push(currentStatus); continue; }
-      if (key === "Loan Status Description" && currentStatus) { currentStatus.description = value || undefined; continue; }
-      if (key === "Loan Status Effective Date" && currentStatus) { currentStatus.effectiveDate = value || undefined; continue; }
-      if (key === "Loan Disbursement Date") { currentDisbursement = { date: value || undefined }; current.disbursements.push(currentDisbursement); continue; }
-      if (key === "Loan Disbursement Amount" && currentDisbursement) { currentDisbursement.amount = numericValue(value); continue; }
-      if (key === "Loan Contact Type") { currentContact = { type: value || undefined }; current.contacts.push(currentContact); continue; }
-      if (currentContact && key.startsWith("Loan Contact ")) {
+      if (key === "Loan Type Code" || key === "Loan Type") { recognizedLabels.add(key); const loan = ensureCurrent(); loan[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = value || null; if (value) loan.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid"; continue; }
+      if (key === "Loan Type Description") { recognizedLabels.add(key); const loan = ensureCurrent(); loan.loanTypeDescription = value || null; if (value) loan.provenance.loanTypeDescription = "imported_studentaid"; continue; }
+      if (textFields[key]) { recognizedLabels.add(key); const loan = ensureCurrent(); if (value) { loan[textFields[key]] = value; loan.provenance[textFields[key]] = "imported_studentaid"; } continue; }
+      if (numericFields[key]) { recognizedLabels.add(key); const loan = ensureCurrent(); const number = numericValue(value); if (number !== undefined) { loan[numericFields[key]] = number; loan.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
+      if (key === "Loan Delinquency Date" || key === "DelinqDate") { recognizedLabels.add(key); const loan = ensureCurrent(); currentDelinquency = { date: value || undefined }; loan.delinquencies.push(currentDelinquency); loan.delinquencyDate = value || undefined; if (value) loan.provenance.delinquencyDate = "imported_studentaid"; continue; }
+      if (key === "Loan Delinquency End Date") { recognizedLabels.add(key); const loan = ensureCurrent(); loan.delinquencyEndDate = value || undefined; if (value) loan.provenance.delinquencyEndDate = "imported_studentaid"; if (currentDelinquency) currentDelinquency.endDate = value || undefined; else structuralWarnings.push("Line " + lineNumber + ": Loan Delinquency End Date appeared without a preceding delinquency start date."); continue; }
+      if (key === "Loan Status") { recognizedLabels.add(key); const loan = ensureCurrent(); currentStatus = { code: value || undefined }; loan.statuses.push(currentStatus); continue; }
+      if (key === "Loan Status Description") { recognizedLabels.add(key); if (currentStatus) currentStatus.description = value || undefined; else structuralWarnings.push("Line " + lineNumber + ": Loan Status Description appeared without a preceding Loan Status."); continue; }
+      if (key === "Loan Status Effective Date") { recognizedLabels.add(key); if (currentStatus) currentStatus.effectiveDate = value || undefined; else structuralWarnings.push("Line " + lineNumber + ": Loan Status Effective Date appeared without a preceding Loan Status."); continue; }
+      if (key === "Loan Disbursement Date") { recognizedLabels.add(key); const loan = ensureCurrent(); currentDisbursement = { date: value || undefined }; loan.disbursements.push(currentDisbursement); continue; }
+      if (key === "Loan Disbursement Amount") { recognizedLabels.add(key); if (currentDisbursement) currentDisbursement.amount = numericValue(value); else structuralWarnings.push("Line " + lineNumber + ": Loan Disbursement Amount appeared without a preceding disbursement date."); continue; }
+      if (key === "Loan Contact Type") { recognizedLabels.add(key); const loan = ensureCurrent(); currentContact = { type: value || undefined }; loan.contacts.push(currentContact); continue; }
+      if (key.startsWith("Loan Contact ")) {
         const contactFields = { "Loan Contact Code":"code", "Loan Contact Name":"name", "Loan Contact Street Address 1":"streetAddress1", "Loan Contact Street Address 2":"streetAddress2", "Loan Contact City":"city", "Loan Contact State Code":"stateCode", "Loan Contact Zip Code":"zipCode", "Loan Contact Phone Number":"phoneNumber", "Loan Contact Phone Extension":"phoneExtension", "Loan Contact Email Address":"emailAddress", "Loan Contact Web Site Address":"websiteAddress" };
-        if (contactFields[key] && value) currentContact[contactFields[key]] = value;
+        if (contactFields[key]) { recognizedLabels.add(key); if (currentContact && value) currentContact[contactFields[key]] = value; else if (!currentContact) structuralWarnings.push("Line " + lineNumber + ": " + key + " appeared without a preceding Loan Contact Type."); }
+        else unmappedLabels.add(key);
         continue;
       }
-      if (key === "Most Relevant" && currentContact) { currentContact.mostRelevant = studentAidYesLocal(value) === true; continue; }
+      if (key === "Most Relevant") { recognizedLabels.add(key); if (currentContact) currentContact.mostRelevant = studentAidYesLocal(value) === true; else structuralWarnings.push("Line " + lineNumber + ": Most Relevant appeared without a preceding Loan Contact Type."); continue; }
+      unmappedLabels.add(key);
     }
     pushCurrent();
+    if (!hasAwardAnchors && records.length) structuralWarnings.push("Loan Award ID anchors were not present; parser used the conservative legacy loan-boundary fallback.");
+    if (!records.length) validationIssues.push("No loan records were assembled from the StudentAid data.");
     const loans = records.map((loan, loanIndex) => {
       const dateForPeriod = loan.disbursements.find((item) => item.date)?.date || loan.loanDate;
       const mappedLoanType = mapLoanType(loan.loanTypeCode, loan.loanTypeDescription, loan.consolidationLoanWithAnyParentPlusIndicator);
       const period = disbursementPeriod(dateForPeriod);
-      const status = String(loan.currentLoanStatusDescription || loan.statuses.at(-1)?.description || "").toUpperCase();
+      const newestStatus = latestStatus(loan.statuses || []);
+      const explicitCode = String(loan.currentLoanStatusCode || "").trim().toUpperCase();
+      const explicitDescription = String(loan.currentLoanStatusDescription || "").trim().toUpperCase();
+      const newestCode = String(newestStatus?.code || "").trim().toUpperCase();
+      const newestDescription = String(newestStatus?.description || "").trim().toUpperCase();
+      if ((explicitCode && newestCode && explicitCode !== newestCode) || (explicitDescription && newestDescription && explicitDescription !== newestDescription)) structuralWarnings.push("Loan " + (loanIndex + 1) + ": explicit current status differs from the newest dated status timeline entry.");
+      const status = explicitDescription || newestDescription;
       const inDefault = status.includes("DEFAULT") && !status.includes("NON-DEFAULT");
       const provenance = { ...loan.provenance };
       if (mappedLoanType) provenance.mappedLoanType = "derived_studentaid";
       if (period) provenance.disbursementPeriod = "derived_studentaid";
       provenance.inDefault = "derived_studentaid";
-      return { ...loan, loanIndex, mappedLoanType, disbursementPeriod: period, inDefault, provenance };
+      const { __hasAwardAnchor, ...normalizedLoan } = loan;
+      return { ...normalizedLoan, loanIndex, mappedLoanType, disbursementPeriod: period, inDefault, provenance };
     });
     const active = loans.filter((loan) => typeof loan.outstandingPrincipal === "number" && loan.outstandingPrincipal > 0);
     const repaymentLoans = active.filter((loan) => typeof loan.interestRatePercent === "number").map((loan) => ({ principal: loan.outstandingPrincipal, annualInterestRatePercent: loan.interestRatePercent }));
@@ -1044,7 +1173,8 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     [["displayName",name],["email",student["Student Email Address"]],["phone",phone],["streetAddress1",student["Student Street Address 1"]],["streetAddress2",student["Student Street Address 2"]],["city",student["Student City"]],["stateCode",student["Student State Code"]],["countryCode",student["Student Country Code"]],["zipCode",student["Student Zip Code"]]].forEach(([field,value]) => { if (value) { borrower[field] = String(value).trim(); borrower.provenance[field] = "imported_studentaid"; } });
     const relevantContact = active.flatMap((loan) => loan.contacts || []).find((contact) => contact.mostRelevant && contact.name) || active.flatMap((loan) => loan.contacts || []).find((contact) => contact.name);
     const summary = { loanCount: loans.length, activeLoanCount: active.length, totalOutstandingPrincipal: totalPrincipal, totalOutstandingInterest: totalInterest, repaymentLoanCount: repaymentLoans.length, eligibilityMappedLoanCount: active.length - ambiguousCount, ambiguousEligibilityLoanCount: ambiguousCount, hasLoanDisbursedOnOrAfterJuly1_2026: active.some((loan) => loan.disbursementPeriod === "on_or_after_2026_07_01") };
-    return { fileRequestDate, borrower, loans, repaymentLoans, eligibilityLoans, totalPrincipal, totalInterest, ambiguousCount, summary, servicerName: relevantContact?.name || null };
+    const diagnostics = { mappingVersion: "2026-09-05-v2", rawLineCount: rawLines.length, parsedLineCount: tokens.length, recognizedLabelCount: recognizedLabels.size, unmappedLabels: Array.from(unmappedLabels).filter(Boolean).sort(), structuralWarnings, validationIssues };
+    return { fileRequestDate, borrower, loans, repaymentLoans, eligibilityLoans, totalPrincipal, totalInterest, ambiguousCount, summary, servicerName: relevantContact?.name || null, diagnostics };
   }
 
   function provenanceLabel(value) {
@@ -1472,7 +1602,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
           source: "studentaid_download",
           importedAt: loanFile.files && loanFile.files[0] ? new Date().toISOString() : advisorClient.studentAidImport?.importedAt,
           ...(importedPortfolio?.fileRequestDate ? { fileRequestDate: importedPortfolio.fileRequestDate } : advisorClient.studentAidImport?.fileRequestDate ? { fileRequestDate: advisorClient.studentAidImport.fileRequestDate } : {}),
-          mappingVersion: "2026-08-28-v1",
+          mappingVersion: "2026-09-05-v2",
           rawFileRetained: false
         };
       }
@@ -2664,61 +2794,114 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
   function parseStudentAidData(text) {
     const student = {};
     const records = [];
+    const rawLines = text.split(/\r?\n/);
+    const tokens = rawLines.flatMap((rawLine, lineIndex) => {
+      const separator = rawLine.indexOf(":");
+      if (separator < 0) return [];
+      return [{ lineNumber: lineIndex + 1, key: rawLine.slice(0, separator).trim(), value: rawLine.slice(separator + 1).trim() }];
+    });
+    const hasAwardAnchors = tokens.some((token) => token.key === "Loan Award ID");
+    const firstAwardIndex = tokens.findIndex((token) => token.key === "Loan Award ID");
+    const firstTypeIndex = tokens.findIndex((token) => token.key === "Loan Type Code" || token.key === "Loan Type");
+    const awardFirstLayout = hasAwardAnchors && (firstTypeIndex < 0 || firstAwardIndex < firstTypeIndex);
+    const recognizedLabels = new Set();
+    const unmappedLabels = new Set();
+    const structuralWarnings = [];
+    const validationIssues = [];
     let fileRequestDate = null;
     let current = null;
     let currentStatus = null;
     let currentDisbursement = null;
+    let currentDelinquency = null;
     let currentContact = null;
-    const pushCurrent = () => { if (current) records.push(current); current = null; currentStatus = null; currentDisbursement = null; currentContact = null; };
+    const newLoan = () => ({ statuses: [], disbursements: [], delinquencies: [], contacts: [], provenance: {} });
+    const ensureCurrent = () => { if (!current) current = newLoan(); return current; };
+    const pushCurrent = () => { if (current) records.push(current); current = null; currentStatus = null; currentDisbursement = null; currentDelinquency = null; currentContact = null; };
+    const dateTimestamp = (value) => {
+      if (!value) return undefined;
+      const match = String(value).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      const timestamp = match ? Date.UTC(Number(match[3]), Number(match[1]) - 1, Number(match[2])) : Date.parse(value);
+      return Number.isFinite(timestamp) ? timestamp : undefined;
+    };
+    const latestStatus = (statuses) => {
+      let latest = undefined;
+      let latestTimestamp = Number.NEGATIVE_INFINITY;
+      (statuses || []).forEach((statusFact) => {
+        const timestamp = dateTimestamp(statusFact.effectiveDate);
+        if (timestamp !== undefined && timestamp > latestTimestamp) { latest = statusFact; latestTimestamp = timestamp; }
+      });
+      return latest || (statuses || [])[0];
+    };
     const textFields = {
-      "Loan Attending School Name":"attendingSchoolName", "Loan Attending School OPEID":"attendingSchoolOpeid", "Loan Date":"loanDate", "Loan Repayment Begin Date":"repaymentBeginDate", "Loan Period Begin Date":"periodBeginDate", "Loan Period End Date":"periodEndDate", "Loan Canceled Date":"canceledDate", "Loan Outstanding Principal Balance as of Date":"outstandingPrincipalAsOfDate", "Loan Outstanding Interest Balance as of Date":"outstandingInterestAsOfDate", "Loan Interest Rate Type Code":"interestRateTypeCode", "Loan Interest Rate Type Description":"interestRateTypeDescription", "Loan Repayment Plan Type Code":"repaymentPlanTypeCode", "Loan Repayment Plan Type Code Description":"repaymentPlanDescription", "Loan Repayment Plan Begin Date":"repaymentPlanBeginDate", "Loan Repayment Plan IDR Plan Anniversary Date":"repaymentPlanIdrAnniversaryDate", "Loan Confirmed Subsidy Status":"confirmedSubsidyStatus", "Loan Reaffirmation Date":"reaffirmationDate", "Loan Most Recent Payment Effective Date":"mostRecentPaymentEffectiveDate", "Loan Next Payment Due Date":"nextPaymentDueDate", "Academic Level":"academicLevel", "Award Year":"awardYear", "Reaffirmation flag":"reaffirmationFlag", "UpdtDt":"updateDate", "DelinqDate":"delinquencyDate", "Current Loan Status":"currentLoanStatusCode", "Current Loan Status Description":"currentLoanStatusDescription", "Parent Plus First Level Consolidation Indicator":"parentPlusFirstLevelConsolidationIndicator", "Consolidation Loan With Any Parent Plus Indicator":"consolidationLoanWithAnyParentPlusIndicator"
+      "Loan Attending School Name":"attendingSchoolName", "Loan Attending School OPEID":"attendingSchoolOpeid", "Loan Date":"loanDate", "Loan Repayment Begin Date":"repaymentBeginDate", "Loan Period Begin Date":"periodBeginDate", "Loan Period End Date":"periodEndDate", "Loan Canceled Date":"canceledDate", "Loan Outstanding Principal Balance as of Date":"outstandingPrincipalAsOfDate", "Loan Outstanding Interest Balance as of Date":"outstandingInterestAsOfDate", "Loan Interest Rate Type Code":"interestRateTypeCode", "Loan Interest Rate Type Description":"interestRateTypeDescription", "Loan Repayment Plan Type Code":"repaymentPlanTypeCode", "Loan Repayment Plan Type Code Description":"repaymentPlanDescription", "Loan Repayment Plan Begin Date":"repaymentPlanBeginDate", "Loan Repayment Plan IDR Plan Anniversary Date":"repaymentPlanIdrAnniversaryDate", "Loan Confirmed Subsidy Status":"confirmedSubsidyStatus", "Loan Reaffirmation Date":"reaffirmationDate", "Loan Most Recent Payment Effective Date":"mostRecentPaymentEffectiveDate", "Loan Next Payment Due Date":"nextPaymentDueDate", "Academic Level":"academicLevel", "Award Year":"awardYear", "Reaffirmation flag":"reaffirmationFlag", "UpdtDt":"updateDate", "Loan Updated Date":"updateDate", "Additional Unsubsidized Loan Flag":"additionalUnsubsidizedLoanFlag", "Joint Consolidation Loan Indicator":"jointConsolidationLoanIndicator", "Joint Consolidation Loan Separation Indicator":"jointConsolidationLoanSeparationIndicator", "Loan Special Contact Reason":"loanSpecialContactReason", "Loan Special Contact":"loanSpecialContact", "Current Loan Status":"currentLoanStatusCode", "Current Loan Status Description":"currentLoanStatusDescription", "Parent Plus First Level Consolidation Indicator":"parentPlusFirstLevelConsolidationIndicator", "Consolidation Loan With Any Parent Plus Indicator":"consolidationLoanWithAnyParentPlusIndicator"
     };
     const numericFields = {
       "Loan Amount":"originalAmount", "Loan Disbursed Amount":"disbursedAmount", "Loan Canceled Amount":"canceledAmount", "Loan Outstanding Principal Balance":"outstandingPrincipal", "Loan Outstanding Interest Balance":"outstandingInterest", "Loan Interest Rate":"interestRatePercent", "Loan Actual Interest Rate":"actualInterestRatePercent", "Loan Statutory Interest Rate":"statutoryInterestRatePercent", "Loan Repayment Plan Scheduled Amount":"repaymentPlanScheduledAmount", "Loan Subsidized Usage in Years":"subsidizedUsageYears", "Loan Cumulative Payment Amount":"cumulativePaymentAmount", "Loan PSLF Cumulative Matched Months":"pslfCumulativeMatchedMonths", "Capitalized Interest":"capitalizedInterest", "Net Loan Amount":"netLoanAmount", "Calculated Subsidized Aggregate OPB":"calculatedSubsidizedAggregateOpb", "Calculated Unsubsidized Aggregate OPB":"calculatedUnsubsidizedAggregateOpb", "Calculated Combined Aggregate OPB":"calculatedCombinedAggregateOpb", "Highest Historical Outstanding Principal Balance (OPB)":"highestHistoricalOutstandingPrincipalBalance", "Current Standard-Standard Schedule Payment Amount":"currentStandardSchedulePaymentAmount", "Permanent Standard-Standard Schedule Payment Amount":"permanentStandardSchedulePaymentAmount"
     };
-    for (const rawLine of text.split(/\r?\n/)) {
-      const separator = rawLine.indexOf(":");
-      if (separator < 0) continue;
-      const key = rawLine.slice(0, separator).trim();
-      const value = rawLine.slice(separator + 1).trim();
-      if (key === "File Request Date") { fileRequestDate = value || null; continue; }
-      if (key.startsWith("Student ")) { student[key] = value; continue; }
-      if (key === "Loan Type Code" || key === "Loan Type") {
+    for (const token of tokens) {
+      const { key, value, lineNumber } = token;
+      if (!key) continue;
+      if (key === "File Request Date") { recognizedLabels.add(key); fileRequestDate = value || null; continue; }
+      if (key.startsWith("Student ") || key.startsWith("Grant ")) { recognizedLabels.add(key); if (key.startsWith("Student ")) student[key] = value; continue; }
+      if (key === "Loan Award ID") {
+        recognizedLabels.add(key);
+        if (!current) current = newLoan();
+        else if (current.__hasAwardAnchor) { pushCurrent(); current = newLoan(); }
+        current.__hasAwardAnchor = true;
+        const masked = maskStudentAidIdentifierLocal(value);
+        if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; }
+        continue;
+      }
+      if ((!hasAwardAnchors || !awardFirstLayout) && (key === "Loan Type Code" || key === "Loan Type")) {
+        recognizedLabels.add(key);
         pushCurrent();
-        current = { loanTypeCode: key === "Loan Type Code" ? value : null, loanTypeDescription: key === "Loan Type" ? value : null, statuses: [], disbursements: [], contacts: [], provenance: {} };
+        current = newLoan();
+        current[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = value || null;
         if (value) current.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid";
         continue;
       }
-      if (!current) continue;
-      if (key === "Loan Type Description") { current.loanTypeDescription = value || null; if (value) current.provenance.loanTypeDescription = "imported_studentaid"; continue; }
-      if (key === "Loan Award ID") { const masked = maskStudentAidIdentifierLocal(value); if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; } continue; }
-      if (textFields[key]) { if (value) { current[textFields[key]] = value; current.provenance[textFields[key]] = "imported_studentaid"; } continue; }
-      if (numericFields[key]) { const number = numericValue(value); if (number !== undefined) { current[numericFields[key]] = number; current.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
-      if (key === "Loan Status") { currentStatus = { code: value || undefined }; current.statuses.push(currentStatus); continue; }
-      if (key === "Loan Status Description" && currentStatus) { currentStatus.description = value || undefined; continue; }
-      if (key === "Loan Status Effective Date" && currentStatus) { currentStatus.effectiveDate = value || undefined; continue; }
-      if (key === "Loan Disbursement Date") { currentDisbursement = { date: value || undefined }; current.disbursements.push(currentDisbursement); continue; }
-      if (key === "Loan Disbursement Amount" && currentDisbursement) { currentDisbursement.amount = numericValue(value); continue; }
-      if (key === "Loan Contact Type") { currentContact = { type: value || undefined }; current.contacts.push(currentContact); continue; }
-      if (currentContact && key.startsWith("Loan Contact ")) {
+      if (key === "Loan Type Code" || key === "Loan Type") { recognizedLabels.add(key); const loan = ensureCurrent(); loan[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = value || null; if (value) loan.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid"; continue; }
+      if (key === "Loan Type Description") { recognizedLabels.add(key); const loan = ensureCurrent(); loan.loanTypeDescription = value || null; if (value) loan.provenance.loanTypeDescription = "imported_studentaid"; continue; }
+      if (textFields[key]) { recognizedLabels.add(key); const loan = ensureCurrent(); if (value) { loan[textFields[key]] = value; loan.provenance[textFields[key]] = "imported_studentaid"; } continue; }
+      if (numericFields[key]) { recognizedLabels.add(key); const loan = ensureCurrent(); const number = numericValue(value); if (number !== undefined) { loan[numericFields[key]] = number; loan.provenance[numericFields[key]] = "imported_studentaid"; } continue; }
+      if (key === "Loan Delinquency Date" || key === "DelinqDate") { recognizedLabels.add(key); const loan = ensureCurrent(); currentDelinquency = { date: value || undefined }; loan.delinquencies.push(currentDelinquency); loan.delinquencyDate = value || undefined; if (value) loan.provenance.delinquencyDate = "imported_studentaid"; continue; }
+      if (key === "Loan Delinquency End Date") { recognizedLabels.add(key); const loan = ensureCurrent(); loan.delinquencyEndDate = value || undefined; if (value) loan.provenance.delinquencyEndDate = "imported_studentaid"; if (currentDelinquency) currentDelinquency.endDate = value || undefined; else structuralWarnings.push("Line " + lineNumber + ": Loan Delinquency End Date appeared without a preceding delinquency start date."); continue; }
+      if (key === "Loan Status") { recognizedLabels.add(key); const loan = ensureCurrent(); currentStatus = { code: value || undefined }; loan.statuses.push(currentStatus); continue; }
+      if (key === "Loan Status Description") { recognizedLabels.add(key); if (currentStatus) currentStatus.description = value || undefined; else structuralWarnings.push("Line " + lineNumber + ": Loan Status Description appeared without a preceding Loan Status."); continue; }
+      if (key === "Loan Status Effective Date") { recognizedLabels.add(key); if (currentStatus) currentStatus.effectiveDate = value || undefined; else structuralWarnings.push("Line " + lineNumber + ": Loan Status Effective Date appeared without a preceding Loan Status."); continue; }
+      if (key === "Loan Disbursement Date") { recognizedLabels.add(key); const loan = ensureCurrent(); currentDisbursement = { date: value || undefined }; loan.disbursements.push(currentDisbursement); continue; }
+      if (key === "Loan Disbursement Amount") { recognizedLabels.add(key); if (currentDisbursement) currentDisbursement.amount = numericValue(value); else structuralWarnings.push("Line " + lineNumber + ": Loan Disbursement Amount appeared without a preceding disbursement date."); continue; }
+      if (key === "Loan Contact Type") { recognizedLabels.add(key); const loan = ensureCurrent(); currentContact = { type: value || undefined }; loan.contacts.push(currentContact); continue; }
+      if (key.startsWith("Loan Contact ")) {
         const contactFields = { "Loan Contact Code":"code", "Loan Contact Name":"name", "Loan Contact Street Address 1":"streetAddress1", "Loan Contact Street Address 2":"streetAddress2", "Loan Contact City":"city", "Loan Contact State Code":"stateCode", "Loan Contact Zip Code":"zipCode", "Loan Contact Phone Number":"phoneNumber", "Loan Contact Phone Extension":"phoneExtension", "Loan Contact Email Address":"emailAddress", "Loan Contact Web Site Address":"websiteAddress" };
-        if (contactFields[key] && value) currentContact[contactFields[key]] = value;
+        if (contactFields[key]) { recognizedLabels.add(key); if (currentContact && value) currentContact[contactFields[key]] = value; else if (!currentContact) structuralWarnings.push("Line " + lineNumber + ": " + key + " appeared without a preceding Loan Contact Type."); }
+        else unmappedLabels.add(key);
         continue;
       }
-      if (key === "Most Relevant" && currentContact) { currentContact.mostRelevant = studentAidYesLocal(value) === true; continue; }
+      if (key === "Most Relevant") { recognizedLabels.add(key); if (currentContact) currentContact.mostRelevant = studentAidYesLocal(value) === true; else structuralWarnings.push("Line " + lineNumber + ": Most Relevant appeared without a preceding Loan Contact Type."); continue; }
+      unmappedLabels.add(key);
     }
     pushCurrent();
+    if (!hasAwardAnchors && records.length) structuralWarnings.push("Loan Award ID anchors were not present; parser used the conservative legacy loan-boundary fallback.");
+    if (!records.length) validationIssues.push("No loan records were assembled from the StudentAid data.");
     const loans = records.map((loan, loanIndex) => {
       const dateForPeriod = loan.disbursements.find((item) => item.date)?.date || loan.loanDate;
       const mappedLoanType = mapLoanType(loan.loanTypeCode, loan.loanTypeDescription, loan.consolidationLoanWithAnyParentPlusIndicator);
       const period = disbursementPeriod(dateForPeriod);
-      const status = String(loan.currentLoanStatusDescription || loan.statuses.at(-1)?.description || "").toUpperCase();
+      const newestStatus = latestStatus(loan.statuses || []);
+      const explicitCode = String(loan.currentLoanStatusCode || "").trim().toUpperCase();
+      const explicitDescription = String(loan.currentLoanStatusDescription || "").trim().toUpperCase();
+      const newestCode = String(newestStatus?.code || "").trim().toUpperCase();
+      const newestDescription = String(newestStatus?.description || "").trim().toUpperCase();
+      if ((explicitCode && newestCode && explicitCode !== newestCode) || (explicitDescription && newestDescription && explicitDescription !== newestDescription)) structuralWarnings.push("Loan " + (loanIndex + 1) + ": explicit current status differs from the newest dated status timeline entry.");
+      const status = explicitDescription || newestDescription;
       const inDefault = status.includes("DEFAULT") && !status.includes("NON-DEFAULT");
       const provenance = { ...loan.provenance };
       if (mappedLoanType) provenance.mappedLoanType = "derived_studentaid";
       if (period) provenance.disbursementPeriod = "derived_studentaid";
       provenance.inDefault = "derived_studentaid";
-      return { ...loan, loanIndex, mappedLoanType, disbursementPeriod: period, inDefault, provenance };
+      const { __hasAwardAnchor, ...normalizedLoan } = loan;
+      return { ...normalizedLoan, loanIndex, mappedLoanType, disbursementPeriod: period, inDefault, provenance };
     });
     const active = loans.filter((loan) => typeof loan.outstandingPrincipal === "number" && loan.outstandingPrincipal > 0);
     const repaymentLoans = active.filter((loan) => typeof loan.interestRatePercent === "number").map((loan) => ({ principal: loan.outstandingPrincipal, annualInterestRatePercent: loan.interestRatePercent }));
@@ -2735,7 +2918,8 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
     [["displayName",name],["email",student["Student Email Address"]],["phone",phone],["streetAddress1",student["Student Street Address 1"]],["streetAddress2",student["Student Street Address 2"]],["city",student["Student City"]],["stateCode",student["Student State Code"]],["countryCode",student["Student Country Code"]],["zipCode",student["Student Zip Code"]]].forEach(([field,value]) => { if (value) { borrower[field] = String(value).trim(); borrower.provenance[field] = "imported_studentaid"; } });
     const relevantContact = active.flatMap((loan) => loan.contacts || []).find((contact) => contact.mostRelevant && contact.name) || active.flatMap((loan) => loan.contacts || []).find((contact) => contact.name);
     const summary = { loanCount: loans.length, activeLoanCount: active.length, totalOutstandingPrincipal: totalPrincipal, totalOutstandingInterest: totalInterest, repaymentLoanCount: repaymentLoans.length, eligibilityMappedLoanCount: active.length - ambiguousCount, ambiguousEligibilityLoanCount: ambiguousCount, hasLoanDisbursedOnOrAfterJuly1_2026: active.some((loan) => loan.disbursementPeriod === "on_or_after_2026_07_01") };
-    return { fileRequestDate, borrower, loans, repaymentLoans, eligibilityLoans, totalPrincipal, totalInterest, ambiguousCount, summary, servicerName: relevantContact?.name || null };
+    const diagnostics = { mappingVersion: "2026-09-05-v2", rawLineCount: rawLines.length, parsedLineCount: tokens.length, recognizedLabelCount: recognizedLabels.size, unmappedLabels: Array.from(unmappedLabels).filter(Boolean).sort(), structuralWarnings, validationIssues };
+    return { fileRequestDate, borrower, loans, repaymentLoans, eligibilityLoans, totalPrincipal, totalInterest, ambiguousCount, summary, servicerName: relevantContact?.name || null, diagnostics };
   }
 
   async function api(path, init = {}) {
@@ -2994,7 +3178,7 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
     if (studentAidPortfolio.loans && studentAidPortfolio.loans.length) {
       payload.normalizedLoanPortfolio = { repaymentLoans: studentAidPortfolio.repaymentLoans || [], ...(studentAidPortfolio.eligibilityLoans ? { eligibilityLoans: studentAidPortfolio.eligibilityLoans } : {}), loans: studentAidPortfolio.loans, summary: studentAidPortfolio.summary };
     }
-    payload.studentAidImport = { source: "studentaid_download", importedAt: new Date().toISOString(), mappingVersion: "2026-08-28-v1", rawFileRetained: false, ...(studentAidPortfolio.fileRequestDate ? { fileRequestDate: studentAidPortfolio.fileRequestDate } : {}) };
+    payload.studentAidImport = { source: "studentaid_download", importedAt: new Date().toISOString(), mappingVersion: "2026-09-05-v2", rawFileRetained: false, ...(studentAidPortfolio.fileRequestDate ? { fileRequestDate: studentAidPortfolio.fileRequestDate } : {}) };
     try {
       const body = await api("/api/advisor/clients", { method: "POST", body: JSON.stringify(payload) });
       window.location.href = "/?advisorClient=" + encodeURIComponent(body.client.clientId);
