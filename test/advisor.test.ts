@@ -179,6 +179,9 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
   assert.match(advisorHtml, /2026-09-05-v2/);
   assert.match(advisorHtml, /awardFirstLayout/);
   assert.match(advisorHtml, /Loan Delinquency End Date/);
+  assert.match(advisorHtml, /Parser mapping/);
+  assert.match(advisorHtml, /Unmapped FSA labels/);
+  assert.match(advisorHtml, /parser diagnostics below/i);
   assert.doesNotMatch(advisorHtml, /localStorage|sessionStorage/);
 
   const guidedUi = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
