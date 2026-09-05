@@ -3096,7 +3096,8 @@ const SHARE_UI_HTML = String.raw`<!doctype html>
   <section id="signed-panel" class="panel" hidden>
     <h3>You're all set, for now</h3>
     <p id="signed-summary"></p>
-    <p class="muted">Your advisor will follow up to schedule enrollment. Booking through this page isn't available yet — your advisor can help schedule directly.</p>
+    <p class="muted">Book a time to enroll below, or your advisor can help schedule directly.</p>
+    <iframe id="booking-embed" src="https://cal.com/jared-edwards-gscxmo?embed=true" style="width:100%;min-height:640px;border:0;border-radius:12px;" loading="lazy" title="Book your enrollment call"></iframe>
     <div class="actions"><button type="button" id="download-document">Download supporting document</button></div>
     <p id="download-status" class="muted" role="status" aria-live="polite"></p>
   </section>
@@ -3346,7 +3347,7 @@ function shareUiResponse(): Response {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-src https://cal.com https://app.cal.com; base-uri 'none'; frame-ancestors 'none'",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY"
