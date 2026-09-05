@@ -254,6 +254,11 @@ test("real-size normalized FSA portfolios can create and update advisor clients 
   const d1 = new SqliteD1();
   d1.database.exec(migration);
   const env = { ADVISOR_DB: d1 };
+  const health = await worker.fetch(new Request(`${BASE}/health`), env);
+  const healthBody = await health.json();
+  assert.equal(health.status, 200);
+  assert.equal(healthBody.hardening.max_request_bytes, 64 * 1024, "general/MCP request ceiling must remain 64 KiB");
+  assert.equal(healthBody.advisor_workspace.max_normalized_client_request_bytes, 512 * 1024, "normalized client create/update ceiling must be independently bounded");
   const advisor = await register(env, "large-fsa@example.test", "Large FSA Advisor");
 
   const loans = Array.from({ length: 32 }, (_, loanIndex) => ({
