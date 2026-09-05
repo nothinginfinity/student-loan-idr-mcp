@@ -339,6 +339,7 @@ export function deriveAdvisorClientCaseContext(client: AdvisorClientRecordV1): A
   const currentRepaymentPlans = (intelligence?.planDistribution ?? [])
     .filter((item) => item.key !== "unreported")
     .map((item) => item.description || item.code || item.key);
+  const preferredServicerName = client.servicerName ?? intelligence?.servicerRouting.preferred?.contact.name;
   const idrAnniversaryDates = [...new Set(loans.map((loan) => loan.repaymentPlanIdrAnniversaryDate).filter((value): value is string => Boolean(value)))].sort();
   const nextPaymentDueDates = [...new Set(loans.map((loan) => loan.nextPaymentDueDate).filter((value): value is string => Boolean(value)))].sort();
   const coverageTotal = Math.max(activeLoanCount, repaymentLoans.length);
@@ -365,7 +366,7 @@ export function deriveAdvisorClientCaseContext(client: AdvisorClientRecordV1): A
       displayName: client.contact.displayName,
       ...(client.contact.email ? { email: client.contact.email } : {}),
       ...(client.contact.phone ? { phone: client.contact.phone } : {}),
-      ...(client.servicerName || intelligence?.servicerRouting.preferred?.contact.name ? { servicerName: client.servicerName || intelligence?.servicerRouting.preferred?.contact.name } : {}),
+      ...(preferredServicerName ? { servicerName: preferredServicerName } : {}),
       activeLoanCount,
       totalOutstandingPrincipal,
       totalOutstandingInterest,
