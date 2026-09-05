@@ -359,6 +359,7 @@ jobs:
             assert(health.advisor_workspace?.student_aid_normalized_prefill === true, 'StudentAid normalized prefill flag missing');
             assert(health.advisor_workspace?.student_aid_per_loan_facts === true, 'StudentAid per-loan fact flag missing');
             assert(health.advisor_workspace?.fsa_portfolio_intelligence === true, 'FSA portfolio intelligence flag missing');
+            assert(health.advisor_workspace?.client_case_context_v1 === true, 'V0.9.4 client case-context capability flag missing');
             assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
             assert(health.advisor_workspace?.max_normalized_client_request_bytes === 524288, 'normalized advisor client request ceiling mismatch');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
@@ -511,6 +512,24 @@ jobs:
             const betaIntelligence = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/intelligence`, {}, beta);
             assert(betaIntelligence.response.status === 404 && betaIntelligence.body?.error === 'Client not found or not accessible.', 'cross-advisor portfolio intelligence must fail generically');
 
+            const caseContext = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/case-context`, {}, alpha);
+            assert(caseContext.response.status === 200 && caseContext.body?.ok === true, 'V0.9.4 client case-context endpoint failed');
+            assert(caseContext.body?.caseContext?.schema === 'student-loan-idr-client-case-context-v1', 'V0.9.4 case-context schema mismatch');
+            assert(caseContext.body?.caseContext?.schemaVersion === 1, 'V0.9.4 case-context version mismatch');
+            assert(caseContext.body?.caseContext?.professionalSummary?.displayName === 'Live Private Borrower', 'V0.9.4 professional borrower summary mismatch');
+            assert(caseContext.body?.caseContext?.professionalSummary?.totalOutstandingPrincipal === 17500, 'V0.9.4 professional principal summary mismatch');
+            assert(caseContext.body?.caseContext?.professionalSummary?.totalOutstandingInterest === 175, 'V0.9.4 professional interest summary mismatch');
+            assert(caseContext.body?.caseContext?.asOf?.studentAidFileRequestDate === '08/28/2026', 'V0.9.4 StudentAid as-of metadata mismatch');
+            assert(caseContext.body?.caseContext?.asOf?.portfolioAsOfDate === '2026-08-28', 'V0.9.4 deterministic portfolio as-of date mismatch');
+            assert(caseContext.body?.caseContext?.normalizedFacts?.confirmedFacts?.familySize === 2, 'V0.9.4 normalized confirmed facts missing');
+            assert(caseContext.body?.caseContext?.provenance?.fields?.email === 'advisor_entered', 'V0.9.4 field provenance missing');
+            assert(caseContext.body?.caseContext?.deterministicIntelligence?.schema === 'student-aid-portfolio-intelligence-v1', 'V0.9.4 deterministic intelligence missing');
+            assert(caseContext.body?.caseContext?.coverage?.comparisonReadiness === 'complete', 'V0.9.4 comparison-readiness coverage mismatch');
+            assert(Array.isArray(caseContext.body?.caseContext?.missingInformation), 'V0.9.4 missing-information flags missing');
+            assert(Array.isArray(caseContext.body?.caseContext?.warnings), 'V0.9.4 case warnings missing');
+            const betaCaseContext = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/case-context`, {}, beta);
+            assert(betaCaseContext.response.status === 404 && betaCaseContext.body?.error === 'Client not found or not accessible.', 'cross-advisor case-context access must fail generically');
+
             const comparison = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/comparison`, {}, alpha);
             assert(comparison.response.status === 200 && comparison.body?.ok === true, 'advisor comparison endpoint failed');
             assert(comparison.body?.comparison?.schema === 'student-loan-idr-advisor-comparison-v1', 'advisor comparison schema mismatch');
@@ -564,6 +583,7 @@ jobs:
 
             const exportedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/export`, {}, alpha);
             assert(exportedClient.response.status === 200 && exportedClient.body?.schema === 'student-loan-idr-advisor-client-export-v2', 'advisor client export failed');
+            assert(exportedClient.body?.caseContext?.schema === 'student-loan-idr-client-case-context-v1', 'advisor client export omitted V0.9.4 case context');
             assert(exportedClient.body?.retainedArtifacts?.length === 1 && exportedClient.body?.calculationSnapshots?.length === 2, 'advisor client export omitted retained history');
 
             const deletedArtifact = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/artifacts/${retainedArtifactId}`, { method: 'DELETE', body: '{}' }, alpha);
@@ -601,6 +621,7 @@ jobs:
             assert(advisorUiHtml.includes('id="client-list"'), 'advisor client dashboard missing');
             assert(advisorUiHtml.includes('Open guided workflow'), 'advisor guided-client action missing');
             assert(/raw StudentAid\.gov downloads/i.test(advisorUiHtml), 'advisor raw-file privacy boundary missing');
+            assert(advisorUiHtml.includes('fieldProvenance: { ...(borrower.provenance || {}) }'), 'advisor one-click FSA intake must carry imported contact provenance');
             assert(!advisorUiHtml.includes('localStorage') && !advisorUiHtml.includes('sessionStorage'), 'advisor UI must not create browser persistence');
 
             const uiResponse = await fetchChecked(`${base}/?advisorClient=client_00000000-0000-0000-0000-000000000000`);
@@ -612,6 +633,9 @@ jobs:
             assert(uiHtml.includes('id="advisor-client-bar"'), 'saved advisor-client workflow bar missing');
             assert(uiHtml.includes('id="advisor-save-progress"'), 'saved advisor-client progress control missing');
             assert(uiHtml.includes('id="advisor-regenerate-document"'), 'advisor document-regeneration control missing');
+            assert(uiHtml.includes('id="advisor-view-case-file"'), 'V0.9.4 advisor case-file control missing');
+            assert(uiHtml.includes('id="advisor-case-workspace"') && uiHtml.includes('Client case file') && uiHtml.includes('Case context v1'), 'V0.9.4 advisor case-file workspace missing');
+            assert(uiHtml.includes('/case-context'), 'V0.9.4 case-context client integration missing');
             assert(uiHtml.includes('id="advisor-view-intelligence"'), 'advisor portfolio-intelligence control missing');
             assert(uiHtml.includes('id="advisor-intelligence-workspace"') && uiHtml.includes('FSA portfolio intelligence'), 'advisor portfolio-intelligence workspace missing');
             assert(uiHtml.includes('id="advisor-compare-plans"'), 'advisor repayment-comparison control missing');
