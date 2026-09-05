@@ -1,7 +1,7 @@
 import { scryptSync } from "node:crypto";
 import { calculateRepayment } from "./formulas.ts";
 import { getDocumentationTemplate } from "./templates.ts";
-import type { AdvisorAccountStatus, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, StudentAidLoanContactFact, StudentAidNormalizedLoanFact, StudentAidPortfolioIntelligence, StudentAidStatusIntervalIntelligence, TemplateRequest } from "./types.ts";
+import type { AdvisorAccountStatus, AdvisorClientCaseContextV1, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, StudentAidLoanContactFact, StudentAidNormalizedLoanFact, StudentAidPortfolioIntelligence, StudentAidStatusIntervalIntelligence, TemplateRequest } from "./types.ts";
 
 const COOKIE = "sl_advisor_session";
 const TTL_SECONDS = 12 * 60 * 60;
@@ -295,6 +295,111 @@ export function deriveStudentAidPortfolioIntelligence(client: AdvisorClientRecor
         note: aggregateLoans.length === 0 ? "No Calculated Combined Aggregate OPB source facts were available." : aggregateLoans.length < activeLoans.length ? "Aggregate contribution coverage is partial; compare only after reviewing missing loan rows." : principalStatus === "pass" ? "Aggregate contribution sum reconciles to parsed active-loan principal within one cent." : "Aggregate contribution sum differs from parsed active-loan principal; review consolidation and aggregate source facts."
       },
       interest: { status: "unavailable", parsedInterestSum: roundCents(activeLoans.reduce((sum, loan) => sum + (loan.outstandingInterest ?? 0), 0)), note: "No separate portfolio aggregate-interest counterpart is stored in the current normalized FSA mapping, so interest is reported with coverage but not force-reconciled." }
+    },
+    warnings
+  };
+}
+
+export function deriveAdvisorClientCaseContext(client: AdvisorClientRecordV1): AdvisorClientCaseContextV1 {
+  const portfolio = client.normalizedLoanPortfolio;
+  const loans = portfolio?.loans ?? [];
+  const repaymentLoans = portfolio?.repaymentLoans ?? [];
+  const summary = portfolio?.summary;
+  const intelligence = loans.length ? deriveStudentAidPortfolioIntelligence(client) : undefined;
+  const activeLoanCount = summary?.activeLoanCount ?? intelligence?.activeLoanCount ?? repaymentLoans.length;
+  const totalOutstandingPrincipal = roundCents(summary?.totalOutstandingPrincipal ?? intelligence?.reconciliation.principal.parsedPrincipalSum ?? repaymentLoans.reduce((sum, loan) => sum + loan.principal, 0));
+  const totalOutstandingInterest = roundCents(summary?.totalOutstandingInterest ?? intelligence?.interest.outstandingInterestSum ?? loans.reduce((sum, loan) => sum + (loan.outstandingInterest ?? 0), 0));
+  const fields = { ...(client.fieldProvenance ?? {}) };
+  const markMissingProvenance = (path: string, present: boolean) => { if (present && !fields[path]) fields[path] = "missing_review"; };
+  for (const key of ["displayName", "email", "phone", "streetAddress1", "streetAddress2", "city", "stateCode", "countryCode", "zipCode"] as const) markMissingProvenance(key, Boolean(client.contact[key]));
+  markMissingProvenance("servicerName", Boolean(client.servicerName));
+  const facts = client.confirmedFacts;
+  markMissingProvenance("confirmedFacts.income", Boolean(facts?.income?.length));
+  markMissingProvenance("confirmedFacts.incomeSources", Boolean(facts?.incomeSources?.length));
+  markMissingProvenance("confirmedFacts.region", Boolean(facts?.region));
+  markMissingProvenance("confirmedFacts.familySize", typeof facts?.familySize === "number");
+  markMissingProvenance("confirmedFacts.dependentsClaimedOnFederalTaxReturn", typeof facts?.dependentsClaimedOnFederalTaxReturn === "number");
+  markMissingProvenance("confirmedFacts.taxFilingStatus", Boolean(facts?.taxFilingStatus));
+  markMissingProvenance("confirmedFacts.newBorrowerOnOrAfterJuly1_2014", typeof facts?.newBorrowerOnOrAfterJuly1_2014 === "boolean");
+
+  const missingInformation: AdvisorClientCaseContextV1["missingInformation"] = [];
+  const missing = (key: string, label: string, requiredFor: AdvisorClientCaseContextV1["missingInformation"][number]["requiredFor"], blocking: boolean) => missingInformation.push({ key, label, requiredFor, blocking });
+  if (!facts?.income?.length) missing("current_income", "Current normalized taxable income", ["comparison", "advisor_review"], true);
+  if (!facts?.region) missing("region", "Poverty-guideline region", ["comparison"], true);
+  if (typeof facts?.familySize !== "number") missing("family_size", "Legacy IDR family size", ["comparison"], true);
+  if (typeof facts?.dependentsClaimedOnFederalTaxReturn !== "number") missing("dependents", "Federal tax-return dependents", ["comparison"], true);
+  if (!repaymentLoans.length) missing("repayment_loan_facts", "Loan balances and interest rates", ["comparison", "advisor_review"], true);
+  const mappedEligibilityCount = summary?.eligibilityMappedLoanCount ?? portfolio?.eligibilityLoans?.length ?? 0;
+  if (activeLoanCount > mappedEligibilityCount) missing("eligibility_mapping", "Loan type/disbursement eligibility mapping", ["eligibility_review"], false);
+  if (!facts?.taxFilingStatus) missing("tax_filing_status", "Tax filing status", ["eligibility_review"], false);
+  if (typeof facts?.newBorrowerOnOrAfterJuly1_2014 !== "boolean") missing("ibr_borrower_timing", "IBR borrower timing", ["forgiveness_projection"], false);
+  if (!loans.length) missing("per_loan_fsa_facts", "Normalized per-loan StudentAid facts", ["advisor_review"], false);
+  if (!client.contact.email && !client.contact.phone) missing("contact_channel", "Borrower email or phone", ["advisor_review"], false);
+
+  const currentRepaymentPlans = (intelligence?.planDistribution ?? [])
+    .filter((item) => item.key !== "unreported")
+    .map((item) => item.description || item.code || item.key);
+  const idrAnniversaryDates = [...new Set(loans.map((loan) => loan.repaymentPlanIdrAnniversaryDate).filter((value): value is string => Boolean(value)))].sort();
+  const nextPaymentDueDates = [...new Set(loans.map((loan) => loan.nextPaymentDueDate).filter((value): value is string => Boolean(value)))].sort();
+  const coverageTotal = Math.max(activeLoanCount, repaymentLoans.length);
+  const comparisonPresent = Number(Boolean(facts?.income?.length)) + Number(Boolean(facts?.region)) + Number(typeof facts?.familySize === "number") + Number(typeof facts?.dependentsClaimedOnFederalTaxReturn === "number") + Number(Boolean(repaymentLoans.length));
+  const warnings = [...(intelligence?.warnings ?? [])];
+  if ((summary?.ambiguousEligibilityLoanCount ?? 0) > 0) warnings.push(`${summary!.ambiguousEligibilityLoanCount} active loan record(s) have ambiguous eligibility mapping and require advisor review.`);
+  const blockingCount = missingInformation.filter((item) => item.blocking).length;
+  if (blockingCount) warnings.push(`${blockingCount} case fact area(s) are still blocking a complete repayment comparison.`);
+
+  return {
+    schema: "student-loan-idr-client-case-context-v1",
+    schemaVersion: 1,
+    clientId: client.clientId,
+    clientUpdatedAt: client.updatedAt,
+    lifecycleState: client.lifecycleState,
+    readinessState: client.readinessState,
+    asOf: {
+      caseUpdatedAt: client.updatedAt,
+      ...(client.studentAidImport?.importedAt ? { studentAidImportedAt: client.studentAidImport.importedAt } : {}),
+      ...(client.studentAidImport?.fileRequestDate ? { studentAidFileRequestDate: client.studentAidImport.fileRequestDate } : {}),
+      ...(intelligence?.asOfDate ? { portfolioAsOfDate: intelligence.asOfDate } : {})
+    },
+    professionalSummary: {
+      displayName: client.contact.displayName,
+      ...(client.contact.email ? { email: client.contact.email } : {}),
+      ...(client.contact.phone ? { phone: client.contact.phone } : {}),
+      ...(client.servicerName || intelligence?.servicerRouting.preferred?.contact.name ? { servicerName: client.servicerName || intelligence?.servicerRouting.preferred?.contact.name } : {}),
+      activeLoanCount,
+      totalOutstandingPrincipal,
+      totalOutstandingInterest,
+      currentRepaymentPlans,
+      ...(intelligence?.scheduledPayment.reportedAmountSum !== undefined ? { reportedScheduledPaymentSum: intelligence.scheduledPayment.reportedAmountSum } : {}),
+      currentForbearanceLoanCount: intelligence?.forbearance.currentLoanCount ?? 0,
+      currentDelinquencyLoanCount: intelligence?.loans.filter((loan) => loan.active && loan.delinquency.currentlyDelinquent).length ?? 0,
+      idrAnniversaryDates,
+      nextPaymentDueDates
+    },
+    normalizedFacts: {
+      contact: client.contact,
+      ...(client.servicerName ? { servicerName: client.servicerName } : {}),
+      ...(facts ? { confirmedFacts: facts } : {}),
+      ...(portfolio ? { loanPortfolio: portfolio } : {}),
+      ...(client.consideredPlans?.length ? { consideredPlans: client.consideredPlans } : {})
+    },
+    provenance: {
+      fields,
+      loans: loans.map((loan) => ({ loanIndex: loan.loanIndex, fields: { ...(loan.provenance ?? {}) } }))
+    },
+    ...(intelligence ? { deterministicIntelligence: intelligence } : {}),
+    missingInformation,
+    coverage: {
+      contact: client.contact.displayName && (client.contact.email || client.contact.phone) ? "complete" : client.contact.displayName ? "partial" : "none",
+      loanPortfolio: coverageState(repaymentLoans.length, coverageTotal),
+      eligibilityMapping: coverageState(mappedEligibilityCount, activeLoanCount),
+      currentIncome: facts?.income?.length ? "complete" : "none",
+      familySize: typeof facts?.familySize === "number" ? "complete" : "none",
+      dependents: typeof facts?.dependentsClaimedOnFederalTaxReturn === "number" ? "complete" : "none",
+      region: facts?.region ? "complete" : "none",
+      comparisonReadiness: coverageState(comparisonPresent, 5),
+      scheduledPayment: intelligence?.scheduledPayment.coverage ?? "none",
+      outstandingInterest: intelligence?.interest.outstandingInterestCoverage ?? "none"
     },
     warnings
   };
@@ -723,7 +828,7 @@ async function listClients(request:Request,database:D1DatabaseBinding,a:Auth){ c
 function normalizeMatchText(value: string | undefined): string | undefined { const t = (value ?? "").trim().toLowerCase(); return t || undefined; }
 function normalizeMatchPhone(value: string | undefined): string | undefined { const t = (value ?? "").replace(/[^0-9]/g, ""); return t.length >= 7 ? t : undefined; }
 async function matchClients(request:Request,database:D1DatabaseBinding,a:Auth){ sameOrigin(request); const b=await body(request), allowed=new Set(["displayName","email","phone"]); for(const k of Object.keys(b)) if(!allowed.has(k)) throw new ApiError(400,`Unexpected match field: ${k}.`); const name=optionalText(b.displayName,"Client name",120), em=optionalText(b.email,"Client email",254), ph=optionalText(b.phone,"Client phone",80); if(!name&&!em&&!ph) throw new ApiError(400,"At least one of displayName, email, or phone is required to check for matches."); const normName=normalizeMatchText(name), normEmail=normalizeMatchText(em), normPhone=normalizeMatchPhone(ph); const rows=await database.prepare("SELECT client_id,display_name,lifecycle_state,readiness_state,record_json,updated_at FROM advisor_clients WHERE owner_advisor_id=? ORDER BY updated_at DESC LIMIT 500").bind(a.account.advisor_id).all<ClientRow>(); const matches:Array<{clientId:string;displayName:string;lifecycleState:AdvisorClientLifecycleState;readinessState:AdvisorClientReadinessState;matchStrength:"strong"|"name_only";matchedOn:string[]}>=[]; for (const row of rows.results) { const client=parseClient(row); const matchedOn:string[]=[]; let strong=false; const rowEmail=normalizeMatchText(client.contact.email), rowPhone=normalizeMatchPhone(client.contact.phone), rowName=normalizeMatchText(client.contact.displayName); if(normEmail&&rowEmail&&normEmail===rowEmail){strong=true;matchedOn.push("email");} if(normPhone&&rowPhone&&normPhone===rowPhone){strong=true;matchedOn.push("phone");} if(normName&&rowName&&normName===rowName)matchedOn.push("displayName"); if(matchedOn.length===0)continue; matches.push({clientId:row.client_id,displayName:row.display_name,lifecycleState:row.lifecycle_state,readinessState:row.readiness_state,matchStrength:strong?"strong":"name_only",matchedOn}); } matches.sort((x,y)=>x.matchStrength===y.matchStrength?0:x.matchStrength==="strong"?-1:1); return json({ok:true,matches:matches.slice(0,10)}); }
-async function createClient(request:Request,database:D1DatabaseBinding,a:Auth){ sameOrigin(request); const b=await body(request,MAX_CLIENT_BODY_BYTES), allowed=new Set(["displayName","email","phone","contact","servicerName","normalizedLoanPortfolio","studentAidImport","fieldProvenance"]); for(const k of Object.keys(b)) if(!allowed.has(k)) throw new ApiError(400,`Unexpected client field: ${k}.`); if(b.contact!==undefined&&(b.displayName!==undefined||b.email!==undefined||b.phone!==undefined)) throw new ApiError(400,"Use either contact or displayName/email/phone, not both."); let contact:AdvisorClientRecordV1["contact"]; if(b.contact!==undefined){ const c=bodyObject(b.contact), allowedContact=new Set(["displayName","email","phone","streetAddress1","streetAddress2","city","stateCode","countryCode","zipCode"]); for(const k of Object.keys(c)) if(!allowedContact.has(k)) throw new ApiError(400,`Unexpected contact field: ${k}.`); const em=optionalText(c.email,"Client email",254), ph=optionalText(c.phone,"Client phone",80), streetAddress1=optionalText(c.streetAddress1,"Client street address",200), streetAddress2=optionalText(c.streetAddress2,"Client street address 2",200), city=optionalText(c.city,"Client city",120), stateCode=optionalText(c.stateCode,"Client state code",40), countryCode=optionalText(c.countryCode,"Client country code",40), zipCode=optionalText(c.zipCode,"Client ZIP code",40); contact={displayName:displayName(c.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{}),...(streetAddress1?{streetAddress1}:{}),...(streetAddress2?{streetAddress2}:{}),...(city?{city}:{}),...(stateCode?{stateCode}:{}),...(countryCode?{countryCode}:{}),...(zipCode?{zipCode}:{})}; } else { const em=optionalText(b.email,"Client email",254), ph=optionalText(b.phone,"Client phone",80); contact={displayName:displayName(b.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{})}; } const now=new Date().toISOString(), id=`client_${crypto.randomUUID()}`; const record:AdvisorClientRecordV1={schemaVersion:1,clientId:id,ownerAdvisorId:a.account.advisor_id,createdAt:now,updatedAt:now,lifecycleState:"active",readinessState:"needs_evidence",contact}; if(b.fieldProvenance!==undefined) record.fieldProvenance=safeJson(b.fieldProvenance) as NonNullable<AdvisorClientRecordV1["fieldProvenance"]>; if(b.servicerName!==undefined){ const value=optionalText(b.servicerName,"Servicer name",200); if(value!==undefined) record.servicerName=value; } if(b.normalizedLoanPortfolio!==undefined) record.normalizedLoanPortfolio=safeJson(b.normalizedLoanPortfolio) as NonNullable<AdvisorClientRecordV1["normalizedLoanPortfolio"]>; if(b.studentAidImport!==undefined){ const s=bodyObject(b.studentAidImport), allowedStudentAid=new Set(["source","importedAt","fileRequestDate","mappingVersion","rawFileRetained"]); for(const k of Object.keys(s)) if(!allowedStudentAid.has(k)) throw new ApiError(400,`Unexpected StudentAid import field: ${k}.`); if(s.source!=="studentaid_download"||s.rawFileRetained!==false) throw new ApiError(400,"Raw StudentAid files cannot be retained."); const importedAt=optionalText(s.importedAt,"StudentAid import date",80), fileRequestDate=optionalText(s.fileRequestDate,"StudentAid file request date",80), mappingVersion=optionalText(s.mappingVersion,"StudentAid mapping version",80); record.studentAidImport={source:"studentaid_download",...(importedAt?{importedAt}:{}),...(fileRequestDate?{fileRequestDate}:{}),...(mappingVersion?{mappingVersion}:{}),rawFileRetained:false}; } await database.prepare("INSERT INTO advisor_clients(owner_advisor_id,client_id,display_name,lifecycle_state,readiness_state,record_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)").bind(a.account.advisor_id,id,contact.displayName,record.lifecycleState,record.readinessState,JSON.stringify(record),now,now).run(); await audit(database,a.account.advisor_id,"client.create",id); return json({ok:true,client:record},201); }
+async function createClient(request:Request,database:D1DatabaseBinding,a:Auth){ sameOrigin(request); const b=await body(request,MAX_CLIENT_BODY_BYTES), allowed=new Set(["displayName","email","phone","contact","servicerName","normalizedLoanPortfolio","studentAidImport","fieldProvenance","confirmedFacts","consideredPlans"]); for(const k of Object.keys(b)) if(!allowed.has(k)) throw new ApiError(400,`Unexpected client field: ${k}.`); if(b.contact!==undefined&&(b.displayName!==undefined||b.email!==undefined||b.phone!==undefined)) throw new ApiError(400,"Use either contact or displayName/email/phone, not both."); let contact:AdvisorClientRecordV1["contact"]; if(b.contact!==undefined){ const c=bodyObject(b.contact), allowedContact=new Set(["displayName","email","phone","streetAddress1","streetAddress2","city","stateCode","countryCode","zipCode"]); for(const k of Object.keys(c)) if(!allowedContact.has(k)) throw new ApiError(400,`Unexpected contact field: ${k}.`); const em=optionalText(c.email,"Client email",254), ph=optionalText(c.phone,"Client phone",80), streetAddress1=optionalText(c.streetAddress1,"Client street address",200), streetAddress2=optionalText(c.streetAddress2,"Client street address 2",200), city=optionalText(c.city,"Client city",120), stateCode=optionalText(c.stateCode,"Client state code",40), countryCode=optionalText(c.countryCode,"Client country code",40), zipCode=optionalText(c.zipCode,"Client ZIP code",40); contact={displayName:displayName(c.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{}),...(streetAddress1?{streetAddress1}:{}),...(streetAddress2?{streetAddress2}:{}),...(city?{city}:{}),...(stateCode?{stateCode}:{}),...(countryCode?{countryCode}:{}),...(zipCode?{zipCode}:{})}; } else { const em=optionalText(b.email,"Client email",254), ph=optionalText(b.phone,"Client phone",80); contact={displayName:displayName(b.displayName),...(em?{email:em}:{}),...(ph?{phone:ph}:{})}; } const now=new Date().toISOString(), id=`client_${crypto.randomUUID()}`; const record:AdvisorClientRecordV1={schemaVersion:1,clientId:id,ownerAdvisorId:a.account.advisor_id,createdAt:now,updatedAt:now,lifecycleState:"active",readinessState:"needs_evidence",contact}; if(b.fieldProvenance!==undefined) record.fieldProvenance=safeJson(b.fieldProvenance) as NonNullable<AdvisorClientRecordV1["fieldProvenance"]>; if(b.servicerName!==undefined){ const value=optionalText(b.servicerName,"Servicer name",200); if(value!==undefined) record.servicerName=value; } if(b.normalizedLoanPortfolio!==undefined) record.normalizedLoanPortfolio=safeJson(b.normalizedLoanPortfolio) as NonNullable<AdvisorClientRecordV1["normalizedLoanPortfolio"]>; if(b.confirmedFacts!==undefined) record.confirmedFacts=safeJson(b.confirmedFacts) as NonNullable<AdvisorClientRecordV1["confirmedFacts"]>; if(b.consideredPlans!==undefined) record.consideredPlans=safeJson(b.consideredPlans) as RepaymentPlan[]; if(b.studentAidImport!==undefined){ const s=bodyObject(b.studentAidImport), allowedStudentAid=new Set(["source","importedAt","fileRequestDate","mappingVersion","rawFileRetained"]); for(const k of Object.keys(s)) if(!allowedStudentAid.has(k)) throw new ApiError(400,`Unexpected StudentAid import field: ${k}.`); if(s.source!=="studentaid_download"||s.rawFileRetained!==false) throw new ApiError(400,"Raw StudentAid files cannot be retained."); const importedAt=optionalText(s.importedAt,"StudentAid import date",80), fileRequestDate=optionalText(s.fileRequestDate,"StudentAid file request date",80), mappingVersion=optionalText(s.mappingVersion,"StudentAid mapping version",80); record.studentAidImport={source:"studentaid_download",...(importedAt?{importedAt}:{}),...(fileRequestDate?{fileRequestDate}:{}),...(mappingVersion?{mappingVersion}:{}),rawFileRetained:false}; } await database.prepare("INSERT INTO advisor_clients(owner_advisor_id,client_id,display_name,lifecycle_state,readiness_state,record_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)").bind(a.account.advisor_id,id,contact.displayName,record.lifecycleState,record.readinessState,JSON.stringify(record),now,now).run(); await audit(database,a.account.advisor_id,"client.create",id); return json({ok:true,client:record},201); }
 async function updateClient(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ sameOrigin(request); const b=await body(request,MAX_CLIENT_BODY_BYTES), row=await owned(database,a.account.advisor_id,id), current=parseClient(row), next=updateRecord(current,b); const r=await database.prepare("UPDATE advisor_clients SET display_name=?,lifecycle_state=?,readiness_state=?,record_json=?,updated_at=? WHERE owner_advisor_id=? AND client_id=? AND updated_at=?").bind(next.contact.displayName,next.lifecycleState,next.readinessState,JSON.stringify(next),next.updatedAt,a.account.advisor_id,id,current.updatedAt).run(); if((r.meta?.changes??0)!==1) throw new ApiError(409,"Client record has changed; reload before saving."); await audit(database,a.account.advisor_id,"client.update",id); return json({ok:true,client:next}); }
 async function archiveClient(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ sameOrigin(request); const b=await body(request), row=await owned(database,a.account.advisor_id,id), current=parseClient(row); if(b.expectedUpdatedAt!==current.updatedAt) throw new ApiError(409,"Client record has changed; reload before saving."); const next={...current,lifecycleState:"archived" as const,updatedAt:new Date().toISOString()}; const r=await database.prepare("UPDATE advisor_clients SET lifecycle_state='archived',record_json=?,updated_at=? WHERE owner_advisor_id=? AND client_id=? AND updated_at=?").bind(JSON.stringify(next),next.updatedAt,a.account.advisor_id,id,current.updatedAt).run(); if((r.meta?.changes??0)!==1) throw new ApiError(409,"Client record has changed; reload before saving."); await audit(database,a.account.advisor_id,"client.archive",id); return json({ok:true,client:next}); }
 async function deleteClient(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ sameOrigin(request); const b=await body(request), row=await owned(database,a.account.advisor_id,id), current=parseClient(row); if(b.confirm!=="delete"||b.expectedUpdatedAt!==current.updatedAt) throw new ApiError(400,"Permanent deletion requires confirm='delete' and the current updatedAt value."); const r=await database.prepare("DELETE FROM advisor_clients WHERE owner_advisor_id=? AND client_id=? AND updated_at=?").bind(a.account.advisor_id,id,current.updatedAt).run(); if((r.meta?.changes??0)<1) throw new ApiError(409,"Client record has changed; reload before deleting."); await audit(database,a.account.advisor_id,"client.delete",id); return json({ok:true,deletedClientId:id}); }
@@ -746,6 +851,7 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       if(request.method==="POST"&&r.suffix==="/archive") return await archiveClient(request,database,a,r.id);
       if(request.method==="GET"&&r.suffix==="/comparison"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row),comparison=compareClientPrograms(client);await audit(database,a.account.advisor_id,"client.compare",r.id);return json({ok:true,comparison});}
       if(request.method==="GET"&&r.suffix==="/intelligence"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row);if(!client.normalizedLoanPortfolio?.loans?.length) throw new ApiError(422,"Save normalized per-loan StudentAid facts before generating portfolio intelligence.");return json({ok:true,intelligence:deriveStudentAidPortfolioIntelligence(client)});}
+      if(request.method==="GET"&&r.suffix==="/case-context"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row);return json({ok:true,caseContext:deriveAdvisorClientCaseContext(client)});}
       if(request.method==="GET"&&r.suffix==="/artifacts") return await listArtifacts(database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/artifacts") return await retainArtifact(request,database,a,r.id);
       const artifactMatch=r.suffix.match(/^\/artifacts\/(artifact_[0-9a-f-]{36})(\/regenerate)?$/i);
@@ -759,7 +865,7 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       const snapshotMatch=r.suffix.match(/^\/snapshots\/(snapshot_[0-9a-f-]{36})(\/rerun)?$/i);
       if(snapshotMatch){ if(request.method==="GET"&&!snapshotMatch[2]) return json({ok:true,snapshot:snapshotView(await snapshotRow(database,a.account.advisor_id,r.id,snapshotMatch[1]!))}); if(request.method==="POST"&&snapshotMatch[2]==="/rerun") return await rerunSnapshot(request,database,a,r.id,snapshotMatch[1]!); if(request.method==="DELETE"&&!snapshotMatch[2]) return await deleteSnapshot(request,database,a,r.id,snapshotMatch[1]!); }
       if(request.method==="DELETE"&&r.suffix==="") return await deleteClient(request,database,a,r.id);
-      if(request.method==="GET"&&r.suffix==="/export"){const row=await owned(database,a.account.advisor_id,r.id), artifacts=await database.prepare("SELECT owner_advisor_id,client_id,artifact_id,artifact_kind,name,template_request_json,document_text,document_html,engine_version,created_at FROM advisor_client_artifacts WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC").bind(a.account.advisor_id,r.id).all<ArtifactRow>(), snapshots=await database.prepare("SELECT owner_advisor_id,client_id,snapshot_id,snapshot_kind,name,basis_json,result_json,policy_snapshot,engine_version,created_at FROM advisor_client_calculation_snapshots WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC").bind(a.account.advisor_id,r.id).all<SnapshotRow>();await audit(database,a.account.advisor_id,"client.export",r.id);return json({ok:true,schema:"student-loan-idr-advisor-client-export-v2",exportedAt:new Date().toISOString(),client:parseClient(row),retainedArtifacts:artifacts.results.map(artifactView),calculationSnapshots:snapshots.results.map(snapshotView)});}
+      if(request.method==="GET"&&r.suffix==="/export"){const row=await owned(database,a.account.advisor_id,r.id), artifacts=await database.prepare("SELECT owner_advisor_id,client_id,artifact_id,artifact_kind,name,template_request_json,document_text,document_html,engine_version,created_at FROM advisor_client_artifacts WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC").bind(a.account.advisor_id,r.id).all<ArtifactRow>(), snapshots=await database.prepare("SELECT owner_advisor_id,client_id,snapshot_id,snapshot_kind,name,basis_json,result_json,policy_snapshot,engine_version,created_at FROM advisor_client_calculation_snapshots WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC").bind(a.account.advisor_id,r.id).all<SnapshotRow>();await audit(database,a.account.advisor_id,"client.export",r.id);const client=parseClient(row);return json({ok:true,schema:"student-loan-idr-advisor-client-export-v2",exportedAt:new Date().toISOString(),client,caseContext:deriveAdvisorClientCaseContext(client),retainedArtifacts:artifacts.results.map(artifactView),calculationSnapshots:snapshots.results.map(snapshotView)});}
     }
     return json({ok:false,error:"Advisor endpoint not found."},404);
   } catch(error){ if(error instanceof ApiError) return json({ok:false,error:error.message},error.status,error.status===401?{"set-cookie":clearCookie()}:{}); return json({ok:false,error:"Advisor workspace request failed."},500); }
