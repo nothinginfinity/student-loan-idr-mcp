@@ -250,6 +250,92 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
   assert.equal(resumedBody.client.studentAidImport.fileRequestDate, "08/28/2026");
 });
 
+test("real-size normalized FSA portfolios can create and update advisor clients without weakening the default 64 KiB API ceiling", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  const env = { ADVISOR_DB: d1 };
+  const advisor = await register(env, "large-fsa@example.test", "Large FSA Advisor");
+
+  const loans = Array.from({ length: 32 }, (_, loanIndex) => ({
+    loanIndex,
+    maskedAwardId: `••••${String(loanIndex).padStart(4, "0")}`,
+    loanTypeCode: "D2",
+    loanTypeDescription: "DIRECT STAFFORD UNSUBSIDIZED",
+    mappedLoanType: "direct_unsubsidized",
+    disbursementPeriod: "before_2026_07_01",
+    outstandingPrincipal: loanIndex < 6 ? 1000 : 0,
+    outstandingInterest: loanIndex < 6 ? 25 : 0,
+    interestRatePercent: 6.5,
+    currentLoanStatusCode: "RP",
+    currentLoanStatusDescription: "IN REPAYMENT",
+    repaymentPlanTypeCode: "IB",
+    repaymentPlanDescription: "INCOME-BASED REPAYMENT",
+    repaymentPlanBeginDate: "01/01/2026",
+    repaymentPlanScheduledAmount: 25,
+    repaymentPlanIdrAnniversaryDate: "05/01/2027",
+    nextPaymentDueDate: "04/15/2026",
+    statuses: Array.from({ length: 10 }, (_, statusIndex) => ({
+      code: statusIndex % 2 === 0 ? "RP" : "FB",
+      description: statusIndex % 2 === 0 ? "IN REPAYMENT" : "FORBEARANCE",
+      effectiveDate: `${String((statusIndex % 9) + 1).padStart(2, "0")}/01/2025`
+    })),
+    disbursements: [
+      { date: "08/15/2024", amount: 1500 },
+      { date: "01/15/2025", amount: 1500 },
+      { date: "08/15/2025", amount: 1500 }
+    ],
+    contacts: [
+      { type: "Current Servicer", name: "Example Department of Education Servicer", phoneNumber: "8005550101", mostRelevant: true },
+      { type: "School", name: "Example State University", websiteAddress: "https://example.invalid/school" }
+    ],
+    provenance: {
+      maskedAwardId: "derived_studentaid", loanTypeCode: "imported_studentaid", loanTypeDescription: "imported_studentaid",
+      mappedLoanType: "derived_studentaid", disbursementPeriod: "derived_studentaid", outstandingPrincipal: "imported_studentaid",
+      outstandingInterest: "imported_studentaid", interestRatePercent: "imported_studentaid", currentLoanStatusCode: "imported_studentaid",
+      currentLoanStatusDescription: "imported_studentaid", repaymentPlanTypeCode: "imported_studentaid", repaymentPlanDescription: "imported_studentaid",
+      repaymentPlanBeginDate: "imported_studentaid", repaymentPlanScheduledAmount: "imported_studentaid", repaymentPlanIdrAnniversaryDate: "imported_studentaid",
+      nextPaymentDueDate: "imported_studentaid", statuses: "imported_studentaid", disbursements: "imported_studentaid", contacts: "imported_studentaid"
+    }
+  }));
+  const normalizedLoanPortfolio = {
+    repaymentLoans: Array.from({ length: 6 }, () => ({ principal: 1000, annualInterestRatePercent: 6.5 })),
+    eligibilityLoans: Array.from({ length: 32 }, () => ({ loanType: "direct_unsubsidized", disbursementPeriod: "before_2026_07_01" })),
+    loans,
+    summary: { loanCount: 32, activeLoanCount: 6, totalOutstandingPrincipal: 6000, totalOutstandingInterest: 150, repaymentLoanCount: 6, eligibilityMappedLoanCount: 32, ambiguousEligibilityLoanCount: 0, hasLoanDisbursedOnOrAfterJuly1_2026: false }
+  };
+  const createPayload = {
+    contact: { displayName: "Large Portfolio Borrower", email: "borrower@example.test", phone: "555-0100" },
+    servicerName: "Example Department of Education Servicer",
+    normalizedLoanPortfolio,
+    studentAidImport: { source: "studentaid_download", fileRequestDate: "09/05/2026", mappingVersion: "2026-09-05-v2", rawFileRetained: false }
+  };
+  const createText = JSON.stringify(createPayload);
+  const createBytes = new TextEncoder().encode(createText).byteLength;
+  assert.ok(createBytes > 64 * 1024, `fixture must exceed the legacy 64 KiB advisor limit, got ${createBytes}`);
+  assert.ok(createBytes < 512 * 1024, `fixture must stay inside the normalized-client ceiling, got ${createBytes}`);
+
+  const create = await advisorFetch("/api/advisor/clients", advisor, env, { method: "POST", body: createText });
+  const created = await create.json();
+  assert.equal(create.status, 201);
+  assert.equal(created.client.normalizedLoanPortfolio.loans.length, 32);
+  assert.equal(created.client.normalizedLoanPortfolio.summary.activeLoanCount, 6);
+  assert.equal(created.client.studentAidImport.rawFileRetained, false);
+
+  const updateText = JSON.stringify({ expectedUpdatedAt: created.client.updatedAt, normalizedLoanPortfolio, notes: "Large normalized FSA portfolio saved successfully." });
+  assert.ok(new TextEncoder().encode(updateText).byteLength > 64 * 1024, "save-progress fixture must also exceed 64 KiB");
+  const update = await advisorFetch(`/api/advisor/clients/${created.client.clientId}`, advisor, env, { method: "PUT", body: updateText });
+  const updated = await update.json();
+  assert.equal(update.status, 200);
+  assert.equal(updated.client.normalizedLoanPortfolio.loans.length, 32);
+  assert.equal(updated.client.notes, "Large normalized FSA portfolio saved successfully.");
+
+  const oversized = JSON.stringify({ contact: { displayName: "Too Large" }, normalizedLoanPortfolio: { loans: [{ note: "x".repeat(520 * 1024) }] } });
+  assert.ok(new TextEncoder().encode(oversized).byteLength > 512 * 1024);
+  const rejected = await advisorFetch("/api/advisor/clients", advisor, env, { method: "POST", body: oversized });
+  assert.equal(rejected.status, 413);
+  assert.equal((await rejected.json()).error, "Request body too large.");
+});
+
 test("V0.8.4 advisor comparison reuses saved facts, bounds forgiveness, and stays exact-owner scoped", async () => {
   const d1 = new SqliteD1();
   d1.database.exec(migration);
