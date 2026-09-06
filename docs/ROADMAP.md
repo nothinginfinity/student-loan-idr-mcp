@@ -381,17 +381,29 @@ Acceptance evidence:
 - Parser V2's accepted professional-usefulness map already carries school/attending-school facts, academic level, award year, aggregate outstanding-balance fields, repayment-plan state/dates, status history, interest/capitalization facts, and servicer/contact routing. V0.9.4 reuses those normalized facts rather than introducing a second parser or an LLM-owned interpretation path.
 - No new D1 persistence model was required for the case-context contract: it is derived from the existing normalized owner-scoped client record and deterministic intelligence. Raw FSA downloads remain browser-local and unretained, borrower/private mode remains non-persistent, and the existing deterministic calculation/intelligence authority is unchanged.
 
-### V0.9.5 — Automatic Calculation History + Client Timeline — NEXT / PLANNED
+### V0.9.5 — Automatic Calculation History + Client Timeline — COMPLETE
 
 Make the client record behave like an actual professional case file instead of requiring the advisor to remember which useful events should be retained.
 
-1. In authenticated advisor case mode, automatically create a bounded case-timeline event when the advisor runs a repayment calculation, repayment/forgiveness comparison, generates/retains a supporting document, records borrower plan confirmation, or completes another material workflow action.
-2. Calculation/comparison timeline entries should retain the exact deterministic basis needed for reproducibility, policy snapshot, engine version, timestamp, and a compact human-readable summary. Raw StudentAid downloads and raw evidence files remain excluded.
-3. Preserve historical immutability: rerunning a calculation creates a new event/result rather than rewriting the historical one. Advisors may rename, star, annotate, export, or delete case-history items under the existing owner-scoped controls.
-4. Make the case timeline easy to scan: e.g. `Sep 5 · IBR/RAP comparison · income $42,000 · family size 3 · policy snapshot 2026-08-27`, while keeping full sensitive basis/results behind the client workspace rather than in minimized dashboard cards.
-5. Borrower/private mode remains non-persistent unless the user explicitly enters an advisor-owned shared workflow.
+1. In authenticated advisor case mode, automatically create a bounded case-timeline event when the advisor runs a repayment calculation, repayment/forgiveness comparison, generates/retains/regenerates a supporting document, issues a borrower plan-comparison share, records borrower plan selection/confirmation, or completes another supported material workflow action.
+2. Calculation/comparison timeline entries retain the exact normalized deterministic basis needed for reproducibility, deterministic result, policy snapshot, engine version, timestamp, source link, and a compact human-readable summary. Raw StudentAid downloads and raw evidence files remain excluded.
+3. Preserve historical immutability: rerunning a retained calculation creates a new immutable snapshot and new timeline event rather than rewriting the historical one. Timeline metadata can be renamed, starred, annotated, exported, or deleted under the existing exact-owner scope without deleting the underlying immutable calculation snapshot/artifact.
+4. Keep timeline lists easy to scan and data-minimized: summaries such as `RAP/IBR calculation · income $42,000 · family size 3 · policy snapshot 2026-08-27` expose only bounded working context, while full sensitive basis/results require exact-owner timeline detail or the client export.
+5. Borrower/private calculation and document routes remain non-persistent. Automatic history exists only in authenticated advisor/client workflow unless the borrower explicitly participates in the advisor-owned plan-review/confirmation flow.
+6. Treat the first-class case timeline as a structured retrieval source for V0.9.7 alongside the V0.9.4 `student-loan-idr-client-case-context-v1` contract. Deterministic code remains authoritative for parsing, calculations, chronology, and saved result generation.
 
-### V0.9.6 — Advisor Action Dashboard / Next-Best-Action Workflow — PLANNED
+Acceptance evidence:
+
+- Final V0.9.5 runtime/workflow source commit `3b3aa886df2b3a1d4b94ec247f91b27548edc78d` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in normal CI run `34000011259`.
+- Exact-SHA live deployment + production acceptance run `34000037323` succeeded from that immutable source. The deploy-live job reverified source identity, reran typecheck/tests, applied the advisor D1 migrations including `0004_v0_9_5_case_timeline.sql`, deployed with Wrangler, and passed **256 production checks** against `https://student-loan-idr-mcp.jaredtechfit.workers.dev`.
+- Added first-class owner/client-keyed `advisor_client_timeline_events` persistence plus versioned `student-loan-idr-client-timeline-v1` / `student-loan-idr-client-timeline-event-v1` APIs. The compact list omits full basis/results; exact-owner detail exposes the reproducible event payload when needed inside the case workspace or export.
+- Authenticated advisor calculations and comparisons are recomputed server-side from saved normalized facts and automatically create immutable calculation snapshots plus timeline events. Selected plans, income, family/dependent facts, above-the-line adjustments, AGI override, normalized loan facts, policy snapshot, and engine version are retained as deterministic basis where applicable rather than trusting browser-supplied calculation results.
+- Advisor document generation/retention/regeneration records normalized template facts as timeline basis without retaining raw evidence. Borrower plan-share issuance, plan selection, and plan confirmation also create bounded material workflow events.
+- Retained calculation reruns now create new immutable snapshots/events. Timeline rename/star/annotation/export/delete controls were live-accepted; deleting timeline metadata does not delete its referenced immutable snapshot/artifact.
+- Client export advanced to `student-loan-idr-advisor-client-export-v3` and includes case context, timeline events, retained artifacts, and calculation snapshots. Exact cross-advisor access continues to fail with the generic owner-isolation response.
+- Private borrower `/api/calculate` and `/api/document` remain non-persistent, no browser storage was introduced, and raw StudentAid downloads/raw evidence files remain excluded from server history.
+
+### V0.9.6 — Advisor Action Dashboard / Next-Best-Action Workflow — NEXT / PLANNED
 
 Turn the advisor dashboard into an operational work queue across clients.
 
