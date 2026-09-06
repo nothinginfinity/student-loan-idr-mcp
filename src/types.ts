@@ -467,6 +467,106 @@ export interface AdvisorClientCaseContextV1 {
   warnings: string[];
 }
 
+export type AdvisorConsultationIntent =
+  | "case_summary"
+  | "missing_information"
+  | "portfolio_history"
+  | "eligibility_review"
+  | "plan_comparison"
+  | "documents_and_evidence"
+  | "next_best_action"
+  | "policy_explanation";
+
+export interface FsaDataDictionaryEntryV1 {
+  id: string;
+  canonicalLabel: string;
+  aliases: string[];
+  normalizedTarget: string;
+  category: "identity" | "loan_identity" | "balance" | "interest" | "status" | "repayment_plan" | "delinquency" | "consolidation" | "servicer" | "education" | "aggregate";
+  parserMappingVersion: string;
+  retention: "normalized" | "masked_only" | "discard";
+  deterministicInfluence: boolean;
+}
+
+export interface AdvisorPolicyRuleCardV1 {
+  id: string;
+  policySnapshot: string;
+  title: string;
+  programs: string[];
+  loanFamilies: string[];
+  keywords: string[];
+  deterministicAuthority: string;
+  explanation: string;
+  evidenceChunkIds: string[];
+}
+
+export interface AdvisorPolicyEvidenceChunkV1 {
+  id: string;
+  policySnapshot: string;
+  title: string;
+  keywords: string[];
+  content: string;
+  sourceUrl: string;
+  sourceDocumentHash: string;
+  effectiveFrom?: string;
+  effectiveThrough?: string;
+  locator: string;
+  contentHash: string;
+}
+
+export interface AdvisorRetrievalFactV1 {
+  key: string;
+  label: string;
+  value: unknown;
+  sourcePath: string;
+  provenance?: StudentAidFactProvenance | "deterministic_derived" | "saved_case" | "timeline_metadata";
+  asOf?: string;
+}
+
+export interface AdvisorEvidencePacketV1 {
+  schema: "student-loan-idr-advisor-evidence-packet-v1";
+  schemaVersion: 1;
+  clientId: string;
+  clientUpdatedAt: string;
+  policySnapshot: string;
+  dictionaryVersion: string;
+  question: string;
+  intent: AdvisorConsultationIntent;
+  retrievalMode: "structured_client_exact_keyword_policy";
+  facts: AdvisorRetrievalFactV1[];
+  missingInformation: AdvisorClientCaseContextV1["missingInformation"];
+  deterministic: {
+    caseContext: Pick<AdvisorClientCaseContextV1, "asOf" | "coverage" | "warnings">;
+    intelligence?: StudentAidPortfolioIntelligence;
+    comparison?: unknown;
+    nextBestAction?: AdvisorClientActionSummaryV1;
+  };
+  history: {
+    timeline: Array<{ eventId: string; eventKind: string; name: string; summary: string; policySnapshot?: string; occurredAt: string }>;
+    artifacts: Array<{ artifactId: string; name: string; createdAt: string }>;
+    snapshots: Array<{ snapshotId: string; snapshotKind: string; name: string; policySnapshot: string; createdAt: string }>;
+  };
+  dictionaryEntries: FsaDataDictionaryEntryV1[];
+  policyRules: AdvisorPolicyRuleCardV1[];
+  policyEvidence: AdvisorPolicyEvidenceChunkV1[];
+  warnings: string[];
+  privacy: {
+    rawStudentAidIncluded: false;
+    rawStudentAidEmbedded: false;
+    sharedBorrowerPiiCorpus: false;
+  };
+}
+
+export interface AdvisorConsultationResponseV1 {
+  schema: "student-loan-idr-advisor-consultation-v1";
+  schemaVersion: 1;
+  synthesisMode: "deterministic_evidence_summary";
+  answer: string;
+  evidence: AdvisorEvidencePacketV1;
+  proposedActions: Array<{ kind: string; label: string; href: string }>;
+  mutationApplied: false;
+}
+
 export interface AdvisorPrincipal {
   advisorId: string;
   status: AdvisorAccountStatus;
