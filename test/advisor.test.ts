@@ -690,7 +690,7 @@ test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deter
   const health = await worker.fetch(new Request(`${BASE}/health`), env);
   const healthBody = await health.json();
   assert.equal(health.status, 200);
-  assert.equal(healthBody.version, "0.9.6");
+  assert.equal(healthBody.version, "0.9.7");
   assert.equal(healthBody.advisor_workspace.advisor_action_dashboard_v1, true);
   assert.equal(healthBody.advisor_workspace.deterministic_next_best_action, true);
   assert.ok(healthBody.endpoints.includes("GET /api/advisor/action-dashboard"));
