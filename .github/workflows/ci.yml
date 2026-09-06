@@ -723,9 +723,6 @@ jobs:
             assert(advisorUiHtml.includes('Advisor action dashboard') && advisorUiHtml.includes('Who needs attention and why'), 'V0.9.6 advisor action-dashboard UI missing');
             assert(advisorUiHtml.includes('/api/advisor/action-dashboard') && advisorUiHtml.includes('Next best action:'), 'V0.9.6 advisor action-dashboard client integration missing');
             assert(/no income amounts, loan balances, contact details/i.test(advisorUiHtml), 'V0.9.6 advisor action-dashboard minimization copy missing');
-            assert(advisorUiHtml.includes('id="advisor-open-consultation"') && advisorUiHtml.includes('Ask this case'), 'V0.9.7 saved-case consultation control missing');
-            assert(advisorUiHtml.includes('id="advisor-consultation-workspace"') && advisorUiHtml.includes('Read-only evidence'), 'V0.9.7 saved-case consultation workspace missing');
-            assert(advisorUiHtml.includes('/consultation') && advisorUiHtml.includes('No client mutation applied.'), 'V0.9.7 consultation client integration/privacy copy missing');
             assert(/raw StudentAid\.gov downloads/i.test(advisorUiHtml), 'advisor raw-file privacy boundary missing');
             assert(!advisorUiHtml.includes('localStorage') && !advisorUiHtml.includes('sessionStorage'), 'advisor UI must not create browser persistence');
 
@@ -741,6 +738,9 @@ jobs:
             assert(uiHtml.includes('id="advisor-view-case-file"'), 'V0.9.4 advisor case-file control missing');
             assert(uiHtml.includes('id="advisor-case-workspace"') && uiHtml.includes('Client case file') && uiHtml.includes('Case context v1'), 'V0.9.4 advisor case-file workspace missing');
             assert(uiHtml.includes('/case-context'), 'V0.9.4 case-context client integration missing');
+            assert(uiHtml.includes('id="advisor-open-consultation"') && uiHtml.includes('Ask this case'), 'V0.9.7 saved-case consultation control missing');
+            assert(uiHtml.includes('id="advisor-consultation-workspace"') && uiHtml.includes('Read-only evidence'), 'V0.9.7 saved-case consultation workspace missing');
+            assert(uiHtml.includes('/consultation') && uiHtml.includes('No client mutation applied.'), 'V0.9.7 consultation client integration/privacy copy missing');
             assert(uiHtml.includes('id="advisor-view-intelligence"'), 'advisor portfolio-intelligence control missing');
             assert(uiHtml.includes('id="advisor-intelligence-workspace"') && uiHtml.includes('FSA portfolio intelligence'), 'advisor portfolio-intelligence workspace missing');
             assert(uiHtml.includes('id="advisor-compare-plans"'), 'advisor repayment-comparison control missing');
