@@ -425,12 +425,12 @@ function retrievalText(value: string): string { return value.toLowerCase().repla
 function retrievalTokens(value: string): string[] { return [...new Set(retrievalText(value).split(" ").filter((token) => token.length >= 2))]; }
 function deriveConsultationIntent(question: string): AdvisorConsultationIntent {
   const q = retrievalText(question);
+  if (/missing|still need|what do i need|before i can/.test(q)) return "missing_information";
+  if (/what should i ask|ask the borrower|next best|next action|what should i do/.test(q)) return "next_best_action";
   if (/parent plus|ffel|perkins|consolidat|eligib|loan type|disbursement/.test(q)) return "eligibility_review";
   if (/lowest|monthly payment|compare|comparison|forgiveness|repayment path|modeled payment/.test(q)) return "plan_comparison";
   if (/forbear|delinquen|status histor|fsa histor|portfolio histor/.test(q)) return "portfolio_history";
   if (/document|evidence|income statement|supporting/.test(q)) return "documents_and_evidence";
-  if (/what should i ask|ask the borrower|next best|next action|what should i do/.test(q)) return "next_best_action";
-  if (/missing|still need|what do i need|before i can/.test(q)) return "missing_information";
   if (/policy|rule|save|repaye|paye|icr|ibr|rap/.test(q)) return "policy_explanation";
   return "case_summary";
 }
