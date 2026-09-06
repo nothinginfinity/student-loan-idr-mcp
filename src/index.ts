@@ -17,7 +17,7 @@ import type {
   StudentAidPortfolioSummary
 } from "./types.ts";
 
-const SERVER_VERSION = "0.8.6";
+const SERVER_VERSION = "0.9.6";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -2933,6 +2933,10 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
     .client-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
     .badges { display: flex; gap: 7px; flex-wrap: wrap; }
     .badge { display: inline-flex; border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; font-size: .78rem; text-transform: capitalize; }
+    .action-summary { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 4px; }
+    .action-summary strong { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 999px; padding: 5px 10px; }
+    .action-reason { margin: 10px 0 0; }
+    .attention { font-weight: 800; }
     [hidden] { display: none !important; }
     #status, #auth-status { min-height: 1.5em; }
     a { color: inherit; }
@@ -3003,9 +3007,10 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
 
     <section class="panel" aria-labelledby="clients-title">
       <div class="topbar">
-        <div><h2 id="clients-title">Clients</h2><p class="muted">Dashboard cards show only the minimum workflow summary, never private contact, income, loan, evidence, note, or draft details.</p></div>
+        <div><h2 id="clients-title">Advisor action dashboard</h2><p class="muted">Who needs attention and why. States and next actions are derived deterministically from saved case facts, material timeline events, plan-review status, and due dates. Cards remain minimized: no income amounts, loan balances, contact details, evidence, notes, or calculation bodies are aggregated here.</p></div>
         <form id="search-form" class="actions"><input id="search" aria-label="Search clients" placeholder="Search client name"><button type="submit" class="secondary">Search</button></form>
       </div>
+      <div id="action-summary" class="action-summary" aria-live="polite"></div>
       <p id="status" class="muted" role="status" aria-live="polite"></p>
       <div id="client-list" class="client-list"></div>
     </section>
@@ -3024,6 +3029,7 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
   const searchForm = document.getElementById("search-form");
   const search = document.getElementById("search");
   const status = document.getElementById("status");
+  const actionSummary = document.getElementById("action-summary");
   const clientList = document.getElementById("client-list");
   let csrfToken = null;
   let advisor = null;
@@ -3342,14 +3348,30 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
       title.appendChild(addText("div", "Updated " + new Date(client.updatedAt).toLocaleString(), "muted"));
       const badges = document.createElement("div");
       badges.className = "badges";
-      badges.append(addText("span", client.lifecycleState.replace(/_/g, " "), "badge"), addText("span", client.readinessState.replace(/_/g, " "), "badge"));
+      (client.signals || []).slice(0, 4).forEach((signal) => badges.appendChild(addText("span", signal.label, "badge" + (signal.attention ? " attention" : ""))));
       head.append(title, badges);
       card.appendChild(head);
+      const primary = client.signals?.[0];
+      if (primary) {
+        card.appendChild(addText("p", primary.reason + (primary.dueDate ? " Due " + primary.dueDate + "." : ""), "muted action-reason"));
+        card.appendChild(addText("p", "Next best action: " + client.nextBestAction.label + ".", primary.attention ? "attention" : "muted"));
+      }
       const actions = document.createElement("div");
       actions.className = "actions";
-      const open = addText("button", "Open guided workflow");
+      const nextAction = addText("button", client.nextBestAction?.label || "Open guided workflow");
+      nextAction.type = "button";
+      const shareLinkBox = document.createElement("div");
+      shareLinkBox.hidden = true;
+      nextAction.addEventListener("click", () => {
+        if (client.nextBestAction?.kind === "share_borrower_review") void generateShareLink(client, shareLinkBox);
+        else window.location.href = client.nextBestAction?.href || ("/?advisorClient=" + encodeURIComponent(client.clientId));
+      });
+      const open = addText("button", "Open case", "secondary");
       open.type = "button";
-      open.addEventListener("click", () => { window.location.href = "/?advisorClient=" + encodeURIComponent(client.clientId); });
+      open.addEventListener("click", () => { window.location.href = "/?advisorClient=" + encodeURIComponent(client.clientId) + "#advisor-case-workspace"; });
+      const shareButton = addText("button", "Share review", "secondary");
+      shareButton.type = "button";
+      shareButton.addEventListener("click", () => { void generateShareLink(client, shareLinkBox); });
       const exportButton = addText("button", "Export", "secondary");
       exportButton.type = "button";
       exportButton.addEventListener("click", () => { void downloadClient(client.clientId); });
@@ -3357,12 +3379,7 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
       archiveButton.type = "button";
       archiveButton.disabled = client.lifecycleState === "archived";
       archiveButton.addEventListener("click", () => { void archiveClient(client); });
-      const shareLinkBox = document.createElement("div");
-      shareLinkBox.hidden = true;
-      const shareButton = addText("button", "Share link", "secondary");
-      shareButton.type = "button";
-      shareButton.addEventListener("click", () => { void generateShareLink(client, shareLinkBox); });
-      actions.append(open, shareButton, exportButton, archiveButton);
+      actions.append(nextAction, open, shareButton, exportButton, archiveButton);
       card.appendChild(actions);
       card.appendChild(shareLinkBox);
       clientList.appendChild(card);
@@ -3370,15 +3387,20 @@ const ADVISOR_UI_HTML = String.raw`<!doctype html>
   }
 
   async function loadClients() {
-    status.textContent = "Loading clients…";
+    status.textContent = "Deriving client action states…";
     try {
       const query = search.value.trim();
-      const body = await api("/api/advisor/clients" + (query ? "?search=" + encodeURIComponent(query) : ""));
-      renderClients(body.clients || []);
-      status.textContent = String((body.clients || []).length) + " client(s) shown.";
+      const body = await api("/api/advisor/action-dashboard" + (query ? "?search=" + encodeURIComponent(query) : ""));
+      const dashboard = body.dashboard;
+      renderClients(dashboard.clients || []);
+      actionSummary.replaceChildren(
+        addText("strong", String(dashboard.counts.total) + " clients"),
+        addText("strong", String(dashboard.counts.attention) + " need attention")
+      );
+      status.textContent = String((dashboard.clients || []).length) + " client(s) shown · deterministic action projection " + dashboard.schema + ".";
     } catch (error) {
       if (error?.status === 401) { showAuth("Your advisor session expired. Sign in again."); return; }
-      status.textContent = error instanceof Error ? error.message : "Unable to load clients.";
+      status.textContent = error instanceof Error ? error.message : "Unable to load advisor action dashboard.";
     }
   }
 
@@ -4313,7 +4335,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET /api/advisor/action-dashboard", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
@@ -4330,6 +4352,8 @@ function home(request: Request, env: Env): Response {
       client_case_context_v1: true,
       client_timeline_v1: true,
       automatic_case_history: true,
+      advisor_action_dashboard_v1: true,
+      deterministic_next_best_action: true,
       student_aid_provenance_review: true,
       max_normalized_client_request_bytes: 512 * 1024,
       raw_student_aid_retention: false
