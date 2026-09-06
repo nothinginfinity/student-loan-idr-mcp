@@ -1,4 +1,5 @@
 import { calculateRepayment, getPolicyStatus, ibrZeroPaymentAgiThreshold } from "./formulas.ts";
+import { POLICY_EVIDENCE_CORPUS, POLICY_RULE_REGISTRY, POLICY_SNAPSHOT } from "./constants.ts";
 import { getDocumentationTemplate } from "./templates.ts";
 import { handleAdvisorApi, handleShareApi } from "./advisor.ts";
 import type { D1DatabaseBinding } from "./advisor.ts";
@@ -4130,6 +4131,103 @@ async function handleCalculatorApi(request: Request, env: Env): Promise<Response
   }
 }
 
+type BorrowerConsultationIntent = "estimate_summary" | "eligibility_review" | "plan_comparison" | "policy_explanation";
+function borrowerRetrievalText(value: string): string { return value.toLowerCase().replace(/[^a-z0-9+]+/g, " ").replace(/\s+/g, " ").trim(); }
+function borrowerRetrievalTokens(value: string): string[] { return [...new Set(borrowerRetrievalText(value).split(" ").filter((token) => token.length >= 2))]; }
+function borrowerConsultationIntent(question: string): BorrowerConsultationIntent {
+  const q = borrowerRetrievalText(question);
+  if (/parent plus|ffel|perkins|consolidat|eligib|loan type|disbursement/.test(q)) return "eligibility_review";
+  if (/lowest|monthly payment|compare|comparison|forgiveness|repayment path|modeled payment/.test(q)) return "plan_comparison";
+  if (/policy|rule|save|repaye|paye|icr|ibr|rap|why/.test(q)) return "policy_explanation";
+  return "estimate_summary";
+}
+function borrowerLexicalScore(question: string, keywords: readonly string[], extra = ""): number {
+  const normalizedQuestion = borrowerRetrievalText(question);
+  const tokens = new Set(borrowerRetrievalTokens(question));
+  let score = 0;
+  for (const keyword of keywords) {
+    const normalized = borrowerRetrievalText(keyword);
+    if (normalized && normalizedQuestion.includes(normalized)) score += normalized.includes(" ") ? 6 : 4;
+    for (const token of borrowerRetrievalTokens(keyword)) if (tokens.has(token)) score += 1;
+  }
+  for (const token of borrowerRetrievalTokens(extra)) if (tokens.has(token)) score += 0.5;
+  return score;
+}
+function borrowerPolicyEvidence(question: string, intent: BorrowerConsultationIntent) {
+  const ranked = POLICY_EVIDENCE_CORPUS
+    .filter((entry) => entry.policySnapshot === POLICY_SNAPSHOT)
+    .map((entry) => ({ entry, score: borrowerLexicalScore(question, entry.keywords, entry.title) }))
+    .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id));
+  const selected = ranked.filter((candidate) => candidate.score > 0).slice(0, 4).map((candidate) => candidate.entry);
+  if (selected.length) return selected;
+  return intent === "estimate_summary" ? [] : POLICY_EVIDENCE_CORPUS.filter((entry) => entry.policySnapshot === POLICY_SNAPSHOT).slice(0, 2);
+}
+function borrowerPolicyRules(question: string, evidenceIds: Set<string>, intent: BorrowerConsultationIntent) {
+  return POLICY_RULE_REGISTRY
+    .filter((rule) => rule.policySnapshot === POLICY_SNAPSHOT)
+    .map((rule) => ({ rule, score: borrowerLexicalScore(question, rule.keywords, `${rule.title} ${rule.programs.join(" ")} ${rule.loanFamilies.join(" ")}`) + rule.evidenceChunkIds.filter((id) => evidenceIds.has(id)).length * 4 }))
+    .filter((candidate) => candidate.score > 0 || intent !== "estimate_summary")
+    .sort((a, b) => b.score - a.score || a.rule.id.localeCompare(b.rule.id)).slice(0, 4).map((candidate) => candidate.rule);
+}
+function borrowerConsultationAnswer(question: string, result: ReturnType<typeof calculateRepayment>, intent: BorrowerConsultationIntent, evidenceIds: string[]): string {
+  const citations = evidenceIds.length ? ` Policy evidence: ${evidenceIds.map((id) => `[${id}]`).join(" ")}.` : "";
+  if (intent === "plan_comparison") {
+    const candidates = result.planEstimates.filter((plan) => plan.eligibility.status !== "ineligible" && typeof plan.monthlyPaymentEstimate === "number");
+    if (candidates.length) {
+      const lowest = [...candidates].sort((a, b) => a.monthlyPaymentEstimate - b.monthlyPaymentEstimate)[0]!;
+      return `${lowest.plan} has the lowest modeled monthly payment among the currently non-ineligible options at $${lowest.monthlyPaymentEstimate.toFixed(2)} per month. This is an estimate, not an official billing or eligibility decision.${citations}`;
+    }
+  }
+  if (intent === "eligibility_review") {
+    const summary = result.planEstimates.map((plan) => `${plan.plan}: ${plan.eligibility.status}`).join("; ");
+    return `The deterministic calculator currently screens the selected plans as ${summary}. Loan-family, disbursement, default, and consolidation facts drive those code-owned results; retrieved policy evidence only explains them.${citations}`;
+  }
+  if (intent === "policy_explanation") {
+    return `This explanation is pinned to policy snapshot ${POLICY_SNAPSHOT}. Deterministic code remains authoritative for payment math and eligibility screening; reviewed policy evidence is grounding only.${citations}`;
+  }
+  const payments = result.planEstimates.map((plan) => `${plan.plan}: $${plan.monthlyPaymentEstimate.toFixed(2)}/mo (${plan.eligibility.status})`).join("; ");
+  return `Your current private-session estimate uses an estimated AGI of $${result.estimatedAdjustedGrossIncome.toFixed(2)}. Modeled payments: ${payments}. Nothing from this consultation is saved.`;
+}
+async function handleBorrowerConsultationApi(request: Request, env: Env): Promise<Response> {
+  const origin = request.headers.get("origin");
+  if (origin !== null && origin !== new URL(request.url).origin) return jsonResponse({ ok:false, error:"Cross-origin consultation requests are not allowed." }, 403, request, env, { "cache-control":"no-store" });
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("application/json")) return jsonResponse({ ok:false, error:"Content-Type must be application/json." }, 415, request, env, { "cache-control":"no-store" });
+  if (env.MCP_RATE_LIMITER) {
+    try { const { success } = await env.MCP_RATE_LIMITER.limit({ key:"public:/api/consultation" }); if (!success) return jsonResponse({ok:false,error:"Rate limit exceeded."},429,request,env,{"cache-control":"no-store"}); }
+    catch { return jsonResponse({ok:false,error:"Rate limiter unavailable."},503,request,env,{"cache-control":"no-store"}); }
+  }
+  let text: string;
+  try { text = (await readRequestText(request)).text; }
+  catch (error) { return jsonResponse({ok:false,error:error instanceof RequestTooLargeError?`Request body exceeds ${MAX_REQUEST_BYTES} bytes.`:"Unable to read request body."},error instanceof RequestTooLargeError?413:400,request,env,{"cache-control":"no-store"}); }
+  let body: unknown;
+  try { body = JSON.parse(text) as unknown; } catch { return jsonResponse({ok:false,error:"Invalid JSON."},400,request,env,{"cache-control":"no-store"}); }
+  const calculatorDefinition = toolDefinitions.find((tool) => tool.name === "calculate_alt_income_student_loan")!;
+  const consultationSchema: RuntimeSchema = { type:"object", required:["question","calculator"], properties:{ question:{type:"string",maxLength:2000}, policySnapshot:{type:"string"}, calculator:calculatorDefinition.inputSchema as RuntimeSchema } };
+  const issues = validateSchema(body, consultationSchema, "$.body");
+  if (issues.length) return jsonResponse({ok:false,error:"Invalid borrower consultation input.",issues},400,request,env,{"cache-control":"no-store"});
+  const input = body as { question:string; policySnapshot?:string; calculator:CalculatorRequest };
+  const question = input.question.trim();
+  if (!question) return jsonResponse({ok:false,error:"Consultation question is required."},400,request,env,{"cache-control":"no-store"});
+  if (input.policySnapshot !== undefined && input.policySnapshot !== POLICY_SNAPSHOT) return jsonResponse({ok:false,error:`Requested policy snapshot ${input.policySnapshot} is not the current accepted snapshot ${POLICY_SNAPSHOT}.`},409,request,env,{"cache-control":"no-store"});
+  try {
+    const result = calculateRepayment(input.calculator);
+    const intent = borrowerConsultationIntent(question);
+    const evidence = borrowerPolicyEvidence(question,intent);
+    const evidenceIds = new Set(evidence.map((entry) => entry.id));
+    const rules = borrowerPolicyRules(question,evidenceIds,intent);
+    if (evidence.some((entry) => entry.policySnapshot !== POLICY_SNAPSHOT) || rules.some((rule) => rule.policySnapshot !== POLICY_SNAPSHOT)) return jsonResponse({ok:false,error:"Policy retrieval attempted to use evidence outside the current accepted snapshot."},409,request,env,{"cache-control":"no-store"});
+    const deterministic = {
+      normalizedAnnualTaxableGrossIncome: result.normalizedAnnualTaxableGrossIncome,
+      estimatedAdjustedGrossIncome: result.estimatedAdjustedGrossIncome,
+      povertyGuideline: result.povertyGuideline,
+      planEstimates: result.planEstimates.map((plan) => ({ plan:plan.plan, eligibilityStatus:plan.eligibility.status, monthlyPaymentEstimate:plan.monthlyPaymentEstimate, formulaSummary:plan.formulaSummary, eligibilityNote:plan.eligibilityNote, warnings:plan.warnings })),
+      warnings: result.warnings
+    };
+    return jsonResponse({ ok:true, consultation:{ schema:"student-loan-idr-borrower-consultation-v1", schemaVersion:1, contextMode:"browser_local_calculator", synthesisMode:"deterministic_evidence_summary", policySnapshot:POLICY_SNAPSHOT, intent, answer:borrowerConsultationAnswer(question,result,intent,evidence.map((entry)=>entry.id)), deterministic, policyRules:[...rules], policyEvidence:[...evidence], privacy:{ persisted:false, advisorDataIncluded:false, rawStudentAidIncluded:false, clientLookup:false }, mutationApplied:false } },200,request,env,{"cache-control":"no-store"});
+  } catch (error) { return jsonResponse({ok:false,error:error instanceof Error?error.message:"Consultation failed."},400,request,env,{"cache-control":"no-store"}); }
+}
+
 const hasOwn = (value: JsonObject, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
 const isObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -4435,7 +4533,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET /api/advisor/action-dashboard", "GET /api/advisor/retrieval-metadata", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/case-context", "POST /api/advisor/clients/:clientId/retrieval", "POST /api/advisor/clients/:clientId/consultation", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/consultation", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET /api/advisor/action-dashboard", "GET /api/advisor/retrieval-metadata", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/case-context", "POST /api/advisor/clients/:clientId/retrieval", "POST /api/advisor/clients/:clientId/consultation", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
@@ -4457,6 +4555,8 @@ function home(request: Request, env: Env): Response {
       structured_client_retrieval_v1: true,
       reviewed_policy_rag_v1: true,
       chat_native_advisor_consultation_v1: true,
+      borrower_safe_consultation_v1: true,
+      borrower_consultation_persistence: false,
       deterministic_math_authority: true,
       raw_student_aid_embeddings: false,
       shared_borrower_pii_corpus: false,
@@ -4489,6 +4589,7 @@ export default {
     if (url.pathname.startsWith("/api/advisor/")) return handleAdvisorApi(request, env);
     if (url.pathname.startsWith("/api/share/")) return handleShareApi(request, env);
     if (request.method === "POST" && url.pathname === "/api/calculate") return handleCalculatorApi(request, env);
+    if (request.method === "POST" && url.pathname === "/api/consultation") return handleBorrowerConsultationApi(request, env);
     if (request.method === "POST" && url.pathname === "/api/document") return handleDocumentApi(request, env);
     if (url.pathname === "/mcp" && request.method === "GET") {
       if (!allowedOrigin(request, env)) return jsonResponse(jsonRpcErrorObject(null, -32600, "Forbidden Origin"), 403, request, env);
