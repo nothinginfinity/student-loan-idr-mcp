@@ -371,12 +371,46 @@ jobs:
             assert(health.advisor_workspace?.deterministic_math_authority === true, 'V0.9.7 deterministic math authority flag missing');
             assert(health.advisor_workspace?.raw_student_aid_embeddings === false, 'V0.9.7 raw StudentAid embedding boundary mismatch');
             assert(health.advisor_workspace?.shared_borrower_pii_corpus === false, 'V0.9.7 shared borrower PII corpus boundary mismatch');
+            assert(health.advisor_workspace?.borrower_safe_consultation_v1 === true, 'V0.9.7 borrower-safe consultation capability flag missing');
+            assert(health.advisor_workspace?.borrower_consultation_persistence === false, 'V0.9.7 borrower consultation persistence boundary mismatch');
+            assert(health.endpoints.includes('POST /api/consultation'), 'V0.9.7 borrower consultation endpoint inventory missing');
             assert(health.endpoints.includes('GET /api/advisor/retrieval-metadata'), 'V0.9.7 retrieval metadata endpoint inventory missing');
             assert(health.endpoints.includes('POST /api/advisor/clients/:clientId/retrieval'), 'V0.9.7 retrieval endpoint inventory missing');
             assert(health.endpoints.includes('POST /api/advisor/clients/:clientId/consultation'), 'V0.9.7 consultation endpoint inventory missing');
             assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
             assert(health.advisor_workspace?.max_normalized_client_request_bytes === 524288, 'normalized advisor client request ceiling mismatch');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
+
+            const borrowerCalculator = {
+              income: [{ cadence: 'annual', amount: 50000 }],
+              adjustedGrossIncomeOverride: 50000,
+              region: 'contiguous_us',
+              familySize: 1,
+              loan: { newBorrowerOnOrAfterJuly1_2014: true, eligibilityLoans: [{ loanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01' }] },
+              plans: ['IBR', 'RAP']
+            };
+            const borrowerConsultationResponse = await fetchChecked(`${base}/api/consultation`, {
+              method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
+              body: JSON.stringify({ question: 'Compare the selected plans and tell me the lowest modeled monthly payment.', policySnapshot: '2026-08-27', calculator: borrowerCalculator })
+            });
+            const borrowerConsultationText = await borrowerConsultationResponse.text();
+            const borrowerConsultation = JSON.parse(borrowerConsultationText);
+            assert(borrowerConsultationResponse.status === 200 && borrowerConsultation?.consultation?.schema === 'student-loan-idr-borrower-consultation-v1', 'V0.9.7 live borrower consultation failed');
+            assert(borrowerConsultation.consultation.contextMode === 'browser_local_calculator' && borrowerConsultation.consultation.synthesisMode === 'deterministic_evidence_summary', 'V0.9.7 live borrower consultation context/synthesis mismatch');
+            assert(borrowerConsultation.consultation.privacy?.persisted === false && borrowerConsultation.consultation.privacy?.advisorDataIncluded === false && borrowerConsultation.consultation.privacy?.rawStudentAidIncluded === false && borrowerConsultation.consultation.privacy?.clientLookup === false, 'V0.9.7 live borrower consultation privacy boundary mismatch');
+            assert(borrowerConsultation.consultation.mutationApplied === false, 'V0.9.7 live borrower consultation must be non-mutating');
+            assert(Array.isArray(borrowerConsultation.consultation.policyEvidence) && borrowerConsultation.consultation.policyEvidence.every((entry) => entry.policySnapshot === '2026-08-27'), 'V0.9.7 live borrower policy evidence snapshot mismatch');
+            assert(!/clientId|advisorId|advisorNotes|LIVE-SENSITIVE/.test(borrowerConsultationText), 'V0.9.7 live borrower consultation leaked advisor/client data');
+            const borrowerStale = await fetchChecked(`${base}/api/consultation`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Explain IBR', policySnapshot: '2026-01-01', calculator: borrowerCalculator }) });
+            assert(borrowerStale.status === 409, 'V0.9.7 live borrower stale policy must fail closed');
+            const borrowerCrossOrigin = await fetchChecked(`${base}/api/consultation`, { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Explain IBR', calculator: borrowerCalculator }) });
+            assert(borrowerCrossOrigin.status === 403, 'V0.9.7 live borrower cross-origin consultation must fail closed');
+            const borrowerAdvisorSecret = await fetchChecked(`${base}/api/consultation`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Explain IBR', calculator: borrowerCalculator, advisorNotes: 'LIVE-SENSITIVE-ADVISOR-NOTE' }) });
+            const borrowerAdvisorSecretText = await borrowerAdvisorSecret.text();
+            assert(borrowerAdvisorSecret.status === 400 && !borrowerAdvisorSecretText.includes('LIVE-SENSITIVE-ADVISOR-NOTE'), 'V0.9.7 live borrower advisor field rejection leaked secret value');
+            const borrowerRawSecret = await fetchChecked(`${base}/api/consultation`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Explain IBR', calculator: { ...borrowerCalculator, rawStudentAid: 'LIVE-SENSITIVE-RAW-FSA' } }) });
+            const borrowerRawSecretText = await borrowerRawSecret.text();
+            assert(borrowerRawSecret.status === 400 && !borrowerRawSecretText.includes('LIVE-SENSITIVE-RAW-FSA'), 'V0.9.7 live borrower raw StudentAid field rejection leaked secret value');
 
             const livePassword = `Live-v082-${Date.now()}-Strong!`;
             const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -732,6 +766,9 @@ jobs:
             assert((uiResponse.headers.get('content-type') || '').includes('text/html'), 'UI content type mismatch');
             assert((uiResponse.headers.get('content-security-policy') || '').includes("default-src 'none'"), 'UI CSP missing default-src none');
             assert(uiHtml.includes('id="calculator-form"'), 'UI calculator form missing');
+            assert(uiHtml.includes('id="borrower-consultation-workspace"') && uiHtml.includes('Ask about this estimate'), 'V0.9.7 borrower consultation workspace missing');
+            assert(uiHtml.includes('Private · not saved') && uiHtml.includes('/api/consultation'), 'V0.9.7 borrower consultation privacy/API integration missing');
+            assert(uiHtml.includes('lastBorrowerCalculatorPayload') && uiHtml.includes('Calculator facts changed. Recalculate'), 'V0.9.7 borrower in-memory context invalidation missing');
             assert(uiHtml.includes('id="advisor-client-bar"'), 'saved advisor-client workflow bar missing');
             assert(uiHtml.includes('id="advisor-save-progress"'), 'saved advisor-client progress control missing');
             assert(uiHtml.includes('id="advisor-regenerate-document"'), 'advisor document-regeneration control missing');
