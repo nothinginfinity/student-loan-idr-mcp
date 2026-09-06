@@ -745,7 +745,7 @@ test("V0.9.7 borrower consultation is deterministic, reviewed-policy grounded, b
   assert.match(body.consultation.answer, new RegExp(`\\$${lowest.monthlyPaymentEstimate.toFixed(2).replace(".", "\\.")}`));
   assert.ok(body.consultation.policyEvidence.every((entry: { policySnapshot: string; sourceDocumentHash: string; contentHash: string }) => entry.policySnapshot === "2026-08-27" && /^[0-9a-f]{64}$/.test(entry.sourceDocumentHash) && /^[0-9a-f]{64}$/.test(entry.contentHash)));
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.doesNotMatch(JSON.stringify(body), /clientId|advisorId|advisorNotes|rawStudentAid/i);
+  assert.doesNotMatch(JSON.stringify(body), /clientId|advisorId|advisorNotes|VERY-SENSITIVE/i);
 
   const eligibility = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
     method: "POST",
