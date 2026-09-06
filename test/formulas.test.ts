@@ -523,6 +523,12 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(html, /Imported fact/);
   assert.match(html, /Derived estimate/);
   assert.match(html, /\/api\/calculate/);
+  assert.match(html, /id="borrower-consultation-workspace"/);
+  assert.match(html, /Ask about this estimate/);
+  assert.match(html, /Private · not saved/);
+  assert.match(html, /\/api\/consultation/);
+  assert.match(html, /lastBorrowerCalculatorPayload/);
+  assert.match(html, /Calculator facts changed\. Recalculate/);
   assert.doesNotMatch(html, /\/api\/import/);
   assert.match(html, /no analytics, no external assets, and no browser storage/i);
   assert.doesNotMatch(html, /<(?:img|script|link)[^>]+(?:src|href)="https?:\/\//i);
@@ -699,6 +705,93 @@ test("borrower calculator API is same-origin and keeps the 64 KiB body ceiling",
     headers: { "content-type": "application/json" },
     body: "x".repeat(70 * 1024)
   }), {});
+  assert.equal(oversized.status, 413);
+});
+
+test("V0.9.7 borrower consultation is deterministic, reviewed-policy grounded, browser-local, and nonpersistent", async () => {
+  const calculator = {
+    income: [{ cadence: "annual", amount: 50000 }],
+    adjustedGrossIncomeOverride: 50000,
+    region: "contiguous_us",
+    familySize: 1,
+    loan: {
+      newBorrowerOnOrAfterJuly1_2014: true,
+      eligibilityLoans: [{ loanType: "direct_unsubsidized", disbursementPeriod: "before_2026_07_01" }]
+    },
+    plans: ["IBR", "RAP"]
+  };
+  const response = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ question: "Compare the selected plans and tell me the lowest modeled monthly payment.", policySnapshot: "2026-08-27", calculator })
+  }), {});
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.consultation.schema, "student-loan-idr-borrower-consultation-v1");
+  assert.equal(body.consultation.schemaVersion, 1);
+  assert.equal(body.consultation.contextMode, "browser_local_calculator");
+  assert.equal(body.consultation.synthesisMode, "deterministic_evidence_summary");
+  assert.equal(body.consultation.policySnapshot, "2026-08-27");
+  assert.equal(body.consultation.intent, "plan_comparison");
+  assert.deepEqual(body.consultation.privacy, { persisted: false, advisorDataIncluded: false, rawStudentAidIncluded: false, clientLookup: false });
+  assert.equal(body.consultation.mutationApplied, false);
+  assert.equal(body.consultation.deterministic.estimatedAdjustedGrossIncome, 50000);
+  assert.equal(body.consultation.deterministic.planEstimates.length, 2);
+  const candidates = body.consultation.deterministic.planEstimates.filter((plan: { eligibilityStatus: string; monthlyPaymentEstimate: number }) => plan.eligibilityStatus !== "ineligible");
+  const lowest = [...candidates].sort((a: { monthlyPaymentEstimate: number }, b: { monthlyPaymentEstimate: number }) => a.monthlyPaymentEstimate - b.monthlyPaymentEstimate)[0];
+  assert.ok(lowest);
+  assert.match(body.consultation.answer, new RegExp(lowest.plan));
+  assert.match(body.consultation.answer, new RegExp(`\\$${lowest.monthlyPaymentEstimate.toFixed(2).replace(".", "\\.")}`));
+  assert.ok(body.consultation.policyEvidence.every((entry: { policySnapshot: string; sourceDocumentHash: string; contentHash: string }) => entry.policySnapshot === "2026-08-27" && /^[0-9a-f]{64}$/.test(entry.sourceDocumentHash) && /^[0-9a-f]{64}$/.test(entry.contentHash)));
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.doesNotMatch(JSON.stringify(body), /clientId|advisorId|advisorNotes|rawStudentAid/i);
+
+  const eligibility = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      question: "What does Parent PLUS consolidation history change for IBR and RAP eligibility?",
+      calculator: {
+        ...calculator,
+        loan: {
+          newBorrowerOnOrAfterJuly1_2014: true,
+          eligibilityLoans: [{ loanType: "direct_consolidation_with_parent_plus", disbursementPeriod: "before_2026_07_01", madeIcrPaymentBeforeJuly1_2028: true }]
+        }
+      }
+    })
+  }), {});
+  const eligibilityBody = await eligibility.json();
+  assert.equal(eligibility.status, 200);
+  assert.equal(eligibilityBody.consultation.intent, "eligibility_review");
+  assert.ok(eligibilityBody.consultation.policyRules.some((rule: { id: string }) => rule.id === "rap-loan-family"));
+  assert.ok(eligibilityBody.consultation.policyRules.some((rule: { id: string }) => rule.id === "ibr-loan-family"));
+  assert.ok(eligibilityBody.consultation.policyEvidence.some((entry: { id: string }) => entry.id === "rap-direct-parent-plus"));
+  assert.ok(eligibilityBody.consultation.policyEvidence.some((entry: { id: string }) => entry.id === "ibr-pre-july-2026"));
+});
+
+test("V0.9.7 borrower consultation fails closed on stale policy, cross-origin, raw-import/advisor fields, and oversized bodies", async () => {
+  const calculator = { income: [{ cadence: "annual", amount: 50000 }], region: "contiguous_us", familySize: 2, plans: ["RAP"] };
+  const stale = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({question:"Explain RAP",policySnapshot:"2026-01-01",calculator}) }), {});
+  assert.equal(stale.status, 409);
+  assert.match((await stale.json()).error, /current accepted snapshot 2026-08-27/);
+
+  const forbidden = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", { method:"POST", headers:{"content-type":"application/json",origin:"https://evil.example"}, body:JSON.stringify({question:"Explain RAP",calculator}) }), {});
+  assert.equal(forbidden.status, 403);
+
+  const advisorSecret = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({question:"Explain RAP",calculator,advisorNotes:"VERY-SENSITIVE-ADVISOR-NOTE"}) }), {});
+  const advisorSecretText = await advisorSecret.text();
+  assert.equal(advisorSecret.status, 400);
+  assert.match(advisorSecretText, /advisorNotes/);
+  assert.doesNotMatch(advisorSecretText, /VERY-SENSITIVE-ADVISOR-NOTE/);
+
+  const rawSecret = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({question:"Explain RAP",calculator:{...calculator,rawStudentAid:"VERY-SENSITIVE-RAW-FSA"}}) }), {});
+  const rawSecretText = await rawSecret.text();
+  assert.equal(rawSecret.status, 400);
+  assert.match(rawSecretText, /rawStudentAid/);
+  assert.doesNotMatch(rawSecretText, /VERY-SENSITIVE-RAW-FSA/);
+
+  const oversized = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:"x".repeat(70 * 1024) }), {});
   assert.equal(oversized.status, 413);
 });
 
