@@ -534,6 +534,72 @@ export interface AdvisorClientDashboardSummary {
   updatedAt: string;
 }
 
+export type AdvisorActionState =
+  | "needs_income"
+  | "needs_family_size"
+  | "needs_evidence"
+  | "document_ready"
+  | "application_ready"
+  | "borrower_review_pending"
+  | "plan_selected"
+  | "booking_pending"
+  | "idr_anniversary_approaching"
+  | "in_forbearance"
+  | "delinquency_attention"
+  | "completed"
+  | "archived";
+
+export type AdvisorNextActionKind =
+  | "collect_income"
+  | "collect_family_size"
+  | "review_evidence"
+  | "prepare_document"
+  | "review_application"
+  | "share_borrower_review"
+  | "review_plan_selection"
+  | "book_enrollment"
+  | "review_recertification"
+  | "review_forbearance"
+  | "review_delinquency"
+  | "open_case";
+
+export interface AdvisorClientActionSignalV1 {
+  state: AdvisorActionState;
+  label: string;
+  reason: string;
+  priority: number;
+  attention: boolean;
+  dueDate?: string;
+  action: {
+    kind: AdvisorNextActionKind;
+    label: string;
+    href: string;
+  };
+}
+
+export interface AdvisorClientActionSummaryV1 {
+  clientId: string;
+  displayName: string;
+  lifecycleState: AdvisorClientLifecycleState;
+  readinessState: AdvisorClientReadinessState;
+  updatedAt: string;
+  primaryState: AdvisorActionState;
+  nextBestAction: AdvisorClientActionSignalV1["action"];
+  signals: AdvisorClientActionSignalV1[];
+}
+
+export interface AdvisorActionDashboardV1 {
+  schema: "student-loan-idr-advisor-action-dashboard-v1";
+  schemaVersion: 1;
+  generatedAt: string;
+  clients: AdvisorClientActionSummaryV1[];
+  counts: {
+    total: number;
+    attention: number;
+    byState: Partial<Record<AdvisorActionState, number>>;
+  };
+}
+
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
   id?: string | number | null;
