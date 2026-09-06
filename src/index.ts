@@ -17,7 +17,7 @@ import type {
   StudentAidPortfolioSummary
 } from "./types.ts";
 
-const SERVER_VERSION = "0.9.6";
+const SERVER_VERSION = "0.9.7";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -605,7 +605,8 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     .readiness-card ul { margin-bottom: 0; }
     .readiness-actions { margin-top: 12px; }
     #portfolio-summary { margin-top: 12px; }
-    .case-workspace[hidden], .comparison-workspace[hidden], .intelligence-workspace[hidden] { display: none; }
+    .case-workspace[hidden], .comparison-workspace[hidden], .intelligence-workspace[hidden], .consultation-workspace[hidden] { display: none; }
+    .consultation-source { border-left: 3px solid color-mix(in srgb, CanvasText 35%, transparent); padding-left: 10px; margin: 8px 0; }
     .comparison-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
     .comparison-card, .chart-panel { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 14px; padding: 14px; }
     .comparison-card h3, .chart-panel h3 { margin: 0 0 8px; }
@@ -669,6 +670,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
         <button type="button" id="advisor-save-progress">Save progress</button>
         <button type="button" id="advisor-regenerate-document">Regenerate document</button>
         <button type="button" id="advisor-view-case-file">Case file</button>
+        <button type="button" id="advisor-open-consultation">Ask this case</button>
         <button type="button" id="advisor-view-intelligence">Portfolio intelligence</button>
         <button type="button" id="advisor-compare-plans">Compare repayment paths</button>
         <button type="button" id="advisor-retain-calculation">Retain calculation</button>
@@ -684,6 +686,22 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     <p id="advisor-case-status" class="muted" role="status" aria-live="polite">Loading case context…</p>
     <div id="advisor-case-summary" class="summary"></div>
     <div id="advisor-case-details" class="readiness-list"></div>
+  </section>
+
+  <section class="workspace consultation-workspace" id="advisor-consultation-workspace" hidden aria-labelledby="advisor-consultation-title">
+    <div class="guide-head"><div><h2 id="advisor-consultation-title">Ask this saved case</h2><p class="muted">Ask about missing facts, Parent PLUS / FFEL history, repayment-path comparisons, policy rules, portfolio history, documents, or the next best action. Answers are assembled from this advisor-owned saved case plus reviewed policy evidence pinned to the current snapshot. Deterministic code remains authoritative for eligibility and payment math.</p></div><span class="badge">Read-only evidence</span></div>
+    <div id="advisor-consultation-transcript" class="guide-transcript" role="log" aria-live="polite"></div>
+    <div class="answer-bubbles" aria-label="Suggested case questions">
+      <button type="button" data-consult-question="What is still missing before I can compare plans?">What’s missing?</button>
+      <button type="button" data-consult-question="What does the loan history change for Parent PLUS, FFEL, IBR, and RAP eligibility?">Eligibility history</button>
+      <button type="button" data-consult-question="Compare plans and tell me the lowest modeled payment.">Lowest payment</button>
+      <button type="button" data-consult-question="What should I ask the borrower next?">Next borrower question</button>
+    </div>
+    <form id="advisor-consultation-form" class="guide-entry">
+      <input id="advisor-consultation-question" maxlength="2000" autocomplete="off" placeholder="Ask a question about this saved case" aria-label="Ask a question about this saved case">
+      <button type="submit" id="advisor-consultation-submit">Ask</button>
+    </form>
+    <p id="advisor-consultation-status" class="muted" role="status" aria-live="polite">No question asked yet. Consultation does not change client facts or create timeline history.</p>
   </section>
 
   <section class="workspace intelligence-workspace" id="advisor-intelligence-workspace" hidden aria-labelledby="advisor-intelligence-title">
@@ -968,6 +986,13 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorSaveProgress = document.getElementById("advisor-save-progress");
   const advisorRegenerateDocument = document.getElementById("advisor-regenerate-document");
   const advisorViewCaseFile = document.getElementById("advisor-view-case-file");
+  const advisorOpenConsultation = document.getElementById("advisor-open-consultation");
+  const advisorConsultationWorkspace = document.getElementById("advisor-consultation-workspace");
+  const advisorConsultationTranscript = document.getElementById("advisor-consultation-transcript");
+  const advisorConsultationForm = document.getElementById("advisor-consultation-form");
+  const advisorConsultationQuestion = document.getElementById("advisor-consultation-question");
+  const advisorConsultationSubmit = document.getElementById("advisor-consultation-submit");
+  const advisorConsultationStatus = document.getElementById("advisor-consultation-status");
   const advisorViewIntelligence = document.getElementById("advisor-view-intelligence");
   const advisorComparePlans = document.getElementById("advisor-compare-plans");
   const advisorRetainCalculation = document.getElementById("advisor-retain-calculation");
@@ -1689,6 +1714,68 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       if (scrollIntoView) advisorCaseWorkspace.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (error) {
       advisorCaseStatus.textContent = error instanceof Error ? error.message : "Unable to load the client case file.";
+    }
+  }
+
+  function appendConsultationMessage(text, role) {
+    const node = addText("div", text, "message " + role);
+    advisorConsultationTranscript.appendChild(node);
+    advisorConsultationTranscript.scrollTop = advisorConsultationTranscript.scrollHeight;
+  }
+
+  function renderAdvisorConsultation(consultation) {
+    appendConsultationMessage(consultation.answer, "guide");
+    const evidence = consultation.evidence;
+    if ((evidence.policyEvidence || []).length || (evidence.missingInformation || []).length || (evidence.warnings || []).length) {
+      const details = document.createElement("details");
+      details.className = "readiness-card";
+      details.appendChild(addText("summary", "Evidence packet · " + evidence.intent.replace(/_/g, " ") + " · policy " + evidence.policySnapshot));
+      if ((evidence.policyEvidence || []).length) {
+        details.appendChild(addText("strong", "Reviewed policy evidence"));
+        evidence.policyEvidence.forEach((source) => {
+          const row = document.createElement("div");
+          row.className = "consultation-source";
+          row.append(addText("strong", source.title), addText("div", source.content, "muted"), addText("div", source.locator + " · source hash " + source.sourceDocumentHash.slice(0, 12) + "…", "muted"));
+          details.appendChild(row);
+        });
+      }
+      const blocking = (evidence.missingInformation || []).filter((item) => item.blocking);
+      if (blocking.length) details.appendChild(addText("p", "Blocking saved fact gaps: " + blocking.map((item) => item.label).join(", ") + ".", "muted"));
+      (evidence.warnings || []).forEach((warning) => details.appendChild(addText("p", "Review: " + warning, "muted")));
+      advisorConsultationTranscript.appendChild(details);
+    }
+    if ((consultation.proposedActions || []).length) {
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      consultation.proposedActions.forEach((action) => {
+        const link = document.createElement("a");
+        link.className = "link-button";
+        link.href = action.href;
+        link.textContent = action.label;
+        actions.appendChild(link);
+      });
+      advisorConsultationTranscript.appendChild(actions);
+    }
+    advisorConsultationStatus.textContent = "Read-only consultation · " + consultation.synthesisMode.replace(/_/g, " ") + " · policy snapshot " + evidence.policySnapshot + ". No client mutation applied.";
+    advisorConsultationTranscript.scrollTop = advisorConsultationTranscript.scrollHeight;
+  }
+
+  async function askAdvisorConsultation(question) {
+    if (!advisorClient || !question.trim()) return;
+    advisorConsultationWorkspace.hidden = false;
+    appendConsultationMessage(question.trim(), "user");
+    advisorConsultationQuestion.value = "";
+    advisorConsultationSubmit.disabled = true;
+    advisorConsultationStatus.textContent = "Assembling owner-scoped case facts and reviewed policy evidence…";
+    try {
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/consultation", { method:"POST", body:JSON.stringify({ question:question.trim(), policySnapshot:"2026-08-27" }) });
+      renderAdvisorConsultation(body.consultation);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to consult the saved case.";
+      appendConsultationMessage(message, "guide");
+      advisorConsultationStatus.textContent = message;
+    } finally {
+      advisorConsultationSubmit.disabled = false;
     }
   }
 
@@ -2654,6 +2741,19 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     const saved = await saveAdvisorClientProgress();
     if (saved) await loadAdvisorCaseContext(true);
   });
+  advisorOpenConsultation.addEventListener("click", async () => {
+    const saved = await saveAdvisorClientProgress();
+    if (!saved) return;
+    advisorConsultationWorkspace.hidden = false;
+    if (!advisorConsultationTranscript.childElementCount) appendConsultationMessage("Ask me about this saved client. I will use only normalized owner-scoped case facts, deterministic results, and reviewed policy evidence from the current snapshot.", "guide");
+    advisorConsultationWorkspace.scrollIntoView({ behavior:"smooth", block:"start" });
+    advisorConsultationQuestion.focus();
+  });
+  advisorConsultationForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void askAdvisorConsultation(advisorConsultationQuestion.value);
+  });
+  document.querySelectorAll("[data-consult-question]").forEach((button) => button.addEventListener("click", () => { void askAdvisorConsultation(button.dataset.consultQuestion || ""); }));
   advisorViewIntelligence.addEventListener("click", async () => {
     const saved = await saveAdvisorClientProgress();
     if (saved) await loadAdvisorIntelligence(true);
@@ -4335,7 +4435,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET /api/advisor/action-dashboard", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET /api/advisor/action-dashboard", "GET /api/advisor/retrieval-metadata", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/case-context", "POST /api/advisor/clients/:clientId/retrieval", "POST /api/advisor/clients/:clientId/consultation", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
@@ -4354,6 +4454,12 @@ function home(request: Request, env: Env): Response {
       automatic_case_history: true,
       advisor_action_dashboard_v1: true,
       deterministic_next_best_action: true,
+      structured_client_retrieval_v1: true,
+      reviewed_policy_rag_v1: true,
+      chat_native_advisor_consultation_v1: true,
+      deterministic_math_authority: true,
+      raw_student_aid_embeddings: false,
+      shared_borrower_pii_corpus: false,
       student_aid_provenance_review: true,
       max_normalized_client_request_bytes: 512 * 1024,
       raw_student_aid_retention: false
