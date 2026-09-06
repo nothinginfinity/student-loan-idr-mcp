@@ -177,7 +177,7 @@ test("V0.8.3 advisor dashboard and saved guided client workflow are wired to nor
   assert.match(advisorHtml, /id="register-form"/);
   assert.match(advisorHtml, /id="create-client-form"/);
   assert.match(advisorHtml, /id="client-list"/);
-  assert.match(advisorHtml, /Open guided workflow/);
+  assert.match(advisorHtml, /Advisor action dashboard/);
   assert.match(advisorHtml, /raw StudentAid\.gov downloads/i);
   assert.match(advisorHtml, /2026-09-05-v2/);
   assert.match(advisorHtml, /awardFirstLayout/);
@@ -677,6 +677,150 @@ test("V0.9.5 automatically records owner-scoped material case events with immuta
   assert.ok(exportBody.timelineEvents.length >= 5);
   assert.ok(exportBody.calculationSnapshots.length >= 2);
   assert.doesNotMatch(JSON.stringify(exportBody), /RAW-STUDENTAID|socialsecuritynumber|sessiontoken/i);
+});
+
+test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deterministic next-best actions", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  d1.database.exec("PRAGMA foreign_keys = ON");
+  const env = { ADVISOR_DB: d1 };
+  const alpha = await register(env, "action-alpha@example.test", "Action Alpha");
+  const beta = await register(env, "action-beta@example.test", "Action Beta");
+
+  const health = await worker.fetch(new Request(`${BASE}/health`), env);
+  const healthBody = await health.json();
+  assert.equal(health.status, 200);
+  assert.equal(healthBody.version, "0.9.6");
+  assert.equal(healthBody.advisor_workspace.advisor_action_dashboard_v1, true);
+  assert.equal(healthBody.advisor_workspace.deterministic_next_best_action, true);
+  assert.ok(healthBody.endpoints.includes("GET /api/advisor/action-dashboard"));
+
+  const advisorUi = await worker.fetch(new Request(`${BASE}/advisor`), env);
+  const advisorHtml = await advisorUi.text();
+  assert.match(advisorHtml, /Advisor action dashboard/);
+  assert.match(advisorHtml, /Who needs attention and why/);
+  assert.match(advisorHtml, /derived deterministically/i);
+  assert.match(advisorHtml, /no income amounts, loan balances, contact details/i);
+  assert.match(advisorHtml, /\/api\/advisor\/action-dashboard/);
+  assert.match(advisorHtml, /Next best action:/);
+  assert.doesNotMatch(advisorHtml, /localStorage|sessionStorage/);
+
+  const privateCreate = await advisorFetch("/api/advisor/clients", beta, env, { method:"POST", body:JSON.stringify({ displayName:"Other Advisor Private Client", email:"other-owner-secret@example.test" }) });
+  assert.equal(privateCreate.status, 201);
+
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({ displayName:"Action Borrower", email:"action-secret@example.test", phone:"555-0199", notes:"PRIVATE-ACTION-NOTE" }) });
+  const created = await create.json();
+  assert.equal(create.status, 201);
+  const clientId = created.client.clientId as string;
+
+  const dashboard = async () => {
+    const response = await advisorFetch("/api/advisor/action-dashboard", alpha, env);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.dashboard.schema, "student-loan-idr-advisor-action-dashboard-v1");
+    assert.equal(body.dashboard.schemaVersion, 1);
+    return body.dashboard;
+  };
+  const actionClient = async () => (await dashboard()).clients.find((client:any)=>client.clientId===clientId);
+
+  let action = await actionClient();
+  assert.equal(action.primaryState, "needs_income");
+  assert.equal(action.nextBestAction.kind, "collect_income");
+  assert.ok(action.signals.some((signal:any)=>signal.state==="needs_income" && signal.attention));
+
+  const incomeOnly = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:created.client.updatedAt, confirmedFacts:{ income:[{cadence:"annual",amount:87654}] } }) });
+  const incomeOnlyBody = await incomeOnly.json();
+  assert.equal(incomeOnly.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "needs_family_size");
+  assert.equal(action.nextBestAction.kind, "collect_family_size");
+
+  const needsEvidence = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:incomeOnlyBody.client.updatedAt, readinessState:"needs_evidence", confirmedFacts:{ income:[{cadence:"annual",amount:87654}], incomeSources:[{sourceType:"employment",name:"Secret Employer",grossAmount:3371.31,paymentFrequency:"biweekly",evidenceState:"needs_evidence_review"}], region:"contiguous_us", familySize:2, dependentsClaimedOnFederalTaxReturn:1, taxFilingStatus:"single", newBorrowerOnOrAfterJuly1_2014:true } }) });
+  const needsEvidenceBody = await needsEvidence.json();
+  assert.equal(needsEvidence.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "needs_evidence");
+  assert.equal(action.nextBestAction.kind, "review_evidence");
+
+  const documentReady = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:needsEvidenceBody.client.updatedAt, readinessState:"document_ready", confirmedFacts:{ ...needsEvidenceBody.client.confirmedFacts, incomeSources:[{sourceType:"employment",name:"Secret Employer",grossAmount:3371.31,paymentFrequency:"biweekly",evidenceState:"evidence_in_hand"}] } }) });
+  const documentReadyBody = await documentReady.json();
+  assert.equal(documentReady.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "document_ready");
+  assert.equal(action.nextBestAction.kind, "prepare_document");
+
+  const applicationReady = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:documentReadyBody.client.updatedAt, readinessState:"application_ready", normalizedLoanPortfolio:{ repaymentLoans:[{principal:43210,annualInterestRatePercent:6.5}], eligibilityLoans:[{loanType:"direct_unsubsidized",disbursementPeriod:"before_2026_07_01"}] }, consideredPlans:["RAP","IBR"] }) });
+  const applicationReadyBody = await applicationReady.json();
+  assert.equal(applicationReady.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "application_ready");
+  assert.equal(action.nextBestAction.kind, "review_application");
+
+  const issued = await advisorFetch(`/api/advisor/clients/${clientId}/plan-selections`, alpha, env, { method:"POST", body:"{}" });
+  const issuedBody = await issued.json();
+  assert.equal(issued.status, 201);
+  const shareToken = issuedBody.selection.shareToken as string;
+  action = await actionClient();
+  assert.equal(action.primaryState, "borrower_review_pending");
+  assert.equal(action.nextBestAction.kind, "share_borrower_review");
+  assert.ok(action.signals.find((signal:any)=>signal.state==="borrower_review_pending")?.dueDate);
+
+  assert.equal((await worker.fetch(new Request(`${BASE}/api/share/${shareToken}`), env)).status, 200);
+  const selected = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}/select`, { method:"POST", headers:{"content-type":"application/json",origin:BASE}, body:JSON.stringify({plan:"IBR"}) }), env);
+  assert.equal(selected.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "plan_selected");
+  assert.equal(action.nextBestAction.kind, "review_plan_selection");
+
+  const signed = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}/sign`, { method:"POST", headers:{"content-type":"application/json",origin:BASE}, body:JSON.stringify({initials:"AB"}) }), env);
+  assert.equal(signed.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "booking_pending");
+  assert.equal(action.nextBestAction.kind, "book_enrollment");
+
+  const pad = (value:number) => String(value).padStart(2,"0");
+  const formatFsaDate = (date:Date) => `${pad(date.getUTCMonth()+1)}/${pad(date.getUTCDate())}/${date.getUTCFullYear()}`;
+  const now = new Date();
+  const forbearanceStart = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
+  const delinquencyStart = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+  const anniversary = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  const current = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env).then((response)=>response.json());
+  const intelligenceUpdate = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:current.client.updatedAt, servicerName:"Secret Servicer", normalizedLoanPortfolio:{ repaymentLoans:[{principal:43210,annualInterestRatePercent:6.5}], eligibilityLoans:[{loanType:"direct_unsubsidized",disbursementPeriod:"before_2026_07_01"}], loans:[{loanIndex:0,outstandingPrincipal:43210,outstandingInterest:987,interestRatePercent:6.5,currentLoanStatusCode:"FB",currentLoanStatusDescription:"FORBEARANCE",repaymentPlanTypeCode:"IB",repaymentPlanDescription:"INCOME-BASED REPAYMENT",repaymentPlanIdrAnniversaryDate:formatFsaDate(anniversary),statuses:[{code:"FB",description:"FORBEARANCE",effectiveDate:formatFsaDate(forbearanceStart)}],delinquencies:[{date:formatFsaDate(delinquencyStart)}],contacts:[{type:"Current Servicer",name:"Secret Servicer",phoneNumber:"8005550199",mostRelevant:true}],provenance:{}}], summary:{loanCount:1,activeLoanCount:1,totalOutstandingPrincipal:43210,totalOutstandingInterest:987,repaymentLoanCount:1,eligibilityMappedLoanCount:1,ambiguousEligibilityLoanCount:0,hasLoanDisbursedOnOrAfterJuly1_2026:false} }, studentAidImport:{source:"studentaid_download",fileRequestDate:formatFsaDate(now),mappingVersion:"2026-09-05-v2",rawFileRetained:false} }) });
+  assert.equal(intelligenceUpdate.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "delinquency_attention");
+  assert.ok(action.signals.some((signal:any)=>signal.state==="in_forbearance"));
+  assert.ok(action.signals.some((signal:any)=>signal.state==="idr_anniversary_approaching" && signal.dueDate===formatFsaDate(anniversary)));
+  assert.ok(action.signals.some((signal:any)=>signal.state==="booking_pending"));
+
+  const beforeRead = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env).then((response)=>response.json());
+  const beforeTimelineCount = (d1.database.prepare("SELECT COUNT(*) AS n FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=?").get(alpha.advisor.advisorId,clientId) as {n:number}).n;
+  const minimized = await dashboard();
+  const minimizedJson = JSON.stringify(minimized);
+  assert.equal(minimized.clients.some((client:any)=>client.displayName==="Other Advisor Private Client"), false, "dashboard must remain exact-owner scoped");
+  assert.doesNotMatch(minimizedJson, /action-secret@example\.test|555-0199|PRIVATE-ACTION-NOTE|Secret Employer|3371\.31|87654|43210|987|Secret Servicer|8005550199|other-owner-secret@example\.test/);
+  assert.doesNotMatch(minimizedJson, /ownerAdvisorId|confirmedFacts|normalizedLoanPortfolio|comparisonSnapshot|shareToken|bookingUrl|basis|result/);
+  const afterRead = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env).then((response)=>response.json());
+  const afterTimelineCount = (d1.database.prepare("SELECT COUNT(*) AS n FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=?").get(alpha.advisor.advisorId,clientId) as {n:number}).n;
+  assert.equal(afterRead.client.updatedAt, beforeRead.client.updatedAt, "dashboard GET must not mutate the client record");
+  assert.equal(afterTimelineCount, beforeTimelineCount, "dashboard GET must not add timeline history");
+
+  const archive = await advisorFetch(`/api/advisor/clients/${clientId}/archive`, alpha, env, { method:"POST", body:JSON.stringify({expectedUpdatedAt:beforeRead.client.updatedAt}) });
+  assert.equal(archive.status, 200);
+  action = await actionClient();
+  assert.equal(action.primaryState, "archived");
+  assert.equal(action.signals.length, 1, "archived must be a terminal dashboard state");
+
+  const completedCreate = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({displayName:"Completed Borrower"}) });
+  const completedCreated = await completedCreate.json();
+  const completedUpdate = await advisorFetch(`/api/advisor/clients/${completedCreated.client.clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({expectedUpdatedAt:completedCreated.client.updatedAt,lifecycleState:"completed"}) });
+  assert.equal(completedUpdate.status, 200);
+  const completedDashboard = await dashboard();
+  const completed = completedDashboard.clients.find((client:any)=>client.clientId===completedCreated.client.clientId);
+  assert.equal(completed.primaryState, "completed");
+  assert.equal(completed.signals.length, 1);
+  assert.ok(completedDashboard.counts.byState.archived >= 1);
+  assert.ok(completedDashboard.counts.byState.completed >= 1);
 });
 
 test("V0.9.3 derives owner-scoped FSA portfolio intelligence without double-counting overlapping forbearance", async () => {
