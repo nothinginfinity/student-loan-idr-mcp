@@ -403,7 +403,7 @@ Acceptance evidence:
 - Client export advanced to `student-loan-idr-advisor-client-export-v3` and includes case context, timeline events, retained artifacts, and calculation snapshots. Exact cross-advisor access continues to fail with the generic owner-isolation response.
 - Private borrower `/api/calculate` and `/api/document` remain non-persistent, no browser storage was introduced, and raw StudentAid downloads/raw evidence files remain excluded from server history.
 
-### V0.9.6 — Advisor Action Dashboard / Next-Best-Action Workflow — NEXT / PLANNED
+### V0.9.6 — Advisor Action Dashboard / Next-Best-Action Workflow — COMPLETE
 
 Turn the advisor dashboard into an operational work queue across clients.
 
@@ -412,7 +412,17 @@ Turn the advisor dashboard into an operational work queue across clients.
 3. Generate next-best-action suggestions from explicit state-machine rules and due dates first. An LLM may later explain or phrase those actions, but it must not invent case status or silently mutate client data.
 4. Connect dashboard actions directly to the client case, calculation workflow, document workflow, borrower review/share flow, and booking flow.
 
-### V0.9.7 — Structured Retrieval + Policy RAG + Chat-Native Consultation — PLANNED
+Acceptance evidence:
+
+- Final V0.9.6 runtime/workflow source commit `8df232786d0ebab5b7b3cc17fc1b1aac4d5c86f6` passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in normal CI run `34022455036`.
+- Exact-SHA live deployment + production acceptance run `34022619788` succeeded from that immutable source. The deploy-live job passed the immutable-source guard, repeated typecheck/tests, remote D1 migration step, exact Wrangler deployment, and **272 production checks** against `https://student-loan-idr-mcp.jaredtechfit.workers.dev`.
+- Added versioned `student-loan-idr-advisor-action-dashboard-v1` at `GET /api/advisor/action-dashboard`. It derives workflow state on read from the accepted client case-context contract, lifecycle/readiness facts, current FSA portfolio intelligence, material timeline metadata, and active borrower plan-review state rather than persisting a second status table that could drift stale.
+- The deterministic state machine covers missing income/family size/evidence, document/application readiness, borrower review, plan selected, booking pending, approaching IDR anniversaries, current forbearance, current delinquency, and completed/archived terminal states. A client can carry multiple signals while one explicit priority rule selects the primary next-best action.
+- Cross-client dashboard payloads remain owner-scoped and minimized. Production/unit acceptance proves they omit private contact details, income amounts, balances, normalized loan portfolios, evidence, notes, comparison bodies, share tokens, booking URLs, and timeline basis/results. Dashboard reads do not mutate the client or create history events.
+- Advisor cards now show attention counts, deterministic state/reason badges, optional due dates, and direct next-action controls while preserving case, borrower-review/share, export, and archive controls. No browser storage or raw StudentAid retention was introduced.
+- Deterministic code remains authoritative for state, chronology, due-date interpretation, calculations, and saved mutations. The action projection is now a structured retrieval source for V0.9.7; a later LLM may explain a state/action but cannot invent or silently change it.
+
+### V0.9.7 — Structured Retrieval + Policy RAG + Chat-Native Consultation — NEXT / PLANNED
 
 Make advisor and borrower consultation substantially chat-native while preserving deterministic authority and privacy.
 
