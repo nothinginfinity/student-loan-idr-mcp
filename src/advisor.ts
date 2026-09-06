@@ -1,7 +1,8 @@
 import { scryptSync } from "node:crypto";
 import { calculateRepayment } from "./formulas.ts";
+import { FSA_DATA_DICTIONARY, FSA_DATA_DICTIONARY_VERSION, POLICY_EVIDENCE_CORPUS, POLICY_RULE_REGISTRY, POLICY_SNAPSHOT } from "./constants.ts";
 import { getDocumentationTemplate } from "./templates.ts";
-import type { AdvisorAccountStatus, AdvisorActionDashboardV1, AdvisorActionState, AdvisorClientActionSignalV1, AdvisorClientActionSummaryV1, AdvisorClientCaseContextV1, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorPrincipal, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, StudentAidLoanContactFact, StudentAidNormalizedLoanFact, StudentAidPortfolioIntelligence, StudentAidStatusIntervalIntelligence, TemplateRequest } from "./types.ts";
+import type { AdvisorAccountStatus, AdvisorActionDashboardV1, AdvisorActionState, AdvisorClientActionSignalV1, AdvisorClientActionSummaryV1, AdvisorClientCaseContextV1, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorConsultationIntent, AdvisorConsultationResponseV1, AdvisorEvidencePacketV1, AdvisorPrincipal, AdvisorRetrievalFactV1, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, StudentAidLoanContactFact, StudentAidNormalizedLoanFact, StudentAidPortfolioIntelligence, StudentAidStatusIntervalIntelligence, TemplateRequest } from "./types.ts";
 
 const COOKIE = "sl_advisor_session";
 const TTL_SECONDS = 12 * 60 * 60;
@@ -413,6 +414,172 @@ export function deriveAdvisorClientCaseContext(client: AdvisorClientRecordV1): A
     warnings
   };
 }
+
+function retrievalQuestion(value: unknown): string {
+  if (typeof value !== "string") throw new ApiError(400, "Consultation question is required.");
+  const question = value.trim();
+  if (!question || question.length > 2000) throw new ApiError(400, "Consultation question must be between 1 and 2000 characters.");
+  return question;
+}
+function retrievalText(value: string): string { return value.toLowerCase().replace(/[^a-z0-9+]+/g, " ").replace(/\s+/g, " ").trim(); }
+function retrievalTokens(value: string): string[] { return [...new Set(retrievalText(value).split(" ").filter((token) => token.length >= 2))]; }
+function deriveConsultationIntent(question: string): AdvisorConsultationIntent {
+  const q = retrievalText(question);
+  if (/parent plus|ffel|perkins|consolidat|eligib|loan type|disbursement/.test(q)) return "eligibility_review";
+  if (/lowest|monthly payment|compare|comparison|forgiveness|repayment path|modeled payment/.test(q)) return "plan_comparison";
+  if (/forbear|delinquen|status histor|fsa histor|portfolio histor/.test(q)) return "portfolio_history";
+  if (/document|evidence|income statement|supporting/.test(q)) return "documents_and_evidence";
+  if (/what should i ask|ask the borrower|next best|next action|what should i do/.test(q)) return "next_best_action";
+  if (/missing|still need|what do i need|before i can/.test(q)) return "missing_information";
+  if (/policy|rule|save|repaye|paye|icr|ibr|rap/.test(q)) return "policy_explanation";
+  return "case_summary";
+}
+function lexicalScore(question: string, keywords: readonly string[], extra = ""): number {
+  const q = retrievalText(question), tokens = new Set(retrievalTokens(question));
+  let score = 0;
+  for (const keyword of keywords) {
+    const normalized = retrievalText(keyword);
+    if (normalized && q.includes(normalized)) score += normalized.includes(" ") ? 6 : 4;
+    for (const token of retrievalTokens(keyword)) if (tokens.has(token)) score += 1;
+  }
+  for (const token of retrievalTokens(extra)) if (tokens.has(token)) score += 0.5;
+  return score;
+}
+function policyEvidenceFor(question: string, intent: AdvisorConsultationIntent) {
+  const intentKeywords: Record<AdvisorConsultationIntent, string[]> = {
+    case_summary: [], missing_information: [], portfolio_history: ["status","forbearance","delinquency"], eligibility_review: ["eligibility","loan type","consolidation"],
+    plan_comparison: ["repayment","payment","forgiveness"], documents_and_evidence: [], next_best_action: [], policy_explanation: ["policy","repayment plan"]
+  };
+  const ranked = POLICY_EVIDENCE_CORPUS
+    .filter((entry) => entry.policySnapshot === POLICY_SNAPSHOT)
+    .map((entry) => ({ entry, score: lexicalScore(question, [...entry.keywords, ...intentKeywords[intent]], entry.title) }))
+    .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id));
+  const selected = ranked.filter((candidate) => candidate.score > 0).slice(0, 4).map((candidate) => candidate.entry);
+  if (selected.length) return selected;
+  if (["eligibility_review","plan_comparison","policy_explanation"].includes(intent)) return POLICY_EVIDENCE_CORPUS.filter((entry) => entry.policySnapshot === POLICY_SNAPSHOT).slice(0, 2);
+  return [];
+}
+function policyRulesFor(question: string, evidenceIds: Set<string>, intent: AdvisorConsultationIntent) {
+  return POLICY_RULE_REGISTRY
+    .filter((rule) => rule.policySnapshot === POLICY_SNAPSHOT)
+    .map((rule) => ({ rule, score: lexicalScore(question, rule.keywords, `${rule.title} ${rule.programs.join(" ")} ${rule.loanFamilies.join(" ")}`) + rule.evidenceChunkIds.filter((id) => evidenceIds.has(id)).length * 4 }))
+    .filter((candidate) => candidate.score > 0 || ["eligibility_review","plan_comparison","policy_explanation"].includes(intent))
+    .sort((a,b) => b.score-a.score || a.rule.id.localeCompare(b.rule.id)).slice(0, 4).map((candidate) => candidate.rule);
+}
+function dictionaryFor(question: string, intent: AdvisorConsultationIntent) {
+  const categoryBoost = intent === "eligibility_review" ? new Set(["loan_identity","consolidation"]) : intent === "portfolio_history" ? new Set(["status","delinquency","repayment_plan"]) : intent === "plan_comparison" ? new Set(["balance","interest","repayment_plan","loan_identity"]) : new Set<string>();
+  return FSA_DATA_DICTIONARY.map((entry) => ({ entry, score: lexicalScore(question, [entry.canonicalLabel, ...entry.aliases, entry.normalizedTarget], entry.category) + (categoryBoost.has(entry.category) ? 3 : 0) }))
+    .filter((candidate) => candidate.score > 0).sort((a,b) => b.score-a.score || a.entry.id.localeCompare(b.entry.id)).slice(0, 12).map((candidate) => candidate.entry);
+}
+function addRetrievalFact(facts: AdvisorRetrievalFactV1[], key: string, label: string, value: unknown, sourcePath: string, provenance?: AdvisorRetrievalFactV1["provenance"], asOf?: string): void {
+  if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return;
+  facts.push({ key, label, value, sourcePath, ...(provenance ? { provenance } : {}), ...(asOf ? { asOf } : {}) });
+}
+function structuredFactsFor(context: AdvisorClientCaseContextV1, intent: AdvisorConsultationIntent): AdvisorRetrievalFactV1[] {
+  const facts: AdvisorRetrievalFactV1[] = [], summary = context.professionalSummary;
+  if (intent === "case_summary" || intent === "portfolio_history" || intent === "plan_comparison") {
+    addRetrievalFact(facts,"active_loan_count","Active loan count",summary.activeLoanCount,"professionalSummary.activeLoanCount","deterministic_derived",context.asOf.portfolioAsOfDate);
+    addRetrievalFact(facts,"outstanding_principal","Outstanding principal",summary.totalOutstandingPrincipal,"professionalSummary.totalOutstandingPrincipal","deterministic_derived",context.asOf.portfolioAsOfDate);
+    addRetrievalFact(facts,"outstanding_interest","Outstanding interest",summary.totalOutstandingInterest,"professionalSummary.totalOutstandingInterest","deterministic_derived",context.asOf.portfolioAsOfDate);
+    addRetrievalFact(facts,"current_repayment_plans","Current repayment plans",summary.currentRepaymentPlans,"professionalSummary.currentRepaymentPlans","deterministic_derived",context.asOf.portfolioAsOfDate);
+    addRetrievalFact(facts,"scheduled_payment","Reported scheduled payment",summary.reportedScheduledPaymentSum,"professionalSummary.reportedScheduledPaymentSum","deterministic_derived",context.asOf.portfolioAsOfDate);
+  }
+  if (intent === "portfolio_history" || intent === "case_summary") {
+    addRetrievalFact(facts,"current_forbearance_loans","Current forbearance loans",summary.currentForbearanceLoanCount,"professionalSummary.currentForbearanceLoanCount","deterministic_derived",context.asOf.portfolioAsOfDate);
+    addRetrievalFact(facts,"current_delinquency_loans","Current delinquency loans",summary.currentDelinquencyLoanCount,"professionalSummary.currentDelinquencyLoanCount","deterministic_derived",context.asOf.portfolioAsOfDate);
+    addRetrievalFact(facts,"idr_anniversary_dates","IDR anniversary dates",summary.idrAnniversaryDates,"professionalSummary.idrAnniversaryDates","deterministic_derived",context.asOf.portfolioAsOfDate);
+    addRetrievalFact(facts,"next_payment_due_dates","Next payment due dates",summary.nextPaymentDueDates,"professionalSummary.nextPaymentDueDates","deterministic_derived",context.asOf.portfolioAsOfDate);
+  }
+  if (intent === "eligibility_review" || intent === "policy_explanation" || intent === "plan_comparison") {
+    const eligibilityLoans = context.normalizedFacts.loanPortfolio?.eligibilityLoans ?? [];
+    if (eligibilityLoans.length) addRetrievalFact(facts,"eligibility_loan_inputs","Deterministic eligibility loan inputs",eligibilityLoans,"normalizedFacts.loanPortfolio.eligibilityLoans","saved_case",context.asOf.caseUpdatedAt);
+    for (const loan of context.normalizedFacts.loanPortfolio?.loans ?? []) {
+      const minimal = {
+        loanIndex: loan.loanIndex, mappedLoanType: loan.mappedLoanType, disbursementPeriod: loan.disbursementPeriod,
+        parentPlusFirstLevelConsolidationIndicator: loan.parentPlusFirstLevelConsolidationIndicator,
+        consolidationLoanWithAnyParentPlusIndicator: loan.consolidationLoanWithAnyParentPlusIndicator,
+        currentLoanStatusDescription: loan.currentLoanStatusDescription
+      };
+      addRetrievalFact(facts,`loan_${loan.loanIndex}_eligibility`,`Loan ${loan.loanIndex + 1} eligibility facts`,minimal,`normalizedFacts.loanPortfolio.loans[${loan.loanIndex}]`,"deterministic_derived",context.asOf.portfolioAsOfDate);
+    }
+  }
+  if (intent === "documents_and_evidence") {
+    addRetrievalFact(facts,"readiness_state","Case readiness state",context.readinessState,"readinessState","saved_case",context.asOf.caseUpdatedAt);
+    addRetrievalFact(facts,"income_source_evidence","Income-source evidence states",(context.normalizedFacts.confirmedFacts?.incomeSources ?? []).map((source) => ({ sourceType:source.sourceType, evidenceState:source.evidenceState })),"normalizedFacts.confirmedFacts.incomeSources","saved_case",context.asOf.caseUpdatedAt);
+  }
+  if (intent === "missing_information" || intent === "next_best_action") addRetrievalFact(facts,"comparison_readiness","Comparison readiness",context.coverage.comparisonReadiness,"coverage.comparisonReadiness","deterministic_derived",context.asOf.caseUpdatedAt);
+  return facts;
+}
+async function evidencePacket(database: D1DatabaseBinding, advisorId: string, client: AdvisorClientRecordV1, question: string): Promise<AdvisorEvidencePacketV1> {
+  const context = deriveAdvisorClientCaseContext(client), intent = deriveConsultationIntent(question), facts = structuredFactsFor(context,intent);
+  const timelineRows = await database.prepare("SELECT owner_advisor_id,client_id,event_id,event_kind,name,summary,source_type,source_id,basis_json,result_json,policy_snapshot,engine_version,starred,annotation,occurred_at,updated_at FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=? ORDER BY occurred_at DESC,event_id DESC LIMIT 12").bind(advisorId,client.clientId).all<TimelineRow>();
+  const artifactRows = await database.prepare("SELECT owner_advisor_id,client_id,artifact_id,artifact_kind,name,template_request_json,document_text,document_html,engine_version,created_at FROM advisor_client_artifacts WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC LIMIT 8").bind(advisorId,client.clientId).all<ArtifactRow>();
+  const snapshotRows = await database.prepare("SELECT owner_advisor_id,client_id,snapshot_id,snapshot_kind,name,basis_json,result_json,policy_snapshot,engine_version,created_at FROM advisor_client_calculation_snapshots WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC LIMIT 8").bind(advisorId,client.clientId).all<SnapshotRow>();
+  const selectionRows = await database.prepare("SELECT selection_id,client_id,status,selected_at,signed_at,booked_at,link_opened_at,select_sign_deadline_at,booking_deadline_at,created_at,updated_at FROM advisor_client_plan_selections WHERE owner_advisor_id=? AND client_id=? ORDER BY updated_at DESC LIMIT 20").bind(advisorId,client.clientId).all<ActionPlanSelectionRow>();
+  const activeSelection = selectionRows.results.find((row) => !["expired","revoked","booked"].includes(row.status));
+  const action = deriveActionSummary(client,activeSelection,timelineRows.results.map((row) => ({client_id:row.client_id,event_kind:row.event_kind,occurred_at:row.occurred_at})),Date.now());
+  const evidence = policyEvidenceFor(question,intent), evidenceIds = new Set(evidence.map((entry) => entry.id)), rules = policyRulesFor(question,evidenceIds,intent), dictionaryEntries = dictionaryFor(question,intent);
+  const warnings = [...context.warnings];
+  let comparison: unknown | undefined;
+  if (intent === "plan_comparison") {
+    try { comparison = compareClientPrograms(client); }
+    catch (error) { if (error instanceof ApiError && error.status === 422) warnings.push(error.message); else throw error; }
+  }
+  if (evidence.some((entry) => entry.policySnapshot !== POLICY_SNAPSHOT) || rules.some((rule) => rule.policySnapshot !== POLICY_SNAPSHOT)) throw new ApiError(409,"Policy retrieval attempted to use evidence outside the current accepted policy snapshot.");
+  return {
+    schema:"student-loan-idr-advisor-evidence-packet-v1", schemaVersion:1, clientId:client.clientId, clientUpdatedAt:client.updatedAt,
+    policySnapshot:POLICY_SNAPSHOT, dictionaryVersion:FSA_DATA_DICTIONARY_VERSION, question, intent, retrievalMode:"structured_client_exact_keyword_policy",
+    facts, missingInformation:context.missingInformation,
+    deterministic:{ caseContext:{asOf:context.asOf,coverage:context.coverage,warnings:context.warnings}, ...(context.deterministicIntelligence?{intelligence:context.deterministicIntelligence}:{}), ...(comparison!==undefined?{comparison}:{}), nextBestAction:action },
+    history:{
+      timeline:timelineRows.results.map((row) => ({eventId:row.event_id,eventKind:row.event_kind,name:row.name,summary:row.summary,...(row.policy_snapshot?{policySnapshot:row.policy_snapshot}:{}),occurredAt:row.occurred_at})),
+      artifacts:artifactRows.results.map((row) => ({artifactId:row.artifact_id,name:row.name,createdAt:row.created_at})),
+      snapshots:snapshotRows.results.map((row) => ({snapshotId:row.snapshot_id,snapshotKind:row.snapshot_kind,name:row.name,policySnapshot:row.policy_snapshot,createdAt:row.created_at}))
+    },
+    dictionaryEntries:[...dictionaryEntries], policyRules:[...rules], policyEvidence:[...evidence], warnings,
+    privacy:{rawStudentAidIncluded:false,rawStudentAidEmbedded:false,sharedBorrowerPiiCorpus:false}
+  };
+}
+function consultationAnswer(packet: AdvisorEvidencePacketV1): string {
+  const citations = packet.policyEvidence.map((entry) => `[${entry.id}]`).join(" ");
+  const suffix = citations ? ` Policy evidence: ${citations}.` : "";
+  if (packet.intent === "missing_information") {
+    const blocking = packet.missingInformation.filter((item) => item.blocking);
+    return blocking.length ? `Before a complete comparison, the saved case is still missing: ${blocking.map((item) => item.label).join(", ")}.${suffix}` : `The saved case has no blocking comparison facts flagged by the current deterministic case-context contract.${suffix}`;
+  }
+  if (packet.intent === "next_best_action") {
+    const action = packet.deterministic.nextBestAction;
+    return action ? `${action.signals[0]?.reason ?? "Open the saved case to review the next step."} Next best action: ${action.nextBestAction.label}.${suffix}` : `Open the saved case to review the next deterministic workflow step.${suffix}`;
+  }
+  if (packet.intent === "plan_comparison" && packet.deterministic.comparison) {
+    const comparison = packet.deterministic.comparison as {projections?:Array<{plan:string;eligibilityStatus:string;currentMonthlyPayment:number|null}>};
+    const candidates=(comparison.projections??[]).filter((projection)=>projection.eligibilityStatus!=="ineligible"&&typeof projection.currentMonthlyPayment==="number");
+    if(candidates.length){const lowest=[...candidates].sort((a,b)=>(a.currentMonthlyPayment??Infinity)-(b.currentMonthlyPayment??Infinity))[0]!;return `${lowest.plan} has the lowest modeled monthly payment among the currently modeled non-ineligible options at $${Number(lowest.currentMonthlyPayment).toFixed(2)} per month. The calculation remains deterministic and the policy evidence only explains the result.${suffix}`;}
+  }
+  if (packet.intent === "eligibility_review") {
+    const loanFacts = packet.facts.filter((fact)=>fact.key.includes("eligibility"));
+    return `I found ${loanFacts.length} structured loan eligibility fact set(s). Eligibility remains code-owned from the saved loan family, disbursement, and consolidation facts; the retrieved policy cards explain those branches but cannot override them.${suffix}`;
+  }
+  if (packet.intent === "portfolio_history") {
+    const forbearance=packet.facts.find((fact)=>fact.key==="current_forbearance_loans")?.value??0, delinquency=packet.facts.find((fact)=>fact.key==="current_delinquency_loans")?.value??0;
+    return `The saved deterministic portfolio history shows ${String(forbearance)} active loan(s) currently in forbearance and ${String(delinquency)} active loan(s) currently delinquent. Review the cited as-of dates and case warnings before acting.${suffix}`;
+  }
+  if (packet.intent === "documents_and_evidence") {
+    const blocking=packet.missingInformation.filter((item)=>item.blocking);
+    return blocking.length?`The case still has ${blocking.length} blocking fact area(s) before a complete comparison. Supporting-document work should use only saved confirmed facts and explicit evidence states; chat does not create or verify evidence.${suffix}`:`The current saved case has no blocking comparison fact gaps. Supporting-document actions still require explicit use of the validated document workflow.${suffix}`;
+  }
+  if (packet.intent === "policy_explanation") return `The explanation is pinned to policy snapshot ${packet.policySnapshot}. Deterministic code remains authoritative for eligibility and calculations; retrieved policy cards are explanatory only.${suffix}`;
+  const summary = packet.facts.slice(0,5).map((fact)=>`${fact.label}: ${Array.isArray(fact.value)?fact.value.join(", "):String(fact.value)}`).join("; ");
+  return `${summary || "The saved case context is available, but this question did not require additional client facts."}.${suffix}`;
+}
+async function parseRetrievalRequest(request: Request): Promise<string> {
+  sameOrigin(request); const b=await body(request), allowed=new Set(["question","policySnapshot"]); for(const key of Object.keys(b)) if(!allowed.has(key)) throw new ApiError(400,`Unexpected consultation field: ${key}.`);
+  if(b.policySnapshot!==undefined&&String(b.policySnapshot)!==POLICY_SNAPSHOT) throw new ApiError(409,`Requested policy snapshot ${String(b.policySnapshot)} is not the current accepted snapshot ${POLICY_SNAPSHOT}.`);
+  return retrievalQuestion(b.question);
+}
+async function retrieveClientEvidence(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ const question=await parseRetrievalRequest(request),client=parseClient(await owned(database,a.account.advisor_id,id)); return json({ok:true,evidence:await evidencePacket(database,a.account.advisor_id,client,question)}); }
+async function consultClient(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ const question=await parseRetrievalRequest(request),client=parseClient(await owned(database,a.account.advisor_id,id)),evidence=await evidencePacket(database,a.account.advisor_id,client,question),action=evidence.deterministic.nextBestAction?.nextBestAction; const response:AdvisorConsultationResponseV1={schema:"student-loan-idr-advisor-consultation-v1",schemaVersion:1,synthesisMode:"deterministic_evidence_summary",answer:consultationAnswer(evidence),evidence,proposedActions:action?[{kind:action.kind,label:action.label,href:action.href}]:[],mutationApplied:false}; return json({ok:true,consultation:response}); }
+function retrievalMetadata(){ return json({ok:true,schema:"student-loan-idr-retrieval-metadata-v1",schemaVersion:1,policySnapshot:POLICY_SNAPSHOT,dictionaryVersion:FSA_DATA_DICTIONARY_VERSION,dictionary:[...FSA_DATA_DICTIONARY],policyRules:[...POLICY_RULE_REGISTRY],policyEvidence:POLICY_EVIDENCE_CORPUS.map((entry)=>({...entry})) ,privacy:{rawStudentAidEmbedded:false,sharedBorrowerPiiCorpus:false}}); }
 
 type ComparisonPoint = { month: number; remainingBalance: number; cumulativeBorrowerPaid: number; cumulativeInterestWaived: number; cumulativePrincipalMatch: number };
 type ComparisonProjection = {
@@ -918,6 +1085,7 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
     if(request.method==="DELETE"&&u.pathname==="/api/advisor/account"){sameOrigin(request);const a=await authenticate(request,database,true),b=await body(request),pw=password(b.password),candidate=await passwordHash(pw,a.account.password_salt,a.account.password_iterations);if(!equal(candidate,a.account.password_hash))throw new ApiError(401,"Invalid password.");await database.prepare("DELETE FROM advisor_audit_events WHERE advisor_id=?").bind(a.account.advisor_id).run();await database.prepare("DELETE FROM advisor_accounts WHERE advisor_id=?").bind(a.account.advisor_id).run();await clearFailures(database,a.account.email_normalized);return json({ok:true,deletedAdvisorId:a.account.advisor_id},200,{"set-cookie":clearCookie()});}
     const a=await authenticate(request,database,["POST","PUT","PATCH","DELETE"].includes(request.method));
     if(request.method==="GET"&&u.pathname==="/api/advisor/action-dashboard") return await actionDashboard(request,database,a);
+    if(request.method==="GET"&&u.pathname==="/api/advisor/retrieval-metadata") return retrievalMetadata();
     if(request.method==="GET"&&u.pathname==="/api/advisor/clients") return await listClients(request,database,a);
     if(request.method==="POST"&&u.pathname==="/api/advisor/clients") return await createClient(request,database,a);
     if(request.method==="POST"&&u.pathname==="/api/advisor/clients/match") return await matchClients(request,database,a);
@@ -928,6 +1096,8 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       if(request.method==="GET"&&r.suffix==="/comparison"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row),comparison=compareClientPrograms(client);await audit(database,a.account.advisor_id,"client.compare",r.id);return json({ok:true,comparison});}
       if(request.method==="GET"&&r.suffix==="/intelligence"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row);if(!client.normalizedLoanPortfolio?.loans?.length) throw new ApiError(422,"Save normalized per-loan StudentAid facts before generating portfolio intelligence.");return json({ok:true,intelligence:deriveStudentAidPortfolioIntelligence(client)});}
       if(request.method==="GET"&&r.suffix==="/case-context"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row);return json({ok:true,caseContext:deriveAdvisorClientCaseContext(client)});}
+      if(request.method==="POST"&&r.suffix==="/retrieval") return await retrieveClientEvidence(request,database,a,r.id);
+      if(request.method==="POST"&&r.suffix==="/consultation") return await consultClient(request,database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/calculations") return await runAutomaticCalculation(request,database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/comparisons") return await runAutomaticComparison(request,database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/documents/generate") return await generateCaseDocument(request,database,a,r.id);
