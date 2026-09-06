@@ -336,12 +336,12 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.9.6' && health?.advisor_workspace?.max_normalized_client_request_bytes === 524288) break;
+              if (healthResponse.status === 200 && health?.version === '0.9.7' && health?.advisor_workspace?.max_normalized_client_request_bytes === 524288) break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.9.6', `unexpected live version ${health.version}`);
+            assert(health.version === '0.9.7', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -365,6 +365,15 @@ jobs:
             assert(health.advisor_workspace?.advisor_action_dashboard_v1 === true, 'V0.9.6 advisor action-dashboard capability flag missing');
             assert(health.advisor_workspace?.deterministic_next_best_action === true, 'V0.9.6 deterministic next-best-action flag missing');
             assert(Array.isArray(health.endpoints) && health.endpoints.includes('GET /api/advisor/action-dashboard'), 'V0.9.6 action-dashboard endpoint inventory missing');
+            assert(health.advisor_workspace?.structured_client_retrieval_v1 === true, 'V0.9.7 structured client retrieval capability flag missing');
+            assert(health.advisor_workspace?.reviewed_policy_rag_v1 === true, 'V0.9.7 reviewed policy RAG capability flag missing');
+            assert(health.advisor_workspace?.chat_native_advisor_consultation_v1 === true, 'V0.9.7 chat-native advisor consultation capability flag missing');
+            assert(health.advisor_workspace?.deterministic_math_authority === true, 'V0.9.7 deterministic math authority flag missing');
+            assert(health.advisor_workspace?.raw_student_aid_embeddings === false, 'V0.9.7 raw StudentAid embedding boundary mismatch');
+            assert(health.advisor_workspace?.shared_borrower_pii_corpus === false, 'V0.9.7 shared borrower PII corpus boundary mismatch');
+            assert(health.endpoints.includes('GET /api/advisor/retrieval-metadata'), 'V0.9.7 retrieval metadata endpoint inventory missing');
+            assert(health.endpoints.includes('POST /api/advisor/clients/:clientId/retrieval'), 'V0.9.7 retrieval endpoint inventory missing');
+            assert(health.endpoints.includes('POST /api/advisor/clients/:clientId/consultation'), 'V0.9.7 consultation endpoint inventory missing');
             assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
             assert(health.advisor_workspace?.max_normalized_client_request_bytes === 524288, 'normalized advisor client request ceiling mismatch');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
@@ -399,6 +408,12 @@ jobs:
             const alpha = await registerAdvisor('alpha');
             const beta = await registerAdvisor('beta');
             assert(alpha.advisor.advisorId !== beta.advisor.advisorId, 'advisor identities must be distinct');
+
+            const retrievalMetadata = await advisorRequest('/api/advisor/retrieval-metadata', {}, alpha);
+            assert(retrievalMetadata.response.status === 200 && retrievalMetadata.body?.schema === 'student-loan-idr-retrieval-metadata-v1', 'V0.9.7 retrieval metadata failed');
+            assert(retrievalMetadata.body?.policySnapshot === '2026-08-27' && retrievalMetadata.body?.dictionaryVersion === '2026-09-05-v2', 'V0.9.7 retrieval metadata version mismatch');
+            assert(retrievalMetadata.body?.privacy?.rawStudentAidEmbedded === false && retrievalMetadata.body?.privacy?.sharedBorrowerPiiCorpus === false, 'V0.9.7 retrieval metadata privacy boundary mismatch');
+            assert(Array.isArray(retrievalMetadata.body?.policyEvidence) && retrievalMetadata.body.policyEvidence.every((entry) => entry.policySnapshot === '2026-08-27'), 'V0.9.7 policy evidence snapshot mismatch');
 
             const createdClient = await advisorRequest('/api/advisor/clients', {
               method: 'POST',
@@ -554,6 +569,24 @@ jobs:
             const betaCaseContext = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/case-context`, {}, beta);
             assert(betaCaseContext.response.status === 404 && betaCaseContext.body?.error === 'Client not found or not accessible.', 'cross-advisor case-context access must fail generically');
 
+            const eligibilityRetrieval = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/retrieval`, { method: 'POST', body: JSON.stringify({ question: 'What does the Parent PLUS loan history change for IBR and RAP eligibility?', policySnapshot: '2026-08-27' }) }, alpha);
+            assert(eligibilityRetrieval.response.status === 200 && eligibilityRetrieval.body?.evidence?.schema === 'student-loan-idr-advisor-evidence-packet-v1', 'V0.9.7 owner-scoped evidence retrieval failed');
+            assert(eligibilityRetrieval.body?.evidence?.intent === 'eligibility_review', 'V0.9.7 eligibility intent routing mismatch');
+            assert(eligibilityRetrieval.body?.evidence?.privacy?.rawStudentAidIncluded === false && eligibilityRetrieval.body?.evidence?.privacy?.rawStudentAidEmbedded === false && eligibilityRetrieval.body?.evidence?.privacy?.sharedBorrowerPiiCorpus === false, 'V0.9.7 evidence packet privacy boundary mismatch');
+            assert(eligibilityRetrieval.body?.evidence?.policyRules?.some((rule) => rule.id === 'rap-loan-family'), 'V0.9.7 RAP policy rule retrieval missing');
+            assert(eligibilityRetrieval.body?.evidence?.policyRules?.some((rule) => rule.id === 'ibr-loan-family'), 'V0.9.7 IBR policy rule retrieval missing');
+            const staleRetrieval = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/retrieval`, { method: 'POST', body: JSON.stringify({ question: 'Explain IBR', policySnapshot: '2026-01-01' }) }, alpha);
+            assert(staleRetrieval.response.status === 409, 'V0.9.7 stale policy retrieval must fail closed');
+            const betaRetrieval = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/retrieval`, { method: 'POST', body: JSON.stringify({ question: 'Show this case' }) }, beta);
+            assert(betaRetrieval.response.status === 404 && betaRetrieval.body?.error === 'Client not found or not accessible.', 'V0.9.7 cross-advisor retrieval must fail generically');
+            const timelineBeforeConsult = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline`, {}, alpha);
+            assert(timelineBeforeConsult.response.status === 200 && timelineBeforeConsult.body?.events?.length === 0, 'V0.9.7 pre-consult timeline fixture mismatch');
+            const consultation = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/consultation`, { method: 'POST', body: JSON.stringify({ question: 'What should I ask the borrower next?', policySnapshot: '2026-08-27' }) }, alpha);
+            assert(consultation.response.status === 200 && consultation.body?.consultation?.schema === 'student-loan-idr-advisor-consultation-v1', 'V0.9.7 consultation failed');
+            assert(consultation.body?.consultation?.mutationApplied === false && consultation.body?.consultation?.synthesisMode === 'deterministic_evidence_summary', 'V0.9.7 consultation mutation/synthesis boundary mismatch');
+            const timelineAfterConsult = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline`, {}, alpha);
+            assert(timelineAfterConsult.response.status === 200 && timelineAfterConsult.body?.events?.length === 0, 'V0.9.7 consultation must not create timeline history');
+
             const automaticCalculation = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/calculations`, { method: 'POST', body: JSON.stringify({ plans: ['RAP', 'IBR'] }) }, alpha);
             assert(automaticCalculation.response.status === 201 && automaticCalculation.body?.event?.eventKind === 'calculation', 'V0.9.5 automatic calculation history failed');
             assert(automaticCalculation.body?.event?.schema === 'student-loan-idr-client-timeline-event-v1', 'V0.9.5 timeline event schema mismatch');
@@ -690,6 +723,9 @@ jobs:
             assert(advisorUiHtml.includes('Advisor action dashboard') && advisorUiHtml.includes('Who needs attention and why'), 'V0.9.6 advisor action-dashboard UI missing');
             assert(advisorUiHtml.includes('/api/advisor/action-dashboard') && advisorUiHtml.includes('Next best action:'), 'V0.9.6 advisor action-dashboard client integration missing');
             assert(/no income amounts, loan balances, contact details/i.test(advisorUiHtml), 'V0.9.6 advisor action-dashboard minimization copy missing');
+            assert(advisorUiHtml.includes('id="advisor-open-consultation"') && advisorUiHtml.includes('Ask this case'), 'V0.9.7 saved-case consultation control missing');
+            assert(advisorUiHtml.includes('id="advisor-consultation-workspace"') && advisorUiHtml.includes('Read-only evidence'), 'V0.9.7 saved-case consultation workspace missing');
+            assert(advisorUiHtml.includes('/consultation') && advisorUiHtml.includes('No client mutation applied.'), 'V0.9.7 consultation client integration/privacy copy missing');
             assert(/raw StudentAid\.gov downloads/i.test(advisorUiHtml), 'advisor raw-file privacy boundary missing');
             assert(!advisorUiHtml.includes('localStorage') && !advisorUiHtml.includes('sessionStorage'), 'advisor UI must not create browser persistence');
 
@@ -859,7 +895,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.9.6', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.9.7', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
