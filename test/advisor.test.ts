@@ -823,6 +823,122 @@ test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deter
   assert.ok(completedDashboard.counts.byState.completed >= 1);
 });
 
+test("V0.9.7 assembles current-policy evidence packets without raw FSA embeddings, cross-client leakage, or consultation mutation", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  d1.database.exec("PRAGMA foreign_keys = ON");
+  const env = { ADVISOR_DB: d1 };
+  const alpha = await register(env, "retrieval-alpha@example.test", "Retrieval Alpha");
+  const beta = await register(env, "retrieval-beta@example.test", "Retrieval Beta");
+
+  const health = await worker.fetch(new Request(`${BASE}/health`), env);
+  const healthBody = await health.json();
+  assert.equal(health.status, 200);
+  assert.equal(healthBody.version, "0.9.7");
+  assert.equal(healthBody.advisor_workspace.structured_client_retrieval_v1, true);
+  assert.equal(healthBody.advisor_workspace.reviewed_policy_rag_v1, true);
+  assert.equal(healthBody.advisor_workspace.chat_native_advisor_consultation_v1, true);
+  assert.equal(healthBody.advisor_workspace.raw_student_aid_embeddings, false);
+  assert.equal(healthBody.advisor_workspace.shared_borrower_pii_corpus, false);
+  assert.ok(healthBody.endpoints.includes("POST /api/advisor/clients/:clientId/retrieval"));
+  assert.ok(healthBody.endpoints.includes("POST /api/advisor/clients/:clientId/consultation"));
+
+  const metadataResponse = await advisorFetch("/api/advisor/retrieval-metadata", alpha, env);
+  const metadataBody = await metadataResponse.json();
+  assert.equal(metadataResponse.status, 200);
+  assert.equal(metadataBody.schema, "student-loan-idr-retrieval-metadata-v1");
+  assert.equal(metadataBody.policySnapshot, "2026-08-27");
+  assert.equal(metadataBody.dictionaryVersion, "2026-09-05-v2");
+  const awardId = metadataBody.dictionary.find((entry:any)=>entry.id==="loan-award-id");
+  assert.equal(awardId.retention, "masked_only");
+  const loanType = metadataBody.dictionary.find((entry:any)=>entry.id==="loan-type-code");
+  assert.ok(loanType.aliases.includes("Loan Type"));
+  assert.ok(metadataBody.policyEvidence.every((entry:any)=>entry.policySnapshot==="2026-08-27"));
+  assert.ok(metadataBody.policyEvidence.every((entry:any)=>/^[0-9a-f]{64}$/.test(entry.sourceDocumentHash)&&/^[0-9a-f]{64}$/.test(entry.contentHash)));
+  assert.equal(metadataBody.privacy.rawStudentAidEmbedded, false);
+  assert.equal(metadataBody.privacy.sharedBorrowerPiiCorpus, false);
+
+  const betaCreate = await advisorFetch("/api/advisor/clients", beta, env, { method:"POST", body:JSON.stringify({ displayName:"Beta Private Borrower", email:"beta-owner-secret@example.test", notes:"not allowed" }) });
+  assert.equal(betaCreate.status, 400, "unexpected create fields remain fail-closed");
+  const betaCreated = await advisorFetch("/api/advisor/clients", beta, env, { method:"POST", body:JSON.stringify({ displayName:"Beta Private Borrower", email:"beta-owner-secret@example.test" }) });
+  assert.equal(betaCreated.status, 201);
+
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({
+    displayName:"Parent PLUS History Borrower",
+    normalizedLoanPortfolio:{
+      repaymentLoans:[{principal:36000,annualInterestRatePercent:6.5}],
+      eligibilityLoans:[{loanType:"direct_consolidation_with_parent_plus",disbursementPeriod:"before_2026_07_01",madeIcrPaymentBeforeJuly1_2028:true}],
+      loans:[{loanIndex:0,maskedAwardId:"••••4321",loanTypeCode:"D5",loanTypeDescription:"DIRECT CONSOLIDATION LOAN",mappedLoanType:"direct_consolidation_with_parent_plus",disbursementPeriod:"before_2026_07_01",outstandingPrincipal:36000,outstandingInterest:240,interestRatePercent:6.5,currentLoanStatusCode:"RP",currentLoanStatusDescription:"IN REPAYMENT",parentPlusFirstLevelConsolidationIndicator:"Y",consolidationLoanWithAnyParentPlusIndicator:"Y",provenance:{loanTypeCode:"imported_studentaid",mappedLoanType:"derived_studentaid",disbursementPeriod:"derived_studentaid",parentPlusFirstLevelConsolidationIndicator:"imported_studentaid",consolidationLoanWithAnyParentPlusIndicator:"imported_studentaid"}}],
+      summary:{loanCount:1,activeLoanCount:1,totalOutstandingPrincipal:36000,totalOutstandingInterest:240,repaymentLoanCount:1,eligibilityMappedLoanCount:1,ambiguousEligibilityLoanCount:0,hasLoanDisbursedOnOrAfterJuly1_2026:false}
+    },
+    studentAidImport:{source:"studentaid_download",fileRequestDate:"09/05/2026",mappingVersion:"2026-09-05-v2",rawFileRetained:false}
+  }) });
+  const created = await create.json();
+  assert.equal(create.status, 201);
+  const clientId = created.client.clientId as string;
+  const beforeUpdatedAt = created.client.updatedAt as string;
+  const beforeTimeline = (d1.database.prepare("SELECT COUNT(*) AS n FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=?").get(alpha.advisor.advisorId,clientId) as {n:number}).n;
+
+  const retrieval = await advisorFetch(`/api/advisor/clients/${clientId}/retrieval`, alpha, env, { method:"POST", body:JSON.stringify({ question:"What does this Parent PLUS consolidation history change for IBR and RAP?", policySnapshot:"2026-08-27" }) });
+  const retrievalBody = await retrieval.json();
+  assert.equal(retrieval.status, 200);
+  const packet = retrievalBody.evidence;
+  assert.equal(packet.schema, "student-loan-idr-advisor-evidence-packet-v1");
+  assert.equal(packet.schemaVersion, 1);
+  assert.equal(packet.intent, "eligibility_review");
+  assert.equal(packet.policySnapshot, "2026-08-27");
+  assert.equal(packet.retrievalMode, "structured_client_exact_keyword_policy");
+  assert.equal(packet.privacy.rawStudentAidIncluded, false);
+  assert.equal(packet.privacy.rawStudentAidEmbedded, false);
+  assert.equal(packet.privacy.sharedBorrowerPiiCorpus, false);
+  assert.ok(packet.policyRules.some((rule:any)=>rule.id==="rap-loan-family"));
+  assert.ok(packet.policyRules.some((rule:any)=>rule.id==="ibr-loan-family"));
+  assert.ok(packet.policyEvidence.some((entry:any)=>entry.id==="rap-direct-parent-plus"));
+  assert.ok(packet.policyEvidence.some((entry:any)=>entry.id==="ibr-pre-july-2026"));
+  assert.ok(packet.dictionaryEntries.some((entry:any)=>entry.category==="consolidation"));
+  assert.match(JSON.stringify(packet.facts), /direct_consolidation_with_parent_plus/);
+  assert.doesNotMatch(JSON.stringify(packet), /beta-owner-secret@example\.test|RAW-STUDENTAID|rawText|rawContent|sessiontoken/i);
+
+  const stale = await advisorFetch(`/api/advisor/clients/${clientId}/retrieval`, alpha, env, { method:"POST", body:JSON.stringify({ question:"Explain IBR", policySnapshot:"2026-01-01" }) });
+  assert.equal(stale.status, 409);
+  assert.match((await stale.json()).error, /current accepted snapshot 2026-08-27/);
+
+  const denied = await advisorFetch(`/api/advisor/clients/${clientId}/retrieval`, beta, env, { method:"POST", body:JSON.stringify({ question:"Show me this case" }) });
+  assert.equal(denied.status, 404);
+  assert.equal((await denied.json()).error, "Client not found or not accessible.");
+
+  const missingConsult = await advisorFetch(`/api/advisor/clients/${clientId}/consultation`, alpha, env, { method:"POST", body:JSON.stringify({ question:"What is still missing before I can compare plans?" }) });
+  const missingBody = await missingConsult.json();
+  assert.equal(missingConsult.status, 200);
+  assert.equal(missingBody.consultation.schema, "student-loan-idr-advisor-consultation-v1");
+  assert.equal(missingBody.consultation.mutationApplied, false);
+  assert.equal(missingBody.consultation.synthesisMode, "deterministic_evidence_summary");
+  assert.match(missingBody.consultation.answer, /still missing/i);
+  assert.ok(missingBody.consultation.evidence.missingInformation.some((item:any)=>item.key==="current_income"&&item.blocking));
+
+  const complete = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({
+    expectedUpdatedAt:beforeUpdatedAt,
+    confirmedFacts:{income:[{cadence:"annual",amount:25000}],region:"contiguous_us",familySize:1,dependentsClaimedOnFederalTaxReturn:0,taxFilingStatus:"single",newBorrowerOnOrAfterJuly1_2014:true}
+  }) });
+  const completeBody = await complete.json();
+  assert.equal(complete.status, 200);
+
+  const compareConsult = await advisorFetch(`/api/advisor/clients/${clientId}/consultation`, alpha, env, { method:"POST", body:JSON.stringify({ question:"Compare plans and tell me the lowest modeled payment.", policySnapshot:"2026-08-27" }) });
+  const compareBody = await compareConsult.json();
+  assert.equal(compareConsult.status, 200);
+  assert.equal(compareBody.consultation.evidence.intent, "plan_comparison");
+  assert.equal(compareBody.consultation.evidence.deterministic.comparison.schema, "student-loan-idr-advisor-comparison-v1");
+  assert.match(compareBody.consultation.answer, /IBR has the lowest modeled monthly payment/i);
+  assert.match(compareBody.consultation.answer, /\$8\.83 per month/);
+  assert.equal(compareBody.consultation.mutationApplied, false);
+  assert.ok(compareBody.consultation.proposedActions.length <= 1);
+
+  const after = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env).then((response)=>response.json());
+  const afterTimeline = (d1.database.prepare("SELECT COUNT(*) AS n FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=?").get(alpha.advisor.advisorId,clientId) as {n:number}).n;
+  assert.equal(after.client.updatedAt, completeBody.client.updatedAt, "retrieval/consultation must not mutate saved client state");
+  assert.equal(afterTimeline, beforeTimeline, "retrieval/consultation must not create case history");
+});
+
 test("V0.9.3 derives owner-scoped FSA portfolio intelligence without double-counting overlapping forbearance", async () => {
   const d1 = new SqliteD1();
   d1.database.exec(migration);
