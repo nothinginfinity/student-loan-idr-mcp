@@ -949,6 +949,22 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   </form>
 
   <section id="results" aria-live="polite"></section>
+
+  <section class="workspace consultation-workspace" id="borrower-consultation-workspace" hidden aria-labelledby="borrower-consultation-title">
+    <div class="guide-head"><div><h2 id="borrower-consultation-title">Ask about this estimate</h2><p class="muted">Uses only the calculator facts from your latest private-session estimate plus reviewed policy evidence. Nothing is saved, no advisor case is queried, and raw StudentAid text is never sent.</p></div><span class="badge">Private · not saved</span></div>
+    <div id="borrower-consultation-transcript" class="guide-transcript" role="log" aria-live="polite"></div>
+    <div class="answer-bubbles" aria-label="Suggested estimate questions">
+      <button type="button" data-borrower-consult-question="Which selected plan has the lowest modeled monthly payment?">Lowest payment</button>
+      <button type="button" data-borrower-consult-question="Why is a selected plan marked ineligible?">Eligibility</button>
+      <button type="button" data-borrower-consult-question="What does Parent PLUS or FFEL history change for eligibility?">Loan history</button>
+      <button type="button" data-borrower-consult-question="Explain the policy evidence behind this estimate.">Policy evidence</button>
+    </div>
+    <form id="borrower-consultation-form" class="guide-entry">
+      <input id="borrower-consultation-question" maxlength="2000" autocomplete="off" placeholder="Ask about your latest estimate" aria-label="Ask about your latest estimate">
+      <button type="submit" id="borrower-consultation-submit">Ask</button>
+    </form>
+    <p id="borrower-consultation-status" class="muted" role="status" aria-live="polite">Calculate first, then ask about that estimate. This consultation is not persisted.</p>
+  </section>
   <footer>Official eligibility and payment amounts come from the U.S. Department of Education and your loan servicer. SAVE is not modeled in this 2026-08-27 policy snapshot.</footer>
 </main>
 <script>
@@ -960,6 +976,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const status = document.getElementById("status");
   const results = document.getElementById("results");
   const submit = document.getElementById("submit");
+  const borrowerConsultationWorkspace = document.getElementById("borrower-consultation-workspace");
+  const borrowerConsultationTranscript = document.getElementById("borrower-consultation-transcript");
+  const borrowerConsultationForm = document.getElementById("borrower-consultation-form");
+  const borrowerConsultationQuestion = document.getElementById("borrower-consultation-question");
+  const borrowerConsultationSubmit = document.getElementById("borrower-consultation-submit");
+  const borrowerConsultationStatus = document.getElementById("borrower-consultation-status");
   const loanFile = document.getElementById("loan-file");
   const importStatus = document.getElementById("import-status");
   const portfolioSummary = document.getElementById("portfolio-summary");
@@ -1041,6 +1063,61 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   let advisorSavedIncome = null;
   let importedFieldProvenance = {};
   let advisorCalculatorDirty = false;
+  let lastBorrowerCalculatorPayload = null;
+
+  function appendBorrowerConsultationMessage(text, role) {
+    borrowerConsultationTranscript.appendChild(addText("div", text, "message " + role));
+    borrowerConsultationTranscript.scrollTop = borrowerConsultationTranscript.scrollHeight;
+  }
+
+  function renderBorrowerConsultation(consultation) {
+    appendBorrowerConsultationMessage(consultation.answer, "guide");
+    if ((consultation.policyEvidence || []).length) {
+      const details = document.createElement("details");
+      details.className = "readiness-card";
+      details.appendChild(addText("summary", "Reviewed evidence · policy " + consultation.policySnapshot));
+      consultation.policyEvidence.forEach((source) => {
+        const row = document.createElement("div");
+        row.className = "consultation-source";
+        row.append(addText("strong", source.title), addText("div", source.content, "muted"), addText("div", source.locator + " · source hash " + source.sourceDocumentHash.slice(0, 12) + "…", "muted"));
+        details.appendChild(row);
+      });
+      borrowerConsultationTranscript.appendChild(details);
+    }
+    borrowerConsultationStatus.textContent = "Private-session consultation · policy " + consultation.policySnapshot + " · not persisted · no advisor case lookup.";
+    borrowerConsultationTranscript.scrollTop = borrowerConsultationTranscript.scrollHeight;
+  }
+
+  async function askBorrowerConsultation(question) {
+    const trimmed = String(question || "").trim();
+    if (!trimmed) return;
+    if (!lastBorrowerCalculatorPayload) {
+      borrowerConsultationStatus.textContent = "Recalculate the estimate before asking. Changed calculator facts invalidate the previous consultation context.";
+      return;
+    }
+    appendBorrowerConsultationMessage(trimmed, "user");
+    borrowerConsultationQuestion.value = "";
+    borrowerConsultationSubmit.disabled = true;
+    borrowerConsultationStatus.textContent = "Recomputing the estimate and retrieving reviewed policy evidence…";
+    try {
+      const response = await fetch("/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ question:trimmed, policySnapshot:"2026-08-27", calculator:lastBorrowerCalculatorPayload }) });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error(body.error || "Consultation failed.");
+      renderBorrowerConsultation(body.consultation);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Consultation failed.";
+      appendBorrowerConsultationMessage(message, "guide");
+      borrowerConsultationStatus.textContent = message;
+    } finally {
+      borrowerConsultationSubmit.disabled = false;
+    }
+  }
+
+  function invalidateBorrowerConsultation() {
+    if (!lastBorrowerCalculatorPayload) return;
+    lastBorrowerCalculatorPayload = null;
+    borrowerConsultationStatus.textContent = "Calculator facts changed. Recalculate before asking another question about the estimate.";
+  }
 
   function numericValue(value) {
     if (!value) return undefined;
@@ -2806,8 +2883,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     printWindow.print();
   });
 
-  form.addEventListener("input", () => { if (advisorClient) advisorCalculatorDirty = true; });
-  form.addEventListener("change", () => { if (advisorClient) advisorCalculatorDirty = true; });
+  form.addEventListener("input", () => { if (advisorClient) advisorCalculatorDirty = true; else invalidateBorrowerConsultation(); });
+  form.addEventListener("change", () => { if (advisorClient) advisorCalculatorDirty = true; else invalidateBorrowerConsultation(); });
+  borrowerConsultationForm.addEventListener("submit", (event) => { event.preventDefault(); void askBorrowerConsultation(borrowerConsultationQuestion.value); });
+  document.querySelectorAll("[data-borrower-consult-question]").forEach((button) => button.addEventListener("click", () => { void askBorrowerConsultation(button.dataset.borrowerConsultQuestion || ""); }));
   cadence.addEventListener("change", syncHourlyFields);
   syncHourlyFields();
   if (advisorClientId) void initializeAdvisorClientMode();
@@ -2925,6 +3004,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       const body = await response.json();
       if (!response.ok || !body.ok) throw new Error(body.error || "Calculation failed.");
       render(body.result);
+      lastBorrowerCalculatorPayload = payload;
+      borrowerConsultationWorkspace.hidden = false;
+      if (!borrowerConsultationTranscript.childElementCount) appendBorrowerConsultationMessage("Your latest estimate is ready. Ask about plan comparisons, eligibility screening, or the reviewed policy evidence. I will use only this private-session calculator context.", "guide");
+      borrowerConsultationStatus.textContent = "Ready for questions about this estimate. Nothing from this consultation is saved.";
       status.textContent = "Estimate ready.";
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : "Calculation failed.";
