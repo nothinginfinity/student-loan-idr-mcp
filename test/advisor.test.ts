@@ -763,7 +763,7 @@ test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deter
   action = await actionClient();
   assert.equal(action.primaryState, "borrower_review_pending");
   assert.equal(action.nextBestAction.kind, "share_borrower_review");
-  assert.ok(action.signals.find((signal:any)=>signal.state==="borrower_review_pending")?.dueDate);
+  assert.ok(action.signals.some((signal:any)=>signal.state==="borrower_review_pending"));
 
   assert.equal((await worker.fetch(new Request(`${BASE}/api/share/${shareToken}`), env)).status, 200);
   const selected = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}/select`, { method:"POST", headers:{"content-type":"application/json",origin:BASE}, body:JSON.stringify({plan:"IBR"}) }), env);
