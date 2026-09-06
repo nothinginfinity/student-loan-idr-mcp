@@ -708,7 +708,7 @@ test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deter
   const privateCreate = await advisorFetch("/api/advisor/clients", beta, env, { method:"POST", body:JSON.stringify({ displayName:"Other Advisor Private Client", email:"other-owner-secret@example.test" }) });
   assert.equal(privateCreate.status, 201);
 
-  const create = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({ displayName:"Action Borrower", email:"action-secret@example.test", phone:"555-0199", notes:"PRIVATE-ACTION-NOTE" }) });
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({ displayName:"Action Borrower", email:"action-secret@example.test", phone:"555-0199" }) });
   const created = await create.json();
   assert.equal(create.status, 201);
   const clientId = created.client.clientId as string;
@@ -728,7 +728,7 @@ test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deter
   assert.equal(action.nextBestAction.kind, "collect_income");
   assert.ok(action.signals.some((signal:any)=>signal.state==="needs_income" && signal.attention));
 
-  const incomeOnly = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:created.client.updatedAt, confirmedFacts:{ income:[{cadence:"annual",amount:87654}] } }) });
+  const incomeOnly = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:created.client.updatedAt, notes:"PRIVATE-ACTION-NOTE", confirmedFacts:{ income:[{cadence:"annual",amount:87654}] } }) });
   const incomeOnlyBody = await incomeOnly.json();
   assert.equal(incomeOnly.status, 200);
   action = await actionClient();
