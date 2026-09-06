@@ -336,12 +336,12 @@ jobs:
             for (let attempt = 1; attempt <= 10; attempt += 1) {
               healthResponse = await fetchChecked(`${base}/health`);
               health = await healthResponse.json();
-              if (healthResponse.status === 200 && health?.version === '0.8.6' && health?.advisor_workspace?.max_normalized_client_request_bytes === 524288) break;
+              if (healthResponse.status === 200 && health?.version === '0.9.6' && health?.advisor_workspace?.max_normalized_client_request_bytes === 524288) break;
               if (attempt < 10) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             assert(healthResponse.status === 200, `health returned ${healthResponse.status}`);
             assert(health.ok === true && health.name === 'student-loan-idr-mcp', 'health identity mismatch');
-            assert(health.version === '0.8.6', `unexpected live version ${health.version}`);
+            assert(health.version === '0.9.6', `unexpected live version ${health.version}`);
             assert(health.protocol_version === '2025-03-26', 'protocol version mismatch');
             assert(health.policy_snapshot === '2026-08-27', 'policy snapshot mismatch');
             assert(Array.isArray(health.tools) && health.tools.length === 3, 'health tool inventory mismatch');
@@ -362,6 +362,9 @@ jobs:
             assert(health.advisor_workspace?.client_case_context_v1 === true, 'V0.9.4 client case-context capability flag missing');
             assert(health.advisor_workspace?.client_timeline_v1 === true, 'V0.9.5 client timeline capability flag missing');
             assert(health.advisor_workspace?.automatic_case_history === true, 'V0.9.5 automatic case-history flag missing');
+            assert(health.advisor_workspace?.advisor_action_dashboard_v1 === true, 'V0.9.6 advisor action-dashboard capability flag missing');
+            assert(health.advisor_workspace?.deterministic_next_best_action === true, 'V0.9.6 deterministic next-best-action flag missing');
+            assert(Array.isArray(health.endpoints) && health.endpoints.includes('GET /api/advisor/action-dashboard'), 'V0.9.6 action-dashboard endpoint inventory missing');
             assert(health.advisor_workspace?.student_aid_provenance_review === true, 'StudentAid provenance review flag missing');
             assert(health.advisor_workspace?.max_normalized_client_request_bytes === 524288, 'normalized advisor client request ceiling mismatch');
             assert(health.advisor_workspace?.raw_student_aid_retention === false, 'raw StudentAid retention must remain false');
@@ -408,6 +411,17 @@ jobs:
             assert(alphaList.response.status === 200 && alphaList.body?.clients?.length === 1, 'advisor client list failed');
             const listText = JSON.stringify(alphaList.body);
             assert(!listText.includes('private-borrower@example.test') && !listText.includes('555-0199'), 'advisor dashboard list leaked private contact detail');
+
+            const initialActionDashboard = await advisorRequest('/api/advisor/action-dashboard', {}, alpha);
+            assert(initialActionDashboard.response.status === 200 && initialActionDashboard.body?.dashboard?.schema === 'student-loan-idr-advisor-action-dashboard-v1', 'V0.9.6 initial advisor action dashboard failed');
+            assert(initialActionDashboard.body?.dashboard?.schemaVersion === 1 && initialActionDashboard.body?.dashboard?.clients?.length === 1, 'V0.9.6 initial action-dashboard projection mismatch');
+            assert(initialActionDashboard.body.dashboard.clients[0]?.clientId === liveClient.clientId && initialActionDashboard.body.dashboard.clients[0]?.primaryState === 'needs_income', 'V0.9.6 missing-income state derivation failed');
+            assert(initialActionDashboard.body.dashboard.clients[0]?.nextBestAction?.kind === 'collect_income', 'V0.9.6 missing-income next-best action failed');
+            const initialActionText = JSON.stringify(initialActionDashboard.body);
+            assert(!initialActionText.includes('private-borrower@example.test') && !initialActionText.includes('555-0199'), 'V0.9.6 action dashboard leaked private contact detail');
+            assert(!/ownerAdvisorId|confirmedFacts|normalizedLoanPortfolio|comparisonSnapshot|shareToken|bookingUrl|basis|result/.test(initialActionText), 'V0.9.6 action dashboard leaked non-minimized case fields');
+            const betaActionDashboard = await advisorRequest('/api/advisor/action-dashboard', {}, beta);
+            assert(betaActionDashboard.response.status === 200 && betaActionDashboard.body?.dashboard?.clients?.length === 0, 'V0.9.6 action dashboard must remain exact-owner scoped');
 
             const largeLoans = Array.from({ length: 32 }, (_, loanIndex) => ({
               loanIndex,
@@ -493,6 +507,14 @@ jobs:
             assert(updatedClient.body?.client?.studentAidImport?.mappingVersion === '2026-08-28-v1', 'StudentAid mapping version missing');
             assert(updatedClient.body?.client?.studentAidImport?.fileRequestDate === '08/28/2026', 'StudentAid file request date missing');
             assert(updatedClient.body?.client?.studentAidImport?.rawFileRetained === false, 'normalized StudentAid metadata boundary mismatch');
+
+            const readyActionDashboard = await advisorRequest('/api/advisor/action-dashboard', {}, alpha);
+            const readyActionClient = readyActionDashboard.body?.dashboard?.clients?.find((client) => client.clientId === liveClient.clientId);
+            assert(readyActionDashboard.response.status === 200 && readyActionClient?.primaryState === 'application_ready', 'V0.9.6 application-ready state derivation failed');
+            assert(readyActionClient?.nextBestAction?.kind === 'review_application', 'V0.9.6 application-ready next-best action failed');
+            assert(readyActionDashboard.body?.dashboard?.counts?.attention === 0, 'V0.9.6 completed intake should not be counted as attention solely for application-ready state');
+            const readyActionText = JSON.stringify(readyActionDashboard.body);
+            assert(!readyActionText.includes('private-borrower@example.test') && !readyActionText.includes('Example Employer') && !readyActionText.includes('Example Servicer'), 'V0.9.6 ready action dashboard leaked private case facts');
 
             const resumedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}`, {}, alpha);
             assert(resumedClient.response.status === 200, 'advisor saved client resume read failed');
@@ -665,7 +687,9 @@ jobs:
             assert(advisorUiHtml.includes('id="login-form"') && advisorUiHtml.includes('id="register-form"'), 'advisor auth forms missing');
             assert(advisorUiHtml.includes('id="create-client-form"'), 'advisor create-client form missing');
             assert(advisorUiHtml.includes('id="client-list"'), 'advisor client dashboard missing');
-            assert(advisorUiHtml.includes('Open guided workflow'), 'advisor guided-client action missing');
+            assert(advisorUiHtml.includes('Advisor action dashboard') && advisorUiHtml.includes('Who needs attention and why'), 'V0.9.6 advisor action-dashboard UI missing');
+            assert(advisorUiHtml.includes('/api/advisor/action-dashboard') && advisorUiHtml.includes('Next best action:'), 'V0.9.6 advisor action-dashboard client integration missing');
+            assert(/no income amounts, loan balances, contact details/i.test(advisorUiHtml), 'V0.9.6 advisor action-dashboard minimization copy missing');
             assert(/raw StudentAid\.gov downloads/i.test(advisorUiHtml), 'advisor raw-file privacy boundary missing');
             assert(!advisorUiHtml.includes('localStorage') && !advisorUiHtml.includes('sessionStorage'), 'advisor UI must not create browser persistence');
 
@@ -835,7 +859,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.8.6', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.9.6', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
