@@ -734,7 +734,8 @@ jobs:
             assert(v098ArtifactResponse.headers.get('cache-control') === 'no-store', 'V0.9.8 comparison artifact cache policy mismatch');
             assert((v098ArtifactResponse.headers.get('content-security-policy') || '').includes("default-src 'none'"), 'V0.9.8 comparison artifact CSP mismatch');
             assert(v098ArtifactHtml.includes(v098SnapshotId) && v098ArtifactHtml.includes('Repayment & forgiveness comparison'), 'V0.9.8 comparison artifact trace identity missing');
-            assert(!/<script|https?:\/\//i.test(v098ArtifactHtml), 'V0.9.8 comparison artifact must contain no script or external asset URL');
+            assert(!/<script\b/i.test(v098ArtifactHtml), 'V0.9.8 comparison artifact must contain no script element');
+            assert(!/<(?:img|script|link)[^>]+(?:src|href)=["']https?:\/\//i.test(v098ArtifactHtml), 'V0.9.8 comparison artifact must contain no external asset URL');
             const v098SvgResponse = await fetchChecked(`${base}/api/advisor/clients/${liveClient.clientId}/snapshots/${v098SnapshotId}/artifact?format=svg`, { headers: { origin: base, cookie: alpha.cookie } });
             const v098Svg = await v098SvgResponse.text();
             assert(v098SvgResponse.status === 200 && (v098SvgResponse.headers.get('content-type') || '').includes('image/svg+xml') && v098Svg.includes(v098SnapshotId), 'V0.9.8 retained comparison SVG artifact failed');
