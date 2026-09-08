@@ -22,7 +22,7 @@ import type {
   ConsultationHistoryTurnV1
 } from "./types.ts";
 
-const SERVER_VERSION = "0.9.8";
+const SERVER_VERSION = "0.9.9";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
