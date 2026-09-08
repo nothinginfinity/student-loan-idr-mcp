@@ -690,7 +690,7 @@ test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deter
   const health = await worker.fetch(new Request(`${BASE}/health`), env);
   const healthBody = await health.json();
   assert.equal(health.status, 200);
-  assert.equal(healthBody.version, "0.9.7");
+  assert.equal(healthBody.version, "0.9.8");
   assert.equal(healthBody.advisor_workspace.advisor_action_dashboard_v1, true);
   assert.equal(healthBody.advisor_workspace.deterministic_next_best_action, true);
   assert.ok(healthBody.endpoints.includes("GET /api/advisor/action-dashboard"));
@@ -834,7 +834,7 @@ test("V0.9.7 assembles current-policy evidence packets without raw FSA embedding
   const health = await worker.fetch(new Request(`${BASE}/health`), env);
   const healthBody = await health.json();
   assert.equal(health.status, 200);
-  assert.equal(healthBody.version, "0.9.7");
+  assert.equal(healthBody.version, "0.9.8");
   assert.equal(healthBody.advisor_workspace.structured_client_retrieval_v1, true);
   assert.equal(healthBody.advisor_workspace.reviewed_policy_rag_v1, true);
   assert.equal(healthBody.advisor_workspace.chat_native_advisor_consultation_v1, true);
@@ -937,6 +937,116 @@ test("V0.9.7 assembles current-policy evidence packets without raw FSA embedding
   const afterTimeline = (d1.database.prepare("SELECT COUNT(*) AS n FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=?").get(alpha.advisor.advisorId,clientId) as {n:number}).n;
   assert.equal(after.client.updatedAt, completeBody.client.updatedAt, "retrieval/consultation must not mutate saved client state");
   assert.equal(afterTimeline, beforeTimeline, "retrieval/consultation must not create case history");
+});
+
+test("V0.9.8 exports immutable comparison artifacts and shares the exact retained snapshot", async () => {
+  const d1 = new SqliteD1();
+  d1.database.exec(migration);
+  d1.database.exec("PRAGMA foreign_keys = ON");
+  const env = { ADVISOR_DB: d1 };
+  const alpha = await register(env, "artifact-alpha@example.test", "Artifact Alpha");
+  const beta = await register(env, "artifact-beta@example.test", "Artifact Beta");
+
+  const health = await worker.fetch(new Request(`${BASE}/health`), env);
+  const healthBody = await health.json();
+  assert.equal(health.status, 200);
+  assert.equal(healthBody.version, "0.9.8");
+  assert.equal(healthBody.advisor_workspace.borrower_comparison_artifact_v1, true);
+  assert.equal(healthBody.advisor_workspace.comparison_artifact_svg_export, true);
+  assert.equal(healthBody.advisor_workspace.secure_share_snapshot_parity, true);
+  assert.ok(healthBody.endpoints.includes("GET /api/advisor/clients/:clientId/snapshots/:snapshotId/artifact"));
+  assert.ok(healthBody.endpoints.includes("GET /api/share/:shareToken/artifact"));
+
+  const ui = await worker.fetch(new Request(`${BASE}/?advisorClient=client_00000000-0000-0000-0000-000000000000`), env);
+  const uiHtml = await ui.text();
+  assert.match(uiHtml, /id="advisor-print-comparison"/);
+  assert.match(uiHtml, /id="advisor-download-comparison-svg"/);
+  assert.match(uiHtml, /id="advisor-share-comparison"/);
+  assert.match(uiHtml, /JSON\.stringify\(\{ snapshotId \}\)/);
+  assert.doesNotMatch(uiHtml, /localStorage|sessionStorage/);
+
+  const create = await advisorFetch("/api/advisor/clients", alpha, env, { method:"POST", body:JSON.stringify({
+    displayName:"Artifact Borrower",
+    confirmedFacts:{ income:[{cadence:"annual",amount:25000}], region:"contiguous_us", familySize:1, dependentsClaimedOnFederalTaxReturn:0, taxFilingStatus:"single", newBorrowerOnOrAfterJuly1_2014:true },
+    normalizedLoanPortfolio:{ repaymentLoans:[{principal:25000,annualInterestRatePercent:6.5}], eligibilityLoans:[{loanType:"direct_unsubsidized",disbursementPeriod:"before_2026_07_01"}] },
+    consideredPlans:["RAP","IBR","PAYE","ICR"]
+  }) });
+  const created = await create.json();
+  assert.equal(create.status, 201);
+  const clientId = created.client.clientId as string;
+
+  const comparisonResponse = await advisorFetch(`/api/advisor/clients/${clientId}/comparisons`, alpha, env, { method:"POST", body:"{}" });
+  const comparisonBody = await comparisonResponse.json();
+  assert.equal(comparisonResponse.status, 201);
+  assert.deepEqual(comparisonBody.snapshot.result, comparisonBody.comparison);
+  const snapshotId = comparisonBody.snapshot.snapshotId as string;
+  const originalComparison = comparisonBody.comparison;
+
+  const htmlArtifact = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/artifact?format=html`, alpha, env);
+  const html = await htmlArtifact.text();
+  assert.equal(htmlArtifact.status, 200);
+  assert.match(htmlArtifact.headers.get("content-type") ?? "", /text\/html/);
+  assert.equal(htmlArtifact.headers.get("cache-control"), "no-store");
+  assert.match(htmlArtifact.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+  assert.match(html, new RegExp(snapshotId));
+  assert.match(html, /Save as PDF/i);
+  assert.match(html, /policy snapshot 2026-08-27/i);
+  assert.match(html, /Modeled estimate/i);
+  assert.doesNotMatch(html, /<script/i);
+  assert.doesNotMatch(html, /(?:href|src)=["']https?:/i);
+
+  const svgArtifact = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/artifact?format=svg`, alpha, env);
+  const svg = await svgArtifact.text();
+  assert.equal(svgArtifact.status, 200);
+  assert.match(svgArtifact.headers.get("content-type") ?? "", /image\/svg\+xml/);
+  assert.match(svg, /<svg/);
+  assert.match(svg, new RegExp(snapshotId));
+  assert.match(svg, /FLRs/);
+  assert.doesNotMatch(svg, /(?:href|src)=["']https?:/i);
+  assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/artifact?format=html`, beta, env)).status, 404);
+
+  const beforeChange = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env).then((response)=>response.json());
+  const changed = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env, { method:"PUT", body:JSON.stringify({ expectedUpdatedAt:beforeChange.client.updatedAt, confirmedFacts:{ ...beforeChange.client.confirmedFacts, income:[{cadence:"annual",amount:90000}] } }) });
+  assert.equal(changed.status, 200);
+  const htmlAfterChange = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/artifact?format=html`, alpha, env).then((response)=>response.text());
+  assert.equal(htmlAfterChange, html, "retained comparison artifact must remain byte-for-byte frozen after client edits");
+
+  const issued = await advisorFetch(`/api/advisor/clients/${clientId}/plan-selections`, alpha, env, { method:"POST", body:JSON.stringify({snapshotId}) });
+  const issuedBody = await issued.json();
+  assert.equal(issued.status, 201);
+  assert.equal(issuedBody.selection.sourceSnapshotId, snapshotId);
+  assert.equal(issuedBody.selection.flrsPlan, originalComparison.projections.filter((p:any)=>p.eligibilityStatus!=="ineligible").sort((a:any,b:any)=>a.currentMonthlyPayment-b.currentMonthlyPayment)[0].plan);
+  const shareToken = issuedBody.selection.shareToken as string;
+  const selectionId = issuedBody.selection.selectionId as string;
+  const stored = d1.database.prepare("SELECT status,comparison_snapshot_json,link_opened_at,select_sign_deadline_at FROM advisor_client_plan_selections WHERE selection_id=?").get(selectionId) as {status:string;comparison_snapshot_json:string;link_opened_at:string|null;select_sign_deadline_at:string|null};
+  assert.equal(stored.status, "issued");
+  assert.equal(stored.link_opened_at, null);
+  assert.equal(stored.select_sign_deadline_at, null);
+  assert.deepEqual(JSON.parse(stored.comparison_snapshot_json), originalComparison);
+
+  const publicArtifact = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}/artifact?format=html`), env);
+  const publicHtml = await publicArtifact.text();
+  assert.equal(publicArtifact.status, 200);
+  assert.match(publicHtml, /secure share/i);
+  assert.match(publicHtml, new RegExp(selectionId));
+  assert.match(publicHtml, /FLRs/);
+  assert.doesNotMatch(publicHtml, /RAW-STUDENTAID|socialsecuritynumber|sessiontoken/i);
+  const afterArtifact = d1.database.prepare("SELECT status,link_opened_at,select_sign_deadline_at FROM advisor_client_plan_selections WHERE selection_id=?").get(selectionId) as {status:string;link_opened_at:string|null;select_sign_deadline_at:string|null};
+  assert.equal(afterArtifact.status, "issued", "artifact preview must not start the 15-minute borrower decision timer");
+  assert.equal(afterArtifact.link_opened_at, null);
+  assert.equal(afterArtifact.select_sign_deadline_at, null);
+
+  const opened = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}`), env);
+  assert.equal(opened.status, 200);
+  const openedBody = await opened.json();
+  assert.equal(openedBody.status, "opened");
+  assert.deepEqual(openedBody.comparison, originalComparison, "interactive borrower review must use the same frozen snapshot as the artifact");
+
+  const deniedShare = await advisorFetch(`/api/advisor/clients/${clientId}/plan-selections`, beta, env, { method:"POST", body:JSON.stringify({snapshotId}) });
+  assert.equal(deniedShare.status, 404);
+
+  const invalidFormat = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/artifact?format=pdf`, alpha, env);
+  assert.equal(invalidFormat.status, 400, "PDF is deliberately produced through the print-safe HTML artifact rather than a second server renderer");
 });
 
 test("V0.9.3 derives owner-scoped FSA portfolio intelligence without double-counting overlapping forbearance", async () => {
