@@ -1045,6 +1045,11 @@ test("V0.9.8 exports immutable comparison artifacts and shares the exact retaine
   const deniedShare = await advisorFetch(`/api/advisor/clients/${clientId}/plan-selections`, beta, env, { method:"POST", body:JSON.stringify({snapshotId}) });
   assert.equal(deniedShare.status, 404);
 
+  const revoked = await advisorFetch(`/api/advisor/clients/${clientId}/plan-selections/${selectionId}/revoke`, alpha, env, { method:"POST", body:"{}" });
+  assert.equal(revoked.status, 200);
+  const revokedArtifact = await worker.fetch(new Request(`${BASE}/api/share/${shareToken}/artifact?format=html`), env);
+  assert.equal(revokedArtifact.status, 410, "revoked secure links must immediately stop serving the frozen comparison artifact");
+
   const invalidFormat = await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/artifact?format=pdf`, alpha, env);
   assert.equal(invalidFormat.status, 400, "PDF is deliberately produced through the print-safe HTML artifact rather than a second server renderer");
 });
