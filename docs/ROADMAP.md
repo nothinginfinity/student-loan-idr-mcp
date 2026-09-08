@@ -422,11 +422,11 @@ Acceptance evidence:
 - Advisor cards now show attention counts, deterministic state/reason badges, optional due dates, and direct next-action controls while preserving case, borrower-review/share, export, and archive controls. No browser storage or raw StudentAid retention was introduced.
 - Deterministic code remains authoritative for state, chronology, due-date interpretation, calculations, and saved mutations. The action projection is now a structured retrieval source for V0.9.7; a later LLM may explain a state/action but cannot invent or silently change it.
 
-### V0.9.7 — Structured Retrieval + Policy RAG + Chat-Native Consultation — NEXT / PLANNED
+### V0.9.7 — Structured Retrieval + Policy RAG + Chat-Native Consultation — COMPLETE
 
 Make advisor and borrower consultation substantially chat-native while preserving deterministic authority and privacy.
 
-The screenshot's central design principle is accepted: **pre-parse and structure the FSA data before the LLM sees it, then retrieve only the facts and policy evidence needed for the current question.** The implementation should use the existing Parser V2/client intelligence architecture rather than adding a second regex/Python parser or asking an LLM to interpret the raw `My Aid Data` file.
+The screenshot's central design principle is accepted: **pre-parse and structure the FSA data before the LLM sees it, then retrieve only the facts and policy evidence needed for the current question.** The implementation uses the existing Parser V2/client intelligence architecture rather than adding a second regex/Python parser or asking an LLM to interpret the raw `My Aid Data` file.
 
 1. **Structured client retrieval, not vector search over borrower PII.** Build an owner-scoped retrieval layer over the versioned client case-context contract, normalized per-loan portfolio, FSA intelligence, case timeline, saved calculations, documents, and workflow state. A chat turn should request the smallest relevant structured fact set by client ID and intent.
 2. **Versioned FSA data dictionary.** Maintain a reviewed machine-readable dictionary of exact FSA labels/aliases, normalized target fields, meaning/category, parser mapping version, retention policy, and whether each field may influence deterministic logic. This captures the screenshot's metadata-dictionary concept without treating a prompt or vector embedding as parser authority.
@@ -439,7 +439,19 @@ The screenshot's central design principle is accepted: **pre-parse and structure
 9. **Mutation boundary.** Chat may propose field updates, document generation, calculation runs, plan selections, or workflow actions, but saved client mutations require an explicit user/advisor action and continue through the existing validated deterministic APIs.
 10. **Retrieval quality and safety acceptance.** Build regression question sets covering exact FSA labels, Parent PLUS/consolidation edge cases, FFEL/Perkins distinctions, legacy/transitioning repayment-plan terminology, missing facts, stale policy snapshots, and cross-client isolation. Acceptance must prove cited answers are grounded in supplied evidence, old policy cannot silently outrank the current accepted snapshot, and no borrower PII leaks into shared retrieval infrastructure.
 
-Architecture boundary: **structured retrieval owns client facts; deterministic code owns parsing/math/chronology/eligibility; RAG owns policy/evidence lookup; the LLM owns conversational synthesis only.** This is the intended foundation for an advisor/borrower experience where most consultation can happen naturally in chat without sacrificing inspectability or correctness.
+Architecture boundary: **structured retrieval owns client facts; deterministic code owns parsing/math/chronology/eligibility; RAG owns policy/evidence lookup; the LLM owns conversational synthesis only.** This remains the foundation for an advisor/borrower experience where most consultation can happen naturally in chat without sacrificing inspectability or correctness.
+
+Acceptance evidence:
+
+- Final V0.9.7 runtime/workflow source commit `d7079b25052894d944f5ce4d818cd27ea1b7125d` (`V0.9.7 add borrower-safe live acceptance`) passed strict TypeScript, the complete deterministic regression suite, and Wrangler dry-run in normal CI run `34037367875`.
+- Exact-SHA live deployment + production acceptance run `34037412431` succeeded from that immutable source. The deploy-live job passed the immutable-source guard, tests, D1 migrations, exact tested commit deployment, and live production MCP acceptance against `https://student-loan-idr-mcp.jaredtechfit.workers.dev`.
+- Fresh scheduled CI on unchanged HEAD run `34143283947` succeeded on 2026-09-07.
+- Accepted runtime source stone/path HEAD: `61e36c581dd323296aac0fda7fdf60d76e25f351d739a198da2e548801fde8ae` for `src/index.ts` at commit `d7079b25052894d944f5ce4d818cd27ea1b7125d`.
+- Advisor path live-accepted: owner-scoped structured client retrieval; reviewed policy RAG/evidence packets; deterministic consultation synthesis over saved case context; stale-policy rejection; cross-client isolation; no consultation-side mutation; deterministic parsing/math/eligibility remain authoritative.
+- Borrower-safe path live-accepted: public same-origin `POST /api/consultation`; browser-local calculator context only; no advisor/client lookup; no persistence; no advisor-only fields; no raw StudentAid text/content sent or retained; no shared borrower PII corpus; current reviewed policy snapshot evidence only; stale policy fails closed; cross-origin requests fail closed; unknown advisor/raw-StudentAid fields fail closed without echoing sensitive values. Borrower UI includes **Ask about this estimate**, marked **Private · not saved**, and invalidates consultation context when calculator facts change.
+- Privacy / authority invariants preserved: raw StudentAid files remain browser-local and unretained; raw StudentAid embeddings remain prohibited; shared borrower PII retrieval corpus remains prohibited; structured retrieval owns saved client facts; deterministic code owns parsing/chronology/math/eligibility; RAG owns reviewed policy/evidence lookup only; LLM/conversational synthesis must not silently mutate client state.
+
+V0.9.7 is closed. V0.9 remains **IN PROGRESS** because later V0.9.x slices are not yet defined in this roadmap; do not invent a next numbered slice without an explicit roadmap decision.
 
 ## Deferred economic layer — x402 + signup-minted token
 
