@@ -453,7 +453,7 @@ Acceptance evidence:
 
 V0.9.7 is closed. V0.9 remains **IN PROGRESS**. The next two bounded slices were explicitly accepted on 2026-09-07 and are defined below.
 
-### V0.9.8 — Borrower Comparison Artifact + Secure Delivery — NEXT / PLANNED
+### V0.9.8 — Borrower Comparison Artifact + Secure Delivery — COMPLETE
 
 Turn the accepted deterministic repayment-comparison snapshot and V0.9.1 borrower review flow into a portable professional artifact that an advisor can download, present, and securely deliver without creating a second calculation engine.
 
@@ -466,7 +466,19 @@ Turn the accepted deterministic repayment-comparison snapshot and V0.9.1 borrowe
 
 Architecture boundary: **the deterministic comparison snapshot owns numbers; the artifact renderer owns presentation; the share layer owns bounded delivery.** No presentation/export code may become a parallel repayment calculator.
 
-### V0.9.9 — Expert Conversational Synthesis + Specialty Knowledge Packs — PLANNED (immediately after V0.9.8)
+Acceptance evidence:
+
+- Final accepted V0.9.8 source/deploy commit: `f5dee09351d72f700df3111e569ad1832c12f94e`.
+- Normal CI run `34188457569` succeeded on that exact commit with strict TypeScript, the full regression suite, and Wrangler dry-run.
+- Exact-SHA deploy + production acceptance run `34188483987` succeeded from that immutable source. Wrangler deployment completed successfully and the production acceptance gate passed.
+- Live V0.9.8 acceptance proves retained comparison HTML/SVG artifacts are generated from the exact immutable comparison snapshot, carry trace/policy metadata, use no-store and restrictive CSP, remain exact-owner scoped, and do not introduce a second calculation engine.
+- Live secure-delivery acceptance proves an advisor can issue a borrower share from the exact retained `snapshotId`, the public artifact presents the frozen comparison rather than recalculating current client facts, and advisor revocation makes the public artifact fail closed with HTTP `410`.
+- FLRs remains a unique-lowest-payment label only; genuine equal-payment ties are preserved rather than broken arbitrarily.
+- Raw StudentAid text/files remain browser-local and unretained; comparison artifacts and shares contain only bounded normalized/model output required for the comparison.
+
+V0.9.8 is closed and live-accepted. V0.9.9 is the active next slice.
+
+### V0.9.9 — Expert Conversational Synthesis + Specialty Knowledge Packs — NEXT / IN PROGRESS
 
 Complete the conversational layer that V0.9.7 prepared by connecting a real bounded LLM synthesis step to the accepted evidence assembler and by expanding reviewed policy/specialty knowledge without giving the model authority over calculations or saved case state.
 
