@@ -3,6 +3,8 @@ import { POLICY_EVIDENCE_CORPUS, POLICY_RULE_REGISTRY, POLICY_SNAPSHOT } from ".
 import { getDocumentationTemplate } from "./templates.ts";
 import { handleAdvisorApi, handleShareApi } from "./advisor.ts";
 import type { D1DatabaseBinding } from "./advisor.ts";
+import { retrieveKnowledge } from "./knowledge.ts";
+import { synthesizeBorrowerGrounded, type AiBinding } from "./synthesis.ts";
 import type {
   AdvisorClientDashboardSummary,
   AdvisorClientRecordV1,
@@ -15,7 +17,9 @@ import type {
   StudentAidFactProvenance,
   StudentAidNormalizedLoanFact,
   StudentAidParserDiagnostics,
-  StudentAidPortfolioSummary
+  StudentAidPortfolioSummary,
+  AdvisorConsultationIntent,
+  ConsultationHistoryTurnV1
 } from "./types.ts";
 
 const SERVER_VERSION = "0.9.8";
@@ -37,6 +41,8 @@ interface Env {
   MCP_ALLOWED_ORIGINS?: string;
   MCP_RATE_LIMITER?: RateLimiterBinding;
   ADVISOR_DB?: D1DatabaseBinding;
+  AI?: AiBinding;
+  CONSULTATION_MODEL?: string;
 }
 
 export function advisorCanAccessClient(principal: AdvisorPrincipal, client: AdvisorClientRecordV1): boolean {
@@ -1068,6 +1074,8 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   let advisorCalculatorDirty = false;
   let advisorLastComparisonSnapshotId = null;
   let lastBorrowerCalculatorPayload = null;
+  let borrowerConsultationHistory = [];
+  let advisorConsultationHistory = [];
 
   function appendBorrowerConsultationMessage(text, role) {
     borrowerConsultationTranscript.appendChild(addText("div", text, "message " + role));
@@ -1076,19 +1084,19 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
 
   function renderBorrowerConsultation(consultation) {
     appendBorrowerConsultationMessage(consultation.answer, "guide");
-    if ((consultation.policyEvidence || []).length) {
+    if ((consultation.knowledge || []).length) {
       const details = document.createElement("details");
       details.className = "readiness-card";
-      details.appendChild(addText("summary", "Reviewed evidence · policy " + consultation.policySnapshot));
-      consultation.policyEvidence.forEach((source) => {
+      details.appendChild(addText("summary", "Official federal evidence · policy " + consultation.policySnapshot));
+      consultation.knowledge.forEach((source) => {
         const row = document.createElement("div");
         row.className = "consultation-source";
-        row.append(addText("strong", source.title), addText("div", source.content, "muted"), addText("div", source.locator + " · source hash " + source.sourceDocumentHash.slice(0, 12) + "…", "muted"));
+        row.append(addText("strong", source.title), addText("div", source.content, "muted"), addText("div", "Official federal · reviewed " + source.reviewedAt + " · " + source.id, "muted"));
         details.appendChild(row);
       });
       borrowerConsultationTranscript.appendChild(details);
     }
-    borrowerConsultationStatus.textContent = "Private-session consultation · policy " + consultation.policySnapshot + " · not persisted · no advisor case lookup.";
+    borrowerConsultationStatus.textContent = "Private-session consultation · " + consultation.synthesisMode.replace(/_/g, " ") + " · policy " + consultation.policySnapshot + " · not persisted · no advisor case lookup.";
     borrowerConsultationTranscript.scrollTop = borrowerConsultationTranscript.scrollHeight;
   }
 
@@ -1104,10 +1112,12 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     borrowerConsultationSubmit.disabled = true;
     borrowerConsultationStatus.textContent = "Recomputing the estimate and retrieving reviewed policy evidence…";
     try {
-      const response = await fetch("/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ question:trimmed, policySnapshot:"2026-08-27", calculator:lastBorrowerCalculatorPayload }) });
+      const response = await fetch("/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ question:trimmed, policySnapshot:"2026-08-27", calculator:lastBorrowerCalculatorPayload, history:borrowerConsultationHistory.slice(-6) }) });
       const body = await response.json();
       if (!response.ok || !body.ok) throw new Error(body.error || "Consultation failed.");
       renderBorrowerConsultation(body.consultation);
+      borrowerConsultationHistory.push({role:"user",content:trimmed},{role:"assistant",content:body.consultation.answer});
+      borrowerConsultationHistory = borrowerConsultationHistory.slice(-6);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Consultation failed.";
       appendBorrowerConsultationMessage(message, "guide");
@@ -1120,6 +1130,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   function invalidateBorrowerConsultation() {
     if (!lastBorrowerCalculatorPayload) return;
     lastBorrowerCalculatorPayload = null;
+    borrowerConsultationHistory = [];
     borrowerConsultationStatus.textContent = "Calculator facts changed. Recalculate before asking another question about the estimate.";
   }
 
@@ -1808,16 +1819,17 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   function renderAdvisorConsultation(consultation) {
     appendConsultationMessage(consultation.answer, "guide");
     const evidence = consultation.evidence;
-    if ((evidence.policyEvidence || []).length || (evidence.missingInformation || []).length || (evidence.warnings || []).length) {
+    if ((evidence.knowledge || []).length || (evidence.missingInformation || []).length || (evidence.warnings || []).length) {
       const details = document.createElement("details");
       details.className = "readiness-card";
       details.appendChild(addText("summary", "Evidence packet · " + evidence.intent.replace(/_/g, " ") + " · policy " + evidence.policySnapshot));
-      if ((evidence.policyEvidence || []).length) {
-        details.appendChild(addText("strong", "Reviewed policy evidence"));
-        evidence.policyEvidence.forEach((source) => {
+      if ((evidence.knowledge || []).length) {
+        details.appendChild(addText("strong", "Reviewed knowledge"));
+        evidence.knowledge.forEach((source) => {
           const row = document.createElement("div");
           row.className = "consultation-source";
-          row.append(addText("strong", source.title), addText("div", source.content, "muted"), addText("div", source.locator + " · source hash " + source.sourceDocumentHash.slice(0, 12) + "…", "muted"));
+          const tier = source.authorityTier === "official_federal" ? "Official federal" : "Accepted specialty/advisor";
+          row.append(addText("strong", source.title), addText("div", source.content, "muted"), addText("div", tier + " · reviewed " + source.reviewedAt + " · " + source.id, "muted"));
           details.appendChild(row);
         });
       }
@@ -1850,8 +1862,10 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     advisorConsultationSubmit.disabled = true;
     advisorConsultationStatus.textContent = "Assembling owner-scoped case facts and reviewed policy evidence…";
     try {
-      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/consultation", { method:"POST", body:JSON.stringify({ question:question.trim(), policySnapshot:"2026-08-27" }) });
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/consultation", { method:"POST", body:JSON.stringify({ question:question.trim(), policySnapshot:"2026-08-27", history:advisorConsultationHistory.slice(-6) }) });
       renderAdvisorConsultation(body.consultation);
+      advisorConsultationHistory.push({role:"user",content:question.trim()},{role:"assistant",content:body.consultation.answer});
+      advisorConsultationHistory = advisorConsultationHistory.slice(-6);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to consult the saved case.";
       appendConsultationMessage(message, "guide");
@@ -4269,8 +4283,22 @@ function borrowerConsultationIntent(question: string): BorrowerConsultationInten
   const q = borrowerRetrievalText(question);
   if (/parent plus|ffel|perkins|consolidat|eligib|loan type|disbursement/.test(q)) return "eligibility_review";
   if (/lowest|monthly payment|compare|comparison|forgiveness|repayment path|modeled payment/.test(q)) return "plan_comparison";
-  if (/policy|rule|save|repaye|paye|icr|ibr|rap|why/.test(q)) return "policy_explanation";
+  if (/policy|rule|save|repaye|paye|icr|ibr|rap|why|pslf|public service|default|rehabilitat|recertif/.test(q)) return "policy_explanation";
   return "estimate_summary";
+}
+function borrowerKnowledgeIntent(intent: BorrowerConsultationIntent): AdvisorConsultationIntent { return intent === "estimate_summary" ? "case_summary" : intent; }
+function borrowerConsultationHistory(value: unknown): ConsultationHistoryTurnV1[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 6) throw new Error("Consultation history must contain at most six turns.");
+  let total = 0;
+  return value.map((turn, index) => {
+    if (!isObject(turn) || (turn.role !== "user" && turn.role !== "assistant") || typeof turn.content !== "string") throw new Error(`Consultation history turn ${index + 1} is invalid.`);
+    const content = turn.content.trim();
+    if (!content || content.length > 1600) throw new Error(`Consultation history turn ${index + 1} must be between 1 and 1600 characters.`);
+    total += content.length;
+    if (total > 7000) throw new Error("Consultation history is too large.");
+    return { role: turn.role, content };
+  });
 }
 function borrowerLexicalScore(question: string, keywords: readonly string[], extra = ""): number {
   const normalizedQuestion = borrowerRetrievalText(question);
@@ -4334,14 +4362,15 @@ async function handleBorrowerConsultationApi(request: Request, env: Env): Promis
   let body: unknown;
   try { body = JSON.parse(text) as unknown; } catch { return jsonResponse({ok:false,error:"Invalid JSON."},400,request,env,{"cache-control":"no-store"}); }
   const calculatorDefinition = toolDefinitions.find((tool) => tool.name === "calculate_alt_income_student_loan")!;
-  const consultationSchema: RuntimeSchema = { type:"object", required:["question","calculator"], properties:{ question:{type:"string",maxLength:2000}, policySnapshot:{type:"string"}, calculator:calculatorDefinition.inputSchema as RuntimeSchema } };
+  const consultationSchema: RuntimeSchema = { type:"object", required:["question","calculator"], properties:{ question:{type:"string",maxLength:2000}, policySnapshot:{type:"string"}, calculator:calculatorDefinition.inputSchema as RuntimeSchema, history:{type:"array",maxItems:6,items:{type:"object",required:["role","content"],properties:{role:{enum:["user","assistant"]},content:{type:"string",maxLength:1600}}}} } };
   const issues = validateSchema(body, consultationSchema, "$.body");
   if (issues.length) return jsonResponse({ok:false,error:"Invalid borrower consultation input.",issues},400,request,env,{"cache-control":"no-store"});
-  const input = body as { question:string; policySnapshot?:string; calculator:CalculatorRequest };
+  const input = body as { question:string; policySnapshot?:string; calculator:CalculatorRequest; history?:ConsultationHistoryTurnV1[] };
   const question = input.question.trim();
   if (!question) return jsonResponse({ok:false,error:"Consultation question is required."},400,request,env,{"cache-control":"no-store"});
   if (input.policySnapshot !== undefined && input.policySnapshot !== POLICY_SNAPSHOT) return jsonResponse({ok:false,error:`Requested policy snapshot ${input.policySnapshot} is not the current accepted snapshot ${POLICY_SNAPSHOT}.`},409,request,env,{"cache-control":"no-store"});
   try {
+    const history = borrowerConsultationHistory(input.history);
     const result = calculateRepayment(input.calculator);
     const intent = borrowerConsultationIntent(question);
     const evidence = borrowerPolicyEvidence(question,intent);
@@ -4355,7 +4384,10 @@ async function handleBorrowerConsultationApi(request: Request, env: Env): Promis
       planEstimates: result.planEstimates.map((plan) => ({ plan:plan.plan, eligibilityStatus:plan.eligibility.status, monthlyPaymentEstimate:plan.monthlyPaymentEstimate, formulaSummary:plan.formulaSummary, eligibilityNote:plan.eligibilityNote, warnings:plan.warnings })),
       warnings: result.warnings
     };
-    return jsonResponse({ ok:true, consultation:{ schema:"student-loan-idr-borrower-consultation-v1", schemaVersion:1, contextMode:"browser_local_calculator", synthesisMode:"deterministic_evidence_summary", policySnapshot:POLICY_SNAPSHOT, intent, answer:borrowerConsultationAnswer(question,result,intent,evidence.map((entry)=>entry.id)), deterministic, policyRules:[...rules], policyEvidence:[...evidence], privacy:{ persisted:false, advisorDataIncluded:false, rawStudentAidIncluded:false, clientLookup:false }, mutationApplied:false } },200,request,env,{"cache-control":"no-store"});
+    const knowledge = retrieveKnowledge({ question, intent:borrowerKnowledgeIntent(intent), audience:"borrower", history, limit:6 });
+    const deterministicFallback = borrowerConsultationAnswer(question,result,intent,knowledge.map((entry)=>entry.id));
+    const synthesis = await synthesizeBorrowerGrounded({ env, question, intent, deterministic, knowledge, history, deterministicFallback });
+    return jsonResponse({ ok:true, consultation:{ schema:"student-loan-idr-borrower-consultation-v1", schemaVersion:1, contextMode:"browser_local_calculator", synthesisMode:synthesis.synthesisMode, policySnapshot:POLICY_SNAPSHOT, intent, answer:synthesis.answer, citations:synthesis.citations, ...(synthesis.model?{model:synthesis.model}:{}), ...(synthesis.fallbackReason?{fallbackReason:synthesis.fallbackReason}:{}), deterministic, policyRules:[...rules], policyEvidence:[...evidence], knowledge, privacy:{ persisted:false, advisorDataIncluded:false, rawStudentAidIncluded:false, clientLookup:false }, mutationApplied:false } },200,request,env,{"cache-control":"no-store"});
   } catch (error) { return jsonResponse({ok:false,error:error instanceof Error?error.message:"Consultation failed."},400,request,env,{"cache-control":"no-store"}); }
 }
 
