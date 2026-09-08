@@ -156,7 +156,7 @@ export const ADVISOR_UI_HTML = String.raw`<!doctype html>
 
   function maskStudentAidIdentifierLocal(value) {
     const normalized = String(value || "").trim();
-    return normalized ? "\u2022\u2022\u2022\u2022" + normalized.slice(-4) : null;
+    return normalized ? "••••" + normalized.slice(-4) : null;
   }
 
   function mapLoanType(code, description, parentPlusIndicator) {
