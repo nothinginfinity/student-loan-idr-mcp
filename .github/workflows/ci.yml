@@ -726,6 +726,36 @@ jobs:
             const deletedSnapshot = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/snapshots/${retainedSnapshotId}`, { method: 'DELETE', body: '{}' }, alpha);
             assert(deletedSnapshot.response.status === 200, 'retained snapshot deletion failed');
 
+            const v098SnapshotId = automaticComparison.body?.snapshot?.snapshotId;
+            assert(typeof v098SnapshotId === 'string', 'V0.9.8 comparison snapshot identity missing');
+            const v098ArtifactResponse = await fetchChecked(`${base}/api/advisor/clients/${liveClient.clientId}/snapshots/${v098SnapshotId}/artifact?format=html`, { headers: { origin: base, cookie: alpha.cookie } });
+            const v098ArtifactHtml = await v098ArtifactResponse.text();
+            assert(v098ArtifactResponse.status === 200 && (v098ArtifactResponse.headers.get('content-type') || '').includes('text/html'), 'V0.9.8 retained comparison HTML artifact failed');
+            assert(v098ArtifactResponse.headers.get('cache-control') === 'no-store', 'V0.9.8 comparison artifact cache policy mismatch');
+            assert((v098ArtifactResponse.headers.get('content-security-policy') || '').includes("default-src 'none'"), 'V0.9.8 comparison artifact CSP mismatch');
+            assert(v098ArtifactHtml.includes(v098SnapshotId) && v098ArtifactHtml.includes('Repayment & forgiveness comparison'), 'V0.9.8 comparison artifact trace identity missing');
+            assert(!/<script|https?:\/\//i.test(v098ArtifactHtml), 'V0.9.8 comparison artifact must contain no script or external asset URL');
+            const v098SvgResponse = await fetchChecked(`${base}/api/advisor/clients/${liveClient.clientId}/snapshots/${v098SnapshotId}/artifact?format=svg`, { headers: { origin: base, cookie: alpha.cookie } });
+            const v098Svg = await v098SvgResponse.text();
+            assert(v098SvgResponse.status === 200 && (v098SvgResponse.headers.get('content-type') || '').includes('image/svg+xml') && v098Svg.includes(v098SnapshotId), 'V0.9.8 retained comparison SVG artifact failed');
+            const betaV098Artifact = await fetchChecked(`${base}/api/advisor/clients/${liveClient.clientId}/snapshots/${v098SnapshotId}/artifact`, { headers: { origin: base, cookie: beta.cookie } });
+            assert(betaV098Artifact.status === 404, 'V0.9.8 comparison artifact must remain exact-owner scoped');
+
+            const v098Share = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/plan-selections`, { method: 'POST', body: JSON.stringify({ snapshotId: v098SnapshotId }) }, alpha);
+            assert(v098Share.response.status === 201 && v098Share.body?.selection?.sourceSnapshotId === v098SnapshotId, 'V0.9.8 secure share did not bind to the exact retained comparison snapshot');
+            const v098SelectionId = v098Share.body.selection.selectionId;
+            const v098ShareToken = v098Share.body.selection.shareToken;
+            const v098PublicArtifactResponse = await fetchChecked(`${base}/api/share/${v098ShareToken}/artifact`);
+            const v098PublicArtifact = await v098PublicArtifactResponse.text();
+            assert(v098PublicArtifactResponse.status === 200 && v098PublicArtifact.includes(v098SelectionId), 'V0.9.8 public secure comparison artifact failed');
+            const v098FirstProjection = automaticComparison.body.comparison.projections.find((projection) => typeof projection.currentMonthlyPayment === 'number');
+            const v098FirstPayment = `$${Number(v098FirstProjection.currentMonthlyPayment).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+            assert(v098PublicArtifact.includes(v098FirstPayment), 'V0.9.8 secure artifact diverged from the retained comparison snapshot');
+            const v098Revoke = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/plan-selections/${v098SelectionId}/revoke`, { method: 'POST', body: '{}' }, alpha);
+            assert(v098Revoke.response.status === 200, 'V0.9.8 secure comparison revocation failed');
+            const v098RevokedArtifact = await fetchChecked(`${base}/api/share/${v098ShareToken}/artifact`);
+            assert(v098RevokedArtifact.status === 410, 'V0.9.8 revoked secure comparison artifact must fail closed with 410');
+
             const archivedClient = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/archive`, {
               method: 'POST', body: JSON.stringify({ expectedUpdatedAt: updatedClient.body.client.updatedAt })
             }, alpha);
@@ -932,7 +962,7 @@ jobs:
               }
             });
             assert(initialize.result?.protocolVersion === '2025-03-26', 'initialize protocol negotiation mismatch');
-            assert(initialize.result?.serverInfo?.version === '0.9.7', 'initialize server version mismatch');
+            assert(initialize.result?.serverInfo?.version === '0.9.8', 'initialize server version mismatch');
 
             const tools = await rpcJson({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
             const toolNames = (tools.result?.tools ?? []).map((tool) => tool.name).sort();
