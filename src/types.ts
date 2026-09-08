@@ -523,6 +523,56 @@ export interface AdvisorRetrievalFactV1 {
   asOf?: string;
 }
 
+export type KnowledgeAuthorityTier = "official_federal" | "accepted_specialty";
+export type KnowledgeAudience = "advisor" | "borrower";
+export type KnowledgeAllowedUse = "policy_explanation" | "case_interview" | "workflow_guidance" | "comparison_explanation" | "evidence_guidance";
+
+export interface KnowledgeItemV1 {
+  id: string;
+  packId: string;
+  packVersion: string;
+  title: string;
+  content: string;
+  authorityTier: KnowledgeAuthorityTier;
+  sourceKind: "official_web" | "accepted_internal";
+  sourceUrl?: string;
+  sourceLocator: string;
+  policySnapshot?: string;
+  effectiveFrom?: string;
+  effectiveThrough?: string;
+  reviewedAt: string;
+  contentHash: string;
+  programs: string[];
+  loanFamilies: string[];
+  keywords: string[];
+  audiences: KnowledgeAudience[];
+  allowedUses: KnowledgeAllowedUse[];
+}
+
+export interface KnowledgePackV1 {
+  schema: "student-loan-idr-knowledge-pack-v1";
+  packId: string;
+  version: string;
+  authorityTier: KnowledgeAuthorityTier;
+  title: string;
+  reviewedAt: string;
+  items: KnowledgeItemV1[];
+}
+
+export interface ConsultationHistoryTurnV1 {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ConsultationCitationV1 {
+  id: string;
+  title: string;
+  authorityTier: KnowledgeAuthorityTier;
+  sourceUrl?: string;
+  reviewedAt: string;
+  contentHash: string;
+}
+
 export interface AdvisorEvidencePacketV1 {
   schema: "student-loan-idr-advisor-evidence-packet-v1";
   schemaVersion: 1;
@@ -532,7 +582,7 @@ export interface AdvisorEvidencePacketV1 {
   dictionaryVersion: string;
   question: string;
   intent: AdvisorConsultationIntent;
-  retrievalMode: "structured_client_exact_keyword_policy";
+  retrievalMode: "structured_client_hybrid_knowledge";
   facts: AdvisorRetrievalFactV1[];
   missingInformation: AdvisorClientCaseContextV1["missingInformation"];
   deterministic: {
@@ -549,6 +599,7 @@ export interface AdvisorEvidencePacketV1 {
   dictionaryEntries: FsaDataDictionaryEntryV1[];
   policyRules: AdvisorPolicyRuleCardV1[];
   policyEvidence: AdvisorPolicyEvidenceChunkV1[];
+  knowledge: KnowledgeItemV1[];
   warnings: string[];
   privacy: {
     rawStudentAidIncluded: false;
@@ -560,9 +611,12 @@ export interface AdvisorEvidencePacketV1 {
 export interface AdvisorConsultationResponseV1 {
   schema: "student-loan-idr-advisor-consultation-v1";
   schemaVersion: 1;
-  synthesisMode: "deterministic_evidence_summary";
+  synthesisMode: "workers_ai_grounded" | "deterministic_evidence_summary";
   answer: string;
   evidence: AdvisorEvidencePacketV1;
+  citations: ConsultationCitationV1[];
+  model?: { provider: "workers-ai"; model: string };
+  fallbackReason?: string;
   proposedActions: Array<{ kind: string; label: string; href: string }>;
   mutationApplied: false;
 }
