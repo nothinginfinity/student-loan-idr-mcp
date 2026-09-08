@@ -476,9 +476,16 @@ Acceptance evidence:
 - FLRs remains a unique-lowest-payment label only; genuine equal-payment ties are preserved rather than broken arbitrarily.
 - Raw StudentAid text/files remain browser-local and unretained; comparison artifacts and shares contain only bounded normalized/model output required for the comparison.
 
-V0.9.8 is closed and live-accepted. V0.9.9 is the active next slice.
+V0.9.8 and V0.9.9 are closed and live-accepted. No later numbered slice is selected; next work requires an explicit roadmap decision.
 
-### V0.9.9 — Expert Conversational Synthesis + Specialty Knowledge Packs — NEXT / IN PROGRESS
+### V0.9.9 — Expert Conversational Synthesis + Specialty Knowledge Packs — COMPLETE / LIVE VERIFIED
+
+Acceptance evidence:
+
+- Accepted runtime source: `95a1fb7860cc944096c319a3a9f4c02ca94b0dae`.
+- Normal CI: `34236440220` — success.
+- Exact-SHA live deploy + production acceptance: `34237372941` — success.
+- Production acceptance exercised real Workers AI synthesis for borrower and advisor consultation, validated Knowledge Pack citations, enforced borrower `official_federal` knowledge only, exposed advisor `accepted_specialty` knowledge, retained deterministic math/comparison authority, preserved the six-turn history bound, and verified model-backed consultation does not mutate saved client state or timeline history.
 
 Complete the conversational layer that V0.9.7 prepared by connecting a real bounded LLM synthesis step to the accepted evidence assembler and by expanding reviewed policy/specialty knowledge without giving the model authority over calculations or saved case state.
 
