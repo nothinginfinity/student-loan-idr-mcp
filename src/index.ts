@@ -18,7 +18,7 @@ import type {
   StudentAidPortfolioSummary
 } from "./types.ts";
 
-const SERVER_VERSION = "0.9.7";
+const SERVER_VERSION = "0.9.8";
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -717,7 +717,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     <h2 id="advisor-comparison-title">Repayment & forgiveness comparison</h2>
     <p><span class="basis">Modeled estimate</span>These scenarios reuse this Worker’s deterministic repayment formulas and the client’s saved normalized facts. They are not guaranteed forgiveness, eligibility, approval, tax treatment, or servicer outcomes.</p>
     <p id="advisor-comparison-status" class="muted" role="status" aria-live="polite">Save the client’s current facts, then compare repayment paths.</p>
-    <div class="actions"><button type="button" id="advisor-retain-comparison">Retain this comparison</button></div>
+    <div class="actions"><button type="button" id="advisor-print-comparison" disabled>Print / Save PDF</button><button type="button" id="advisor-download-comparison-svg" disabled>Download SVG</button><button type="button" id="advisor-share-comparison" disabled>Create secure borrower link</button><button type="button" id="advisor-retain-comparison">Retain another comparison</button></div>
     <div id="advisor-comparison-cards" class="comparison-cards"></div>
     <div class="chart-grid">
       <article class="chart-panel"><h3>Monthly payment path</h3><p class="muted">Current calculated payment held constant for this bounded scenario.</p><svg id="advisor-payment-chart" viewBox="0 0 720 260" role="img" aria-label="Modeled monthly payment by repayment plan"></svg></article>
@@ -1021,6 +1021,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   const advisorRetainCalculation = document.getElementById("advisor-retain-calculation");
   const advisorOpenHistory = document.getElementById("advisor-open-history");
   const advisorRetainComparison = document.getElementById("advisor-retain-comparison");
+  const advisorPrintComparison = document.getElementById("advisor-print-comparison");
+  const advisorDownloadComparisonSvg = document.getElementById("advisor-download-comparison-svg");
+  const advisorShareComparison = document.getElementById("advisor-share-comparison");
   const advisorRetainDocument = document.getElementById("advisor-retain-document");
   const advisorHistoryWorkspace = document.getElementById("advisor-history-workspace");
   const advisorHistoryStatus = document.getElementById("advisor-history-status");
@@ -1063,6 +1066,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   let advisorSavedIncome = null;
   let importedFieldProvenance = {};
   let advisorCalculatorDirty = false;
+  let advisorLastComparisonSnapshotId = null;
   let lastBorrowerCalculatorPayload = null;
 
   function appendBorrowerConsultationMessage(text, role) {
@@ -2063,6 +2067,40 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
     const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
+  function comparisonArtifactUrl(snapshotId, format) {
+    if (!advisorClient) return "";
+    return "/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/snapshots/" + encodeURIComponent(snapshotId) + "/artifact?format=" + encodeURIComponent(format);
+  }
+  function syncComparisonArtifactActions() {
+    const disabled = !advisorClient || !advisorLastComparisonSnapshotId;
+    advisorPrintComparison.disabled = disabled;
+    advisorDownloadComparisonSvg.disabled = disabled;
+    advisorShareComparison.disabled = disabled;
+  }
+  function openComparisonPrint(snapshotId) {
+    const url = comparisonArtifactUrl(snapshotId, "html");
+    if (!url) return;
+    const printWindow = window.open(url, "_blank", "noopener");
+    if (!printWindow) advisorComparisonStatus.textContent = "Your browser blocked the comparison report window. Allow pop-ups and try again.";
+  }
+  function downloadComparisonSvg(snapshotId) {
+    const url = comparisonArtifactUrl(snapshotId, "svg");
+    if (!url) return;
+    const link = document.createElement("a"); link.href = url; link.download = "repayment-comparison-" + snapshotId + ".svg"; link.click();
+  }
+  async function createSnapshotShareLink(snapshotId) {
+    if (!advisorClient) return;
+    advisorComparisonStatus.textContent = "Freezing this exact retained comparison into a secure borrower link…";
+    try {
+      const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/plan-selections", { method:"POST", body:JSON.stringify({ snapshotId }) });
+      const url = location.origin + "/share/" + body.selection.shareToken;
+      let copied = false;
+      try { await navigator.clipboard.writeText(url); copied = true; } catch {}
+      window.prompt(copied ? "Secure borrower link copied. You can also copy it here:" : "Copy this secure borrower link:", url);
+      advisorComparisonStatus.textContent = "Secure link created from " + snapshotId + (copied ? " and copied to the clipboard." : ".") + " It uses the same frozen comparison; opening the borrower review starts the existing 15-minute review window.";
+      await loadAdvisorHistory();
+    } catch (error) { advisorComparisonStatus.textContent = error instanceof Error ? error.message : "Unable to create the secure borrower link."; }
+  }
   async function retainedNamePrompt(label) {
     const value = window.prompt(label + " name", label + " · " + new Date().toLocaleString());
     return value && value.trim() ? value.trim() : null;
@@ -2146,7 +2184,7 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
       snapshotBody.snapshots.forEach((snapshot) => {
         const card=document.createElement("article"); card.className="history-item"; card.append(addText("strong",snapshot.name),addText("div",snapshot.snapshotKind+" · policy "+snapshot.policySnapshot+" · "+new Date(snapshot.createdAt).toLocaleString(),"muted"));
         const actions=document.createElement("div"); actions.className="actions";
-        actions.append(historyAction("Rerun retained basis",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/snapshots/"+encodeURIComponent(snapshot.snapshotId)+"/rerun",{method:"POST",body:"{}"}); if(snapshot.snapshotKind==="comparison") renderAdvisorComparison(body.rerun.result); else { render(body.rerun.result); results.scrollIntoView({behavior:"smooth",block:"start"}); } }),historyAction("Export JSON",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/snapshots/"+encodeURIComponent(snapshot.snapshotId)); downloadJson("retained-snapshot-"+snapshot.snapshotId+".json",body); }),historyAction("Delete",()=>{void deleteHistoryItem("snapshots",snapshot.snapshotId,snapshot.name);})); card.appendChild(actions); advisorSnapshotHistory.appendChild(card);
+        actions.append(historyAction("Rerun retained basis",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/snapshots/"+encodeURIComponent(snapshot.snapshotId)+"/rerun",{method:"POST",body:"{}"}); if(snapshot.snapshotKind==="comparison") renderAdvisorComparison(body.rerun.result); else { render(body.rerun.result); results.scrollIntoView({behavior:"smooth",block:"start"}); } }),historyAction("Export JSON",async()=>{ const body=await advisorApi("/api/advisor/clients/"+encodeURIComponent(advisorClient.clientId)+"/snapshots/"+encodeURIComponent(snapshot.snapshotId)); downloadJson("retained-snapshot-"+snapshot.snapshotId+".json",body); })); if(snapshot.snapshotKind==="comparison") actions.append(historyAction("Print / Save PDF",()=>{openComparisonPrint(snapshot.snapshotId);}),historyAction("Download SVG",()=>{downloadComparisonSvg(snapshot.snapshotId);}),historyAction("Secure borrower link",()=>{void createSnapshotShareLink(snapshot.snapshotId);})); actions.append(historyAction("Delete",()=>{void deleteHistoryItem("snapshots",snapshot.snapshotId,snapshot.name);})); card.appendChild(actions); advisorSnapshotHistory.appendChild(card);
       });
       advisorHistoryStatus.textContent = timelineBody.events.length + " timeline event(s), " + artifactBody.artifacts.length + " retained document draft(s), and " + snapshotBody.snapshots.length + " calculation snapshot(s).";
     } catch (error) { advisorHistoryStatus.textContent = error instanceof Error ? error.message : "Unable to load retained history."; }
@@ -2236,13 +2274,20 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   async function runAdvisorComparison() {
     if (!advisorClient) return;
     advisorComparePlans.disabled = true;
+    advisorLastComparisonSnapshotId = null;
+    syncComparisonArtifactActions();
     advisorComparisonWorkspace.hidden = false;
     advisorComparisonStatus.textContent = "Calculating saved repayment paths…";
     try {
       const body = await advisorApi("/api/advisor/clients/" + encodeURIComponent(advisorClient.clientId) + "/comparisons", { method:"POST", body:"{}" });
+      advisorLastComparisonSnapshotId = body.snapshot?.snapshotId || null;
+      syncComparisonArtifactActions();
       renderAdvisorComparison(body.comparison);
+      if (advisorLastComparisonSnapshotId) advisorComparisonStatus.textContent += " Frozen artifact source: " + advisorLastComparisonSnapshotId + ".";
       await loadAdvisorHistory();
     } catch (error) {
+      advisorLastComparisonSnapshotId = null;
+      syncComparisonArtifactActions();
       advisorComparisonCards.replaceChildren();
       emptyChart(advisorPaymentChart, "Comparison unavailable");
       emptyChart(advisorPaidChart, "Comparison unavailable");
@@ -2839,6 +2884,9 @@ const BORROWER_UI_HTML = String.raw`<!doctype html>
   advisorRetainDocument.addEventListener("click", () => { void retainCurrentDocument(); });
   advisorRetainCalculation.addEventListener("click", () => { void retainCurrentSnapshot("calculation"); });
   advisorRetainComparison.addEventListener("click", () => { void retainCurrentSnapshot("comparison"); });
+  advisorPrintComparison.addEventListener("click", () => { if (advisorLastComparisonSnapshotId) openComparisonPrint(advisorLastComparisonSnapshotId); });
+  advisorDownloadComparisonSvg.addEventListener("click", () => { if (advisorLastComparisonSnapshotId) downloadComparisonSvg(advisorLastComparisonSnapshotId); });
+  advisorShareComparison.addEventListener("click", () => { if (advisorLastComparisonSnapshotId) void createSnapshotShareLink(advisorLastComparisonSnapshotId); });
   advisorOpenHistory.addEventListener("click", () => { void loadAdvisorHistory().then(() => advisorHistoryWorkspace.scrollIntoView({ behavior:"smooth", block:"start" })); });
   advisorRefreshHistory.addEventListener("click", () => { void loadAdvisorHistory(); });
   advisorComparePlans.addEventListener("click", async () => {
@@ -4616,7 +4664,7 @@ function home(request: Request, env: Env): Response {
     protocol_version: SUPPORTED_PROTOCOL_VERSION,
     policy_snapshot: "2026-08-27",
     tools: toolDefinitions.map((tool) => tool.name),
-    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/consultation", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET /api/advisor/action-dashboard", "GET /api/advisor/retrieval-metadata", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/case-context", "POST /api/advisor/clients/:clientId/retrieval", "POST /api/advisor/clients/:clientId/consultation", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun"],
+    endpoints: ["GET /", "GET /advisor", "GET /health", "GET /api/ibr-zero-payment", "POST /api/calculate", "POST /api/consultation", "POST /api/document", "POST /mcp", "POST /api/advisor/register", "POST /api/advisor/login", "GET /api/advisor/session", "GET /api/advisor/action-dashboard", "GET /api/advisor/retrieval-metadata", "GET|POST /api/advisor/clients", "GET|PUT|DELETE /api/advisor/clients/:clientId", "GET /api/advisor/clients/:clientId/case-context", "POST /api/advisor/clients/:clientId/retrieval", "POST /api/advisor/clients/:clientId/consultation", "GET /api/advisor/clients/:clientId/comparison", "GET /api/advisor/clients/:clientId/intelligence", "GET /api/advisor/clients/:clientId/timeline", "GET|PATCH|DELETE /api/advisor/clients/:clientId/timeline/:eventId", "POST /api/advisor/clients/:clientId/calculations", "POST /api/advisor/clients/:clientId/comparisons", "POST /api/advisor/clients/:clientId/documents/generate", "GET|POST /api/advisor/clients/:clientId/artifacts", "GET|DELETE /api/advisor/clients/:clientId/artifacts/:artifactId", "POST /api/advisor/clients/:clientId/artifacts/:artifactId/regenerate", "GET|POST /api/advisor/clients/:clientId/snapshots", "GET|DELETE /api/advisor/clients/:clientId/snapshots/:snapshotId", "GET /api/advisor/clients/:clientId/snapshots/:snapshotId/artifact", "POST /api/advisor/clients/:clientId/snapshots/:snapshotId/rerun", "GET /api/share/:shareToken/artifact"],
     advisor_workspace: {
       persistence: env.ADVISOR_DB ? "d1" : "unconfigured",
       authentication: "server_session_cookie",
@@ -4640,6 +4688,9 @@ function home(request: Request, env: Env): Response {
       chat_native_advisor_consultation_v1: true,
       borrower_safe_consultation_v1: true,
       borrower_consultation_persistence: false,
+      borrower_comparison_artifact_v1: true,
+      comparison_artifact_svg_export: true,
+      secure_share_snapshot_parity: true,
       deterministic_math_authority: true,
       raw_student_aid_embeddings: false,
       shared_borrower_pii_corpus: false,
