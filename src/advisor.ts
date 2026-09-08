@@ -2,6 +2,9 @@ import { scryptSync } from "node:crypto";
 import { calculateRepayment } from "./formulas.ts";
 import { FSA_DATA_DICTIONARY, FSA_DATA_DICTIONARY_VERSION, POLICY_EVIDENCE_CORPUS, POLICY_RULE_REGISTRY, POLICY_SNAPSHOT } from "./constants.ts";
 import { getDocumentationTemplate } from "./templates.ts";
+import { KNOWLEDGE_PACKS, KNOWLEDGE_PACK_VERSION, retrieveKnowledge } from "./knowledge.ts";
+import { synthesizeGrounded, type AiBinding } from "./synthesis.ts";
+import type { ConsultationHistoryTurnV1 } from "./types.ts";
 import type { AdvisorAccountStatus, AdvisorActionDashboardV1, AdvisorActionState, AdvisorClientActionSignalV1, AdvisorClientActionSummaryV1, AdvisorClientCaseContextV1, AdvisorClientDashboardSummary, AdvisorClientIncomeSource, AdvisorClientLifecycleState, AdvisorClientReadinessState, AdvisorClientRecordV1, AdvisorConsultationIntent, AdvisorConsultationResponseV1, AdvisorEvidencePacketV1, AdvisorPrincipal, AdvisorRetrievalFactV1, CalculatorRequest, DocumentationIncomeSource, RepaymentPlan, RepaymentLoanInput, StudentAidLoanContactFact, StudentAidNormalizedLoanFact, StudentAidPortfolioIntelligence, StudentAidStatusIntervalIntelligence, TemplateRequest } from "./types.ts";
 
 const COOKIE = "sl_advisor_session";
@@ -25,7 +28,7 @@ export interface D1PreparedStatement {
   run(): Promise<{ meta?: { changes?: number } }>;
 }
 export interface D1DatabaseBinding { prepare(sql: string): D1PreparedStatement; }
-export interface AdvisorWorkspaceEnv { ADVISOR_DB?: D1DatabaseBinding; RESEND_API_KEY?: string; }
+export interface AdvisorWorkspaceEnv { ADVISOR_DB?: D1DatabaseBinding; RESEND_API_KEY?: string; AI?: AiBinding; CONSULTATION_MODEL?: string; }
 
 type JsonObject = Record<string, unknown>;
 type AccountRow = {
@@ -510,7 +513,7 @@ function structuredFactsFor(context: AdvisorClientCaseContextV1, intent: Advisor
   if (intent === "missing_information" || intent === "next_best_action") addRetrievalFact(facts,"comparison_readiness","Comparison readiness",context.coverage.comparisonReadiness,"coverage.comparisonReadiness","deterministic_derived",context.asOf.caseUpdatedAt);
   return facts;
 }
-async function evidencePacket(database: D1DatabaseBinding, advisorId: string, client: AdvisorClientRecordV1, question: string): Promise<AdvisorEvidencePacketV1> {
+async function evidencePacket(database: D1DatabaseBinding, advisorId: string, client: AdvisorClientRecordV1, question: string, history: ConsultationHistoryTurnV1[] = []): Promise<AdvisorEvidencePacketV1> {
   const context = deriveAdvisorClientCaseContext(client), intent = deriveConsultationIntent(question), facts = structuredFactsFor(context,intent);
   const timelineRows = await database.prepare("SELECT owner_advisor_id,client_id,event_id,event_kind,name,summary,source_type,source_id,basis_json,result_json,policy_snapshot,engine_version,starred,annotation,occurred_at,updated_at FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=? ORDER BY occurred_at DESC,event_id DESC LIMIT 12").bind(advisorId,client.clientId).all<TimelineRow>();
   const artifactRows = await database.prepare("SELECT owner_advisor_id,client_id,artifact_id,artifact_kind,name,template_request_json,document_text,document_html,engine_version,created_at FROM advisor_client_artifacts WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC LIMIT 8").bind(advisorId,client.clientId).all<ArtifactRow>();
@@ -519,6 +522,7 @@ async function evidencePacket(database: D1DatabaseBinding, advisorId: string, cl
   const activeSelection = selectionRows.results.find((row) => !["expired","revoked","booked"].includes(row.status));
   const action = deriveActionSummary(client,activeSelection,timelineRows.results.map((row) => ({client_id:row.client_id,event_kind:row.event_kind,occurred_at:row.occurred_at})),Date.now());
   const evidence = policyEvidenceFor(question,intent), evidenceIds = new Set(evidence.map((entry) => entry.id)), rules = policyRulesFor(question,evidenceIds,intent), dictionaryEntries = dictionaryFor(question,intent);
+  const knowledge = retrieveKnowledge({ question, intent, audience:"advisor", history, limit:8 });
   const warnings = [...context.warnings];
   let comparison: unknown | undefined;
   if (intent === "plan_comparison") {
@@ -528,7 +532,7 @@ async function evidencePacket(database: D1DatabaseBinding, advisorId: string, cl
   if (evidence.some((entry) => entry.policySnapshot !== POLICY_SNAPSHOT) || rules.some((rule) => rule.policySnapshot !== POLICY_SNAPSHOT)) throw new ApiError(409,"Policy retrieval attempted to use evidence outside the current accepted policy snapshot.");
   return {
     schema:"student-loan-idr-advisor-evidence-packet-v1", schemaVersion:1, clientId:client.clientId, clientUpdatedAt:client.updatedAt,
-    policySnapshot:POLICY_SNAPSHOT, dictionaryVersion:FSA_DATA_DICTIONARY_VERSION, question, intent, retrievalMode:"structured_client_exact_keyword_policy",
+    policySnapshot:POLICY_SNAPSHOT, dictionaryVersion:FSA_DATA_DICTIONARY_VERSION, question, intent, retrievalMode:"structured_client_hybrid_knowledge",
     facts, missingInformation:context.missingInformation,
     deterministic:{ caseContext:{asOf:context.asOf,coverage:context.coverage,warnings:context.warnings}, ...(context.deterministicIntelligence?{intelligence:context.deterministicIntelligence}:{}), ...(comparison!==undefined?{comparison}:{}), nextBestAction:action },
     history:{
@@ -536,12 +540,12 @@ async function evidencePacket(database: D1DatabaseBinding, advisorId: string, cl
       artifacts:artifactRows.results.map((row) => ({artifactId:row.artifact_id,name:row.name,createdAt:row.created_at})),
       snapshots:snapshotRows.results.map((row) => ({snapshotId:row.snapshot_id,snapshotKind:row.snapshot_kind,name:row.name,policySnapshot:row.policy_snapshot,createdAt:row.created_at}))
     },
-    dictionaryEntries:[...dictionaryEntries], policyRules:[...rules], policyEvidence:[...evidence], warnings,
+    dictionaryEntries:[...dictionaryEntries], policyRules:[...rules], policyEvidence:[...evidence], knowledge, warnings,
     privacy:{rawStudentAidIncluded:false,rawStudentAidEmbedded:false,sharedBorrowerPiiCorpus:false}
   };
 }
 function consultationAnswer(packet: AdvisorEvidencePacketV1): string {
-  const citations = packet.policyEvidence.map((entry) => `[${entry.id}]`).join(" ");
+  const citations = packet.knowledge.map((entry) => `[${entry.id}]`).join(" ");
   const suffix = citations ? ` Policy evidence: ${citations}.` : "";
   if (packet.intent === "missing_information") {
     const blocking = packet.missingInformation.filter((item) => item.blocking);
@@ -572,14 +576,15 @@ function consultationAnswer(packet: AdvisorEvidencePacketV1): string {
   const summary = packet.facts.slice(0,5).map((fact)=>`${fact.label}: ${Array.isArray(fact.value)?fact.value.join(", "):String(fact.value)}`).join("; ");
   return `${summary || "The saved case context is available, but this question did not require additional client facts."}.${suffix}`;
 }
-async function parseRetrievalRequest(request: Request): Promise<string> {
-  sameOrigin(request); const b=await body(request), allowed=new Set(["question","policySnapshot"]); for(const key of Object.keys(b)) if(!allowed.has(key)) throw new ApiError(400,`Unexpected consultation field: ${key}.`);
+function consultationHistory(value:unknown):ConsultationHistoryTurnV1[]{ if(value===undefined)return[]; if(!Array.isArray(value)||value.length>6)throw new ApiError(400,"Consultation history must contain at most six turns."); let total=0; return value.map((raw,index)=>{const turn=bodyObject(raw);for(const key of Object.keys(turn))if(!["role","content"].includes(key))throw new ApiError(400,`Unexpected consultation history field: ${key}.`);if(turn.role!=="user"&&turn.role!=="assistant")throw new ApiError(400,`Consultation history turn ${index+1} has an invalid role.`);if(typeof turn.content!=="string")throw new ApiError(400,`Consultation history turn ${index+1} must contain text.`);const content=turn.content.trim();if(!content||content.length>1600)throw new ApiError(400,`Consultation history turn ${index+1} must be between 1 and 1600 characters.`);total+=content.length;if(total>7000)throw new ApiError(400,"Consultation history is too large.");return{role:turn.role,content};}); }
+async function parseRetrievalRequest(request: Request): Promise<{question:string;history:ConsultationHistoryTurnV1[]}> {
+  sameOrigin(request); const b=await body(request), allowed=new Set(["question","policySnapshot","history"]); for(const key of Object.keys(b)) if(!allowed.has(key)) throw new ApiError(400,`Unexpected consultation field: ${key}.`);
   if(b.policySnapshot!==undefined&&String(b.policySnapshot)!==POLICY_SNAPSHOT) throw new ApiError(409,`Requested policy snapshot ${String(b.policySnapshot)} is not the current accepted snapshot ${POLICY_SNAPSHOT}.`);
-  return retrievalQuestion(b.question);
+  return {question:retrievalQuestion(b.question),history:consultationHistory(b.history)};
 }
-async function retrieveClientEvidence(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ const question=await parseRetrievalRequest(request),client=parseClient(await owned(database,a.account.advisor_id,id)); return json({ok:true,evidence:await evidencePacket(database,a.account.advisor_id,client,question)}); }
-async function consultClient(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ const question=await parseRetrievalRequest(request),client=parseClient(await owned(database,a.account.advisor_id,id)),evidence=await evidencePacket(database,a.account.advisor_id,client,question),action=evidence.deterministic.nextBestAction?.nextBestAction; const response:AdvisorConsultationResponseV1={schema:"student-loan-idr-advisor-consultation-v1",schemaVersion:1,synthesisMode:"deterministic_evidence_summary",answer:consultationAnswer(evidence),evidence,proposedActions:action?[{kind:action.kind,label:action.label,href:action.href}]:[],mutationApplied:false}; return json({ok:true,consultation:response}); }
-function retrievalMetadata(){ return json({ok:true,schema:"student-loan-idr-retrieval-metadata-v1",schemaVersion:1,policySnapshot:POLICY_SNAPSHOT,dictionaryVersion:FSA_DATA_DICTIONARY_VERSION,dictionary:[...FSA_DATA_DICTIONARY],policyRules:[...POLICY_RULE_REGISTRY],policyEvidence:POLICY_EVIDENCE_CORPUS.map((entry)=>({...entry})) ,privacy:{rawStudentAidEmbedded:false,sharedBorrowerPiiCorpus:false}}); }
+async function retrieveClientEvidence(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ const parsed=await parseRetrievalRequest(request),client=parseClient(await owned(database,a.account.advisor_id,id)); return json({ok:true,evidence:await evidencePacket(database,a.account.advisor_id,client,parsed.question,parsed.history)}); }
+async function consultClient(request:Request,database:D1DatabaseBinding,a:Auth,id:string,env:AdvisorWorkspaceEnv){ const parsed=await parseRetrievalRequest(request),client=parseClient(await owned(database,a.account.advisor_id,id)),evidence=await evidencePacket(database,a.account.advisor_id,client,parsed.question,parsed.history),action=evidence.deterministic.nextBestAction?.nextBestAction, synthesis=await synthesizeGrounded({env,packet:evidence,audience:"advisor",history:parsed.history,deterministicFallback:consultationAnswer(evidence)}); const response:AdvisorConsultationResponseV1={schema:"student-loan-idr-advisor-consultation-v1",schemaVersion:1,synthesisMode:synthesis.synthesisMode,answer:synthesis.answer,evidence,citations:synthesis.citations,...(synthesis.model?{model:synthesis.model}:{}),...(synthesis.fallbackReason?{fallbackReason:synthesis.fallbackReason}:{}),proposedActions:action?[{kind:action.kind,label:action.label,href:action.href}]:[],mutationApplied:false}; return json({ok:true,consultation:response}); }
+function retrievalMetadata(){ return json({ok:true,schema:"student-loan-idr-retrieval-metadata-v1",schemaVersion:1,policySnapshot:POLICY_SNAPSHOT,dictionaryVersion:FSA_DATA_DICTIONARY_VERSION,knowledgePackVersion:KNOWLEDGE_PACK_VERSION,knowledgePacks:KNOWLEDGE_PACKS,dictionary:[...FSA_DATA_DICTIONARY],policyRules:[...POLICY_RULE_REGISTRY],policyEvidence:POLICY_EVIDENCE_CORPUS.map((entry)=>({...entry})) ,privacy:{rawStudentAidEmbedded:false,sharedBorrowerPiiCorpus:false}}); }
 
 type ComparisonPoint = { month: number; remainingBalance: number; cumulativeBorrowerPaid: number; cumulativeInterestWaived: number; cumulativePrincipalMatch: number };
 type ComparisonProjection = {
@@ -1144,7 +1149,7 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       if(request.method==="GET"&&r.suffix==="/intelligence"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row);if(!client.normalizedLoanPortfolio?.loans?.length) throw new ApiError(422,"Save normalized per-loan StudentAid facts before generating portfolio intelligence.");return json({ok:true,intelligence:deriveStudentAidPortfolioIntelligence(client)});}
       if(request.method==="GET"&&r.suffix==="/case-context"){const row=await owned(database,a.account.advisor_id,r.id),client=parseClient(row);return json({ok:true,caseContext:deriveAdvisorClientCaseContext(client)});}
       if(request.method==="POST"&&r.suffix==="/retrieval") return await retrieveClientEvidence(request,database,a,r.id);
-      if(request.method==="POST"&&r.suffix==="/consultation") return await consultClient(request,database,a,r.id);
+      if(request.method==="POST"&&r.suffix==="/consultation") return await consultClient(request,database,a,r.id,env);
       if(request.method==="POST"&&r.suffix==="/calculations") return await runAutomaticCalculation(request,database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/comparisons") return await runAutomaticComparison(request,database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/documents/generate") return await generateCaseDocument(request,database,a,r.id);
