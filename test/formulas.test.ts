@@ -759,7 +759,7 @@ test("V0.9.9 borrower consultation supports grounded AI with official-only knowl
       }
     }
   };
-  const history = Array.from({ length: 8 }, (_, index) => ({ role: index % 2 === 0 ? "user" : "assistant", content: `HISTORY-${index}` }));
+  const history = Array.from({ length: 6 }, (_, index) => ({ role: index % 2 === 0 ? "user" : "assistant", content: `HISTORY-${index}` }));
   const groundedResponse = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -774,10 +774,20 @@ test("V0.9.9 borrower consultation supports grounded AI with official-only knowl
   assert.doesNotMatch(JSON.stringify(groundedBody), /accepted_specialty|specialty-/i);
   assert.equal(modelInputs.length, 1);
   const modelInput = JSON.stringify(modelInputs[0]);
-  assert.doesNotMatch(modelInput, /HISTORY-0|HISTORY-1/);
-  assert.match(modelInput, /HISTORY-2/);
-  assert.match(modelInput, /HISTORY-7/);
+  assert.match(modelInput, /HISTORY-0/);
+  assert.match(modelInput, /HISTORY-5/);
   assert.doesNotMatch(modelInput, /accepted_specialty|specialty-|rawStudentAid|advisorNotes|clientId|advisorId/i);
+
+  const overflowHistoryResponse = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ question: "Explain PSLF.", calculator, history: Array.from({ length: 7 }, (_, index) => ({ role: "user", content: `OVERFLOW-${index}` })) })
+  }), groundedEnv);
+  const overflowHistoryBody = await overflowHistoryResponse.json();
+  assert.equal(overflowHistoryResponse.status, 400);
+  assert.equal(overflowHistoryBody.error, "Invalid borrower consultation input.");
+  assert.ok(overflowHistoryBody.issues.some((issue: string) => /at most 6 item/.test(issue)));
+  assert.equal(modelInputs.length, 1, "oversized history must be rejected before any model call");
 
   const invalidCitationResponse = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
     method: "POST",
