@@ -1001,7 +1001,7 @@ test("V0.9.8 exports immutable comparison artifacts and shares the exact retaine
   assert.match(svgArtifact.headers.get("content-type") ?? "", /image\/svg\+xml/);
   assert.match(svg, /<svg/);
   assert.match(svg, new RegExp(snapshotId));
-  assert.match(svg, /FLRs/);
+  assert.doesNotMatch(svg, /FLRs/, "equal lowest modeled payments must remain an honest tie rather than receive an arbitrary FLRs badge");
   assert.doesNotMatch(svg, /(?:href|src)=["']https?:/i);
   assert.equal((await advisorFetch(`/api/advisor/clients/${clientId}/snapshots/${snapshotId}/artifact?format=html`, beta, env)).status, 404);
 
@@ -1015,7 +1015,7 @@ test("V0.9.8 exports immutable comparison artifacts and shares the exact retaine
   const issuedBody = await issued.json();
   assert.equal(issued.status, 201);
   assert.equal(issuedBody.selection.sourceSnapshotId, snapshotId);
-  assert.equal(issuedBody.selection.flrsPlan, originalComparison.projections.filter((p:any)=>p.eligibilityStatus!=="ineligible").sort((a:any,b:any)=>a.currentMonthlyPayment-b.currentMonthlyPayment)[0].plan);
+  assert.equal(issuedBody.selection.flrsPlan, null, "IBR and PAYE tie at the lowest modeled payment in this fixture, so FLRs must remain unset");
   const shareToken = issuedBody.selection.shareToken as string;
   const selectionId = issuedBody.selection.selectionId as string;
   const stored = d1.database.prepare("SELECT status,comparison_snapshot_json,link_opened_at,select_sign_deadline_at FROM advisor_client_plan_selections WHERE selection_id=?").get(selectionId) as {status:string;comparison_snapshot_json:string;link_opened_at:string|null;select_sign_deadline_at:string|null};
@@ -1029,7 +1029,7 @@ test("V0.9.8 exports immutable comparison artifacts and shares the exact retaine
   assert.equal(publicArtifact.status, 200);
   assert.match(publicHtml, /secure share/i);
   assert.match(publicHtml, new RegExp(selectionId));
-  assert.match(publicHtml, /FLRs/);
+  assert.doesNotMatch(publicHtml, /FLRs/, "the secure borrower artifact must preserve the same honest tie semantics");
   assert.doesNotMatch(publicHtml, /RAW-STUDENTAID|socialsecuritynumber|sessiontoken/i);
   const afterArtifact = d1.database.prepare("SELECT status,link_opened_at,select_sign_deadline_at FROM advisor_client_plan_selections WHERE selection_id=?").get(selectionId) as {status:string;link_opened_at:string|null;select_sign_deadline_at:string|null};
   assert.equal(afterArtifact.status, "issued", "artifact preview must not start the 15-minute borrower decision timer");
