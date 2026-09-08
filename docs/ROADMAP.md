@@ -476,7 +476,7 @@ Acceptance evidence:
 - FLRs remains a unique-lowest-payment label only; genuine equal-payment ties are preserved rather than broken arbitrarily.
 - Raw StudentAid text/files remain browser-local and unretained; comparison artifacts and shares contain only bounded normalized/model output required for the comparison.
 
-V0.9.8 and V0.9.9 are closed and live-accepted. No later numbered slice is selected; next work requires an explicit roadmap decision.
+V0.9.8 and V0.9.9 are closed and live-accepted. The next explicitly selected product slice is **V0.9.10 — UI/UX Architecture + Four-Step Guided Experience**, defined below.
 
 ### V0.9.9 — Expert Conversational Synthesis + Specialty Knowledge Packs — COMPLETE / LIVE VERIFIED
 
@@ -498,6 +498,49 @@ Complete the conversational layer that V0.9.7 prepared by connecting a real boun
 7. **Acceptance.** Add benchmark/regression conversations for plan comparison explanations, Parent PLUS/consolidation, FFEL/Perkins, missing facts, policy transitions, specialty-note attribution, contradictory evidence, citation validity, cross-client isolation, borrower-safe filtering, and model/fallback behavior. Production acceptance must prove the model cannot change deterministic outputs or persist case mutations without explicit existing API actions.
 
 Architecture boundary: **structured retrieval owns client facts; deterministic code owns parsing/math/chronology/eligibility; reviewed Knowledge Packs own explanatory evidence; the LLM owns conversational synthesis only.**
+
+### V0.9.10 — UI/UX Architecture + Four-Step Guided Experience — NEXT / PLANNED
+
+Modernize the borrower/advisor presentation layer without changing the accepted calculation, policy, privacy, ownership, retrieval, or synthesis authority boundaries. The architectural audit confirmed that `src/index.ts` is the primary presentation bottleneck: it contains the borrower, advisor-dashboard, and secure-share HTML/CSS/browser JavaScript templates, while `src/advisor.ts` is primarily advisor auth/domain/persistence/API logic and should not be mechanically split as though it were a second frontend file.
+
+#### V0.9.10A — Exact presentation extraction
+
+1. Move `BORROWER_UI_HTML`, `ADVISOR_UI_HTML`, and `SHARE_UI_HTML` out of `src/index.ts` into dedicated `src/ui/pages/` modules with behavior-preserving imports back into the existing response functions.
+2. Preserve the current HTML element IDs, form field names, browser-script behavior, route names, request/response shapes, CSP/no-store/security headers, share-page Cal.com exception, and all current API/MCP behavior exactly.
+3. Keep the authoritative server-side StudentAid parser and deterministic calculation/policy logic outside the UI modules. Do not move code merely because it sits adjacent to a template in `src/index.ts`.
+4. Acceptance for 0.9.10A is structural parity: strict TypeScript, the complete deterministic regression suite, Wrangler dry-run, unchanged MCP tool inventory, and production/live behavior matching the accepted V0.9.9 surfaces before any visual redesign begins.
+
+#### V0.9.10B — Internal UI decomposition
+
+1. After exact extraction is green, split page modules into presentation-focused concerns such as page shell/static markup, styles, browser behavior, calculator/result rendering, consultation view, document/history rendering, comparison/chart rendering, and browser-local StudentAid intake.
+2. Prefer one reviewed browser-local StudentAid parser implementation shared by borrower/advisor presentation paths where practical, while preserving the rule that raw StudentAid `.txt` content is parsed locally and never uploaded, retained, embedded, or placed into a shared borrower-PII retrieval corpus.
+3. Keep the deterministic intake guide and the LLM-backed estimate/case consultation as distinct authority states even if they share a coherent conversational visual language. Deterministic intake records only confirmed facts; LLM consultation explains bounded evidence and remains read-only/non-mutating.
+4. Keep chart modules as renderers of deterministic comparison outputs only. Presentation code must never become a second repayment, eligibility, chronology, forgiveness, or FLRs calculation engine.
+
+#### V0.9.10C — Four-step borrower/advisor redesign
+
+Recompose the accepted capabilities into a modern progressive workflow rather than the current long-scroll page:
+
+1. **Portfolio / Quick Start** — lead with browser-local StudentAid import and normalized portfolio review; keep manual loan entry available as a secondary/fallback disclosure.
+2. **Household & Financial Profile** — group income, AGI, filing status, region/state, legacy IDR family size, RAP dependents, eligibility timing, and fallback loan facts into responsive professional cards/grids without changing their semantics.
+3. **Guided Assistant** — present one coherent conversational workspace with clearly separated **Guided Intake** and **Ask Your Estimate / Ask This Case** states. Preserve citation/provenance, six-turn consultation history bounds, stale-context invalidation when calculator facts change, borrower-safe context narrowing, and the explicit mutation boundary.
+4. **Repayment Analysis** — present deterministic results, plan comparison, FLRs/tie behavior, monthly payment, cumulative paid, remaining balance, estimated forgiveness where supported, assumptions, artifact/export, and secure-delivery actions in a modern analysis workspace.
+
+#### UI/UX contract invariants
+
+- `?advisorClient=<clientId>` and accepted advisor action links/hashes must continue to resolve correctly; compatibility mapping may redirect them into the new step layout but cannot silently break them.
+- Existing DOM/API contracts remain frozen during extraction; element IDs and form field `name=` values may change only through an explicit compatibility-tested migration.
+- `/api/calculate`, `/api/document`, `/api/consultation`, `/api/advisor/...`, and `/api/share/...` keep their methods, validation, CSRF/owner-isolation behavior, and data contracts unless separately roadmapped.
+- Borrower consultation keeps the accepted six-turn in-memory history bound and invalidates prior estimate context when calculator facts change.
+- Raw StudentAid files/text remain browser-local and unretained. Raw award IDs, SSNs, credentials, and evidence files remain outside UI persistence/retrieval.
+- Deterministic code remains authoritative for parsing, repayment math, eligibility, chronology, comparison values, forgiveness modeling, FLRs uniqueness/tie semantics, and saved client facts.
+- LLM synthesis remains explanation-only, citation-grounded, borrower/advisor scoped, and non-mutating without explicit validated actions.
+- Core privacy and security posture remains visible and intact: no analytics/external tracking, no browser storage unless separately accepted, restrictive CSP, `Cache-Control: no-store`, same-origin APIs, frame/referrer protections, and current secure-share expiration/revocation behavior.
+- Do not introduce React/Vue or an external frontend asset/runtime dependency merely for this redesign. Preserve the current self-contained same-origin Worker architecture through the initial modularization; any new frontend build/runtime system requires its own explicit architecture decision after the extraction is stable.
+
+Architecture boundary for V0.9.10: **`src/index.ts` becomes a thin Worker/controller surface; `src/ui/*` owns presentation; `src/advisor.ts` remains advisor domain/application logic; deterministic/parser/formula modules own authoritative facts and math; knowledge/synthesis modules retain their existing evidence/LLM authority boundaries.**
+
+Acceptance for the completed V0.9.10 slice must prove desktop/mobile usability, exact advisor/borrower ownership/privacy behavior, parser/local-file boundaries, calculation/comparison parity, chat/citation behavior, artifact/share parity, unchanged MCP contract, and exact-SHA production deployment before closure.
 
 ## Deferred economic layer — x402 + signup-minted token
 
