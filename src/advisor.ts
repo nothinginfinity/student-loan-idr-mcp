@@ -598,6 +598,8 @@ type ComparisonProjection = {
   series: ComparisonPoint[];
   warnings: string[];
 };
+type ComparisonResult = ReturnType<typeof compareClientPrograms>;
+type ComparisonArtifactContext = { artifactId: string; source: "retained_snapshot" | "secure_share"; createdAt: string; policySnapshot: string; engineVersion?: string };
 
 function roundCents(value: number): number { return Math.round((value + Number.EPSILON) * 100) / 100; }
 function allocatePrincipalReduction(loans: RepaymentLoanInput[], amount: number): RepaymentLoanInput[] {
@@ -750,6 +752,34 @@ function computeFlrsPlan(comparison: { projections: Array<{ plan: string; eligib
   return winners.length === 1 ? winners[0]!.plan : null;
 }
 
+function storedComparison(value: string, label: string): ComparisonResult {
+  const comparison = parseStoredJson<ComparisonResult>(value, label);
+  if (!comparison || comparison.schema !== "student-loan-idr-advisor-comparison-v1" || !Array.isArray(comparison.projections) || typeof comparison.policySnapshot !== "string") throw new ApiError(500, `Stored ${label} failed comparison integrity checks.`);
+  return comparison;
+}
+function artifactEscape(value: unknown): string { return String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;").replace(/'/g,"&#39;"); }
+function artifactMoney(value: number | null): string { return typeof value === "number" ? `$${value.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}` : "—"; }
+function artifactHeaders(contentType: string, filename: string, attachment = false): HeadersInit { return { "content-type":contentType, "cache-control":"no-store", "x-content-type-options":"nosniff", "content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'", "content-disposition":`${attachment?"attachment":"inline"}; filename=\"${filename}\"` }; }
+function artifactSvg(comparison: ComparisonResult, context: ComparisonArtifactContext): string {
+  const rows = comparison.projections.filter((p) => typeof p.currentMonthlyPayment === "number"), max = Math.max(1,...rows.map((p)=>p.currentMonthlyPayment));
+  const flrs = computeFlrsPlan(comparison), rowHeight=74, height=150+rows.length*rowHeight, width=980;
+  const bars=rows.map((p,index)=>{const y=92+index*rowHeight,w=Math.max(2,Math.round((p.currentMonthlyPayment/max)*600)),tag=flrs===p.plan?" · FLRs":"";return `<text x="24" y="${y}" font-size="22" font-weight="700">${artifactEscape(p.plan+tag)}</text><text x="190" y="${y}" font-size="20">${artifactEscape(artifactMoney(p.currentMonthlyPayment))}/mo</text><rect x="360" y="${y-24}" width="${w}" height="30" rx="7" fill="currentColor" opacity="${p.eligibilityStatus==="ineligible"?"0.25":"0.72"}"/><text x="360" y="${y+26}" font-size="14">${artifactEscape(p.eligibilityStatus)}</text>`;}).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Repayment plan monthly payment comparison"><rect width="100%" height="100%" fill="white"/><g fill="#111827" font-family="system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"><text x="24" y="42" font-size="28" font-weight="800">Repayment plan comparison</text><text x="24" y="68" font-size="15">Modeled monthly payment · policy ${artifactEscape(context.policySnapshot)} · ${artifactEscape(context.artifactId)}</text>${bars}<text x="24" y="${height-28}" font-size="13">Modeled estimate only — not enrollment, a servicer decision, or a guarantee of eligibility or forgiveness.</text></g></svg>`;
+}
+function artifactHtml(comparison: ComparisonResult, context: ComparisonArtifactContext): string {
+  const flrs=computeFlrsPlan(comparison), rows=comparison.projections.map((p)=>`<tr><td><strong>${artifactEscape(p.plan)}</strong>${flrs===p.plan?` <span class="flrs">FLRs</span>`:""}<br><small>${artifactEscape(p.eligibilityStatus)}</small></td><td>${artifactEscape(artifactMoney(p.currentMonthlyPayment))}</td><td>${artifactEscape(artifactMoney(p.projectedBorrowerPaid))}</td><td>${artifactEscape(artifactMoney(p.projectedRemainingBalance))}</td><td>${artifactEscape(artifactMoney(p.projectedForgiveness))}</td><td>${artifactEscape(p.horizonLabel)}</td></tr>`).join("");
+  const warnings=[...new Set(comparison.projections.flatMap((p)=>p.warnings))], assumptions=comparison.assumptions.map((x)=>`<li>${artifactEscape(x)}</li>`).join(""), warningHtml=warnings.map((x)=>`<li>${artifactEscape(x)}</li>`).join("");
+  const svg=artifactSvg(comparison,context);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Repayment Comparison</title><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111827;max-width:1100px;margin:0 auto;padding:32px;line-height:1.45}h1{margin-bottom:4px}.meta{color:#4b5563;margin:0 0 20px}.notice{border:1px solid #d1d5db;border-radius:12px;padding:14px;margin:18px 0}.chart{width:100%;height:auto;border:1px solid #e5e7eb;border-radius:12px}table{border-collapse:collapse;width:100%;margin:24px 0;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e5e7eb;padding:10px 8px}.flrs{font-size:11px;font-weight:800;border:1px solid currentColor;border-radius:999px;padding:2px 6px}.print{display:inline-block;padding:9px 13px;border:1px solid #111827;border-radius:8px;font-weight:700}@media print{body{padding:0}.print{display:none}a{color:inherit;text-decoration:none}}@page{margin:14mm}</style></head><body><h1>Repayment & forgiveness comparison</h1><p class="meta">Frozen ${artifactEscape(context.source.replace(/_/g," "))} · ${artifactEscape(context.artifactId)} · policy snapshot ${artifactEscape(context.policySnapshot)} · created ${artifactEscape(context.createdAt)}${context.engineVersion?` · calculation engine ${artifactEscape(context.engineVersion)}`:""}</p><p class="print">Use your browser’s Print command to Save as PDF</p><div class="notice"><strong>Modeled estimate.</strong> This report is not loan-program enrollment, a servicer decision, legal advice, or a guarantee of eligibility or forgiveness. Null or unsupported long-term values remain withheld.</div><div class="chart">${svg}</div><table><thead><tr><th>Plan</th><th>Monthly payment</th><th>Modeled borrower paid</th><th>Remaining balance</th><th>Modeled forgiveness</th><th>Projection horizon</th></tr></thead><tbody>${rows}</tbody></table><h2>Assumptions</h2><ul>${assumptions}</ul>${warnings.length?`<h2>Plan warnings</h2><ul>${warningHtml}</ul>`:""}<p class="meta">Trace: ${artifactEscape(context.artifactId)} · comparison generated ${artifactEscape(comparison.generatedAt)} · policy ${artifactEscape(comparison.policySnapshot)}</p></body></html>`;
+}
+function comparisonArtifactResponse(request: Request, comparison: ComparisonResult, context: ComparisonArtifactContext): Response {
+  const format=(new URL(request.url).searchParams.get("format")??"html").toLowerCase();
+  const safeId=context.artifactId.replace(/[^A-Za-z0-9_-]/g,"_");
+  if(format==="html") return new Response(artifactHtml(comparison,context),{status:200,headers:artifactHeaders("text/html; charset=utf-8",`repayment-comparison-${safeId}.html`)});
+  if(format==="svg") return new Response(artifactSvg(comparison,context),{status:200,headers:artifactHeaders("image/svg+xml; charset=utf-8",`repayment-comparison-${safeId}.svg`,true)});
+  throw new ApiError(400,"Comparison artifact format must be html or svg.");
+}
+
 async function planSelectionRowByToken(database: D1DatabaseBinding, shareToken: string): Promise<PlanSelectionRow> {
   const hash = await sha(shareToken);
   const row = await database.prepare(
@@ -778,18 +808,25 @@ function shareView(row: PlanSelectionRow) {
 
 async function issueShareLink(request: Request, database: D1DatabaseBinding, a: Auth, id: string) {
   sameOrigin(request);
-  const row = await owned(database, a.account.advisor_id, id);
-  const client = parseClient(row);
-  const comparison = compareClientPrograms(client);
+  const client = parseClient(await owned(database, a.account.advisor_id, id));
+  const b=await body(request),allowed=new Set(["snapshotId"]); for(const key of Object.keys(b)) if(!allowed.has(key)) throw new ApiError(400,`Unexpected share field: ${key}.`);
+  const sourceSnapshotId=typeof b.snapshotId==="string"&&b.snapshotId.trim()?b.snapshotId.trim():undefined;
+  let comparison:ComparisonResult,basis:unknown,summary:string;
+  if(sourceSnapshotId){
+    if(!/^snapshot_[0-9a-f-]{36}$/i.test(sourceSnapshotId)) throw new ApiError(400,"snapshotId must identify a retained comparison snapshot.");
+    const snapshot=await snapshotRow(database,a.account.advisor_id,id,sourceSnapshotId);
+    if(snapshot.snapshot_kind!=="comparison") throw new ApiError(400,"Only a retained comparison snapshot can be shared.");
+    comparison=storedComparison(snapshot.result_json,"comparison snapshot"); basis=parseStoredJson<unknown>(snapshot.basis_json,"snapshot basis"); summary=`Shared retained repayment comparison · ${sourceSnapshotId} · policy snapshot ${comparison.policySnapshot}`;
+  } else { comparison=compareClientPrograms(client); basis=snapshotBasis(client); summary=repaymentTimelineSummary(client,"comparison"); }
   const shareToken = token();
   const selectionId = `selection_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
   await database.prepare(
     "INSERT INTO advisor_client_plan_selections(selection_id,owner_advisor_id,client_id,share_token_hash,status,comparison_snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)"
   ).bind(selectionId, a.account.advisor_id, id, await sha(shareToken), "issued", JSON.stringify(comparison), now, now).run();
-  await recordTimelineEvent(database, a.account.advisor_id, id, { eventKind:"comparison", name:"Shared repayment comparison", summary:repaymentTimelineSummary(client,"comparison"), sourceType:"plan_selection", sourceId:selectionId, basis:snapshotBasis(client), result:comparison, policySnapshot:comparison.policySnapshot, occurredAt:now });
+  await recordTimelineEvent(database, a.account.advisor_id, id, { eventKind:"comparison", name:"Shared repayment comparison", summary, sourceType:"plan_selection", sourceId:selectionId, basis, result:comparison, policySnapshot:comparison.policySnapshot, occurredAt:now });
   await audit(database, a.account.advisor_id, "client.plan_selection.issue", id);
-  return json({ ok: true, selection: { selectionId, shareToken, status: "issued", createdAt: now, flrsPlan: computeFlrsPlan(comparison) } }, 201);
+  return json({ ok: true, selection: { selectionId, shareToken, status: "issued", createdAt: now, flrsPlan: computeFlrsPlan(comparison), ...(sourceSnapshotId?{sourceSnapshotId}:{}) } }, 201);
 }
 
 async function listShareLinks(database: D1DatabaseBinding, a: Auth, id: string) {
@@ -908,6 +945,14 @@ function toDocumentationIncomeSources(sources: AdvisorClientIncomeSource[] | und
   return sources.map((s) => ({ ...(s.sourceType?{sourceType:s.sourceType}:{}), ...(s.name?{name:s.name}:{}), ...(s.address?{address:s.address}:{}), ...(s.grossAmount!==undefined?{grossAmount:s.grossAmount}:{}), ...(s.paymentFrequency?{paymentFrequency:s.paymentFrequency}:{}), ...(s.notes?{notes:s.notes}:{}) }));
 }
 
+async function shareComparisonArtifact(request:Request,database:D1DatabaseBinding,shareToken:string){
+  let row=await planSelectionRowByToken(database,shareToken); const now=new Date().toISOString(),expired=expireIfPastDeadline(row,now);
+  if(expired){await database.prepare("UPDATE advisor_client_plan_selections SET status=?, updated_at=? WHERE selection_id=?").bind(expired,now,row.selection_id).run();row={...row,status:expired,updated_at:now};}
+  if(row.status==="revoked"||row.status==="expired") throw new ApiError(410,"This secure comparison is no longer available. Ask the advisor for a new link.");
+  const comparison=storedComparison(row.comparison_snapshot_json,"comparison snapshot");
+  return comparisonArtifactResponse(request,comparison,{artifactId:row.selection_id,source:"secure_share",createdAt:row.created_at,policySnapshot:comparison.policySnapshot});
+}
+
 async function shareDocument(database: D1DatabaseBinding, shareToken: string) {
   const row = await planSelectionRowByToken(database, shareToken);
   if (row.status !== "signed" && row.status !== "booked") throw new ApiError(409, "A supporting document is available after you confirm a plan.");
@@ -927,13 +972,14 @@ export async function handleShareApi(request: Request, env: AdvisorWorkspaceEnv)
   const database = db(env);
   try {
     const u = new URL(request.url);
-    const m = u.pathname.match(/^\/api\/share\/([A-Za-z0-9_-]{16,128})(\/select|\/sign|\/document)?$/);
+    const m = u.pathname.match(/^\/api\/share\/([A-Za-z0-9_-]{16,128})(\/select|\/sign|\/document|\/artifact)?$/);
     if (!m) return json({ ok: false, error: "Share endpoint not found." }, 404);
     const shareToken = m[1]!;
     if (request.method === "GET" && !m[2]) return await viewShare(database, shareToken);
     if (request.method === "POST" && m[2] === "/select") return await selectSharePlan(request, database, shareToken);
     if (request.method === "POST" && m[2] === "/sign") return await signSharePlan(request, database, shareToken, env);
     if (request.method === "GET" && m[2] === "/document") return await shareDocument(database, shareToken);
+    if (request.method === "GET" && m[2] === "/artifact") return await shareComparisonArtifact(request, database, shareToken);
     return json({ ok: false, error: "Share endpoint not found." }, 404);
   } catch (error) { if (error instanceof ApiError) return json({ ok: false, error: error.message }, error.status); return json({ ok: false, error: "Share link request failed." }, 500); }
 }
@@ -973,6 +1019,7 @@ async function deleteArtifact(request:Request,database:D1DatabaseBinding,a:Auth,
 async function listSnapshots(database:D1DatabaseBinding,a:Auth,id:string){ await owned(database,a.account.advisor_id,id); const rows=await database.prepare("SELECT owner_advisor_id,client_id,snapshot_id,snapshot_kind,name,basis_json,result_json,policy_snapshot,engine_version,created_at FROM advisor_client_calculation_snapshots WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC LIMIT 200").bind(a.account.advisor_id,id).all<SnapshotRow>(); return json({ok:true,snapshots:rows.results.map(snapshotSummary)}); }
 async function retainSnapshot(request:Request,database:D1DatabaseBinding,a:Auth,id:string){ sameOrigin(request); const client=parseClient(await owned(database,a.account.advisor_id,id)), b=await body(request), allowed=new Set(["name","snapshotKind"]); for(const k of Object.keys(b)) if(!allowed.has(k)) throw new ApiError(400,`Unexpected retained snapshot field: ${k}.`); const name=retainedName(b.name,"Snapshot"), kind=String(b.snapshotKind); if(kind!=="calculation"&&kind!=="comparison") throw new ApiError(400,"Snapshot kind must be calculation or comparison."); const saved=await persistSnapshot(database,a.account.advisor_id,client,kind as "calculation"|"comparison",name); await audit(database,a.account.advisor_id,"client.snapshot.retain",id); return json({ok:true,...saved},201); }
 async function rerunSnapshot(request:Request,database:D1DatabaseBinding,a:Auth,id:string,snapshotId:string){ sameOrigin(request); const row=await snapshotRow(database,a.account.advisor_id,id,snapshotId),basis=parseStoredJson<JsonObject>(row.basis_json,"snapshot basis"),client=clientFromSnapshotBasis(row,basis),result=runSnapshot(row.snapshot_kind,client),policySnapshot=String((result as {policySnapshot?:unknown}).policySnapshot??row.policy_snapshot),newSnapshotId=`snapshot_${crypto.randomUUID()}`,createdAt=new Date().toISOString(),name=`${row.name} · rerun`.slice(0,120); await database.prepare("INSERT INTO advisor_client_calculation_snapshots(owner_advisor_id,client_id,snapshot_id,snapshot_kind,name,basis_json,result_json,policy_snapshot,engine_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(a.account.advisor_id,id,newSnapshotId,row.snapshot_kind,name,row.basis_json,JSON.stringify(result),policySnapshot,ENGINE_VERSION,createdAt).run(); const event=await recordTimelineEvent(database,a.account.advisor_id,id,{eventKind:row.snapshot_kind,name,summary:repaymentTimelineSummary(client,row.snapshot_kind),sourceType:"snapshot_rerun",sourceId:newSnapshotId,basis,result,policySnapshot,occurredAt:createdAt}); await audit(database,a.account.advisor_id,"client.snapshot.rerun",id); return json({ok:true,rerun:{snapshotId:newSnapshotId,sourceSnapshotId:snapshotId,name,snapshotKind:row.snapshot_kind,basis:"retained_snapshot_basis",result,policySnapshot,engineVersion:ENGINE_VERSION,generatedAt:createdAt},snapshot:{snapshotId:newSnapshotId,snapshotKind:row.snapshot_kind,name,basis,result,policySnapshot,engineVersion:ENGINE_VERSION,createdAt},event},201); }
+async function snapshotArtifact(request:Request,database:D1DatabaseBinding,a:Auth,id:string,snapshotId:string){ const row=await snapshotRow(database,a.account.advisor_id,id,snapshotId); if(row.snapshot_kind!=="comparison") throw new ApiError(400,"Only comparison snapshots have a borrower comparison artifact."); const comparison=storedComparison(row.result_json,"comparison snapshot"); await audit(database,a.account.advisor_id,"client.snapshot.artifact",id); return comparisonArtifactResponse(request,comparison,{artifactId:row.snapshot_id,source:"retained_snapshot",createdAt:row.created_at,policySnapshot:row.policy_snapshot,engineVersion:row.engine_version}); }
 async function deleteSnapshot(request:Request,database:D1DatabaseBinding,a:Auth,id:string,snapshotId:string){ sameOrigin(request); await snapshotRow(database,a.account.advisor_id,id,snapshotId); const result=await database.prepare("DELETE FROM advisor_client_calculation_snapshots WHERE owner_advisor_id=? AND client_id=? AND snapshot_id=?").bind(a.account.advisor_id,id,snapshotId).run(); if((result.meta?.changes??0)!==1) throw new ApiError(404,"Retained snapshot not found or not accessible."); await audit(database,a.account.advisor_id,"client.snapshot.delete",id); return json({ok:true,deletedSnapshotId:snapshotId}); }
 function lifecycle(value: unknown): AdvisorClientLifecycleState { if (["active","awaiting_borrower_review","completed","archived"].includes(String(value))) return value as AdvisorClientLifecycleState; throw new ApiError(400,"Invalid client lifecycle state."); }
 function readiness(value: unknown): AdvisorClientReadinessState { if (["needs_evidence","document_ready","application_ready"].includes(String(value))) return value as AdvisorClientReadinessState; throw new ApiError(400,"Invalid client readiness state."); }
@@ -1114,8 +1161,8 @@ export async function handleAdvisorApi(request: Request, env: AdvisorWorkspaceEn
       if(planSelectionMatch&&request.method==="POST") return await revokeShareLink(request,database,a,r.id,planSelectionMatch[1]!);
       if(request.method==="GET"&&r.suffix==="/snapshots") return await listSnapshots(database,a,r.id);
       if(request.method==="POST"&&r.suffix==="/snapshots") return await retainSnapshot(request,database,a,r.id);
-      const snapshotMatch=r.suffix.match(/^\/snapshots\/(snapshot_[0-9a-f-]{36})(\/rerun)?$/i);
-      if(snapshotMatch){ if(request.method==="GET"&&!snapshotMatch[2]) return json({ok:true,snapshot:snapshotView(await snapshotRow(database,a.account.advisor_id,r.id,snapshotMatch[1]!))}); if(request.method==="POST"&&snapshotMatch[2]==="/rerun") return await rerunSnapshot(request,database,a,r.id,snapshotMatch[1]!); if(request.method==="DELETE"&&!snapshotMatch[2]) return await deleteSnapshot(request,database,a,r.id,snapshotMatch[1]!); }
+      const snapshotMatch=r.suffix.match(/^\/snapshots\/(snapshot_[0-9a-f-]{36})(\/rerun|\/artifact)?$/i);
+      if(snapshotMatch){ if(request.method==="GET"&&!snapshotMatch[2]) return json({ok:true,snapshot:snapshotView(await snapshotRow(database,a.account.advisor_id,r.id,snapshotMatch[1]!))}); if(request.method==="GET"&&snapshotMatch[2]==="/artifact") return await snapshotArtifact(request,database,a,r.id,snapshotMatch[1]!); if(request.method==="POST"&&snapshotMatch[2]==="/rerun") return await rerunSnapshot(request,database,a,r.id,snapshotMatch[1]!); if(request.method==="DELETE"&&!snapshotMatch[2]) return await deleteSnapshot(request,database,a,r.id,snapshotMatch[1]!); }
       if(request.method==="DELETE"&&r.suffix==="") return await deleteClient(request,database,a,r.id);
       if(request.method==="GET"&&r.suffix==="/export"){const row=await owned(database,a.account.advisor_id,r.id), artifacts=await database.prepare("SELECT owner_advisor_id,client_id,artifact_id,artifact_kind,name,template_request_json,document_text,document_html,engine_version,created_at FROM advisor_client_artifacts WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC").bind(a.account.advisor_id,r.id).all<ArtifactRow>(), snapshots=await database.prepare("SELECT owner_advisor_id,client_id,snapshot_id,snapshot_kind,name,basis_json,result_json,policy_snapshot,engine_version,created_at FROM advisor_client_calculation_snapshots WHERE owner_advisor_id=? AND client_id=? ORDER BY created_at DESC").bind(a.account.advisor_id,r.id).all<SnapshotRow>(), timeline=await database.prepare("SELECT owner_advisor_id,client_id,event_id,event_kind,name,summary,source_type,source_id,basis_json,result_json,policy_snapshot,engine_version,starred,annotation,occurred_at,updated_at FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=? ORDER BY occurred_at DESC,event_id DESC").bind(a.account.advisor_id,r.id).all<TimelineRow>();await audit(database,a.account.advisor_id,"client.export",r.id);const client=parseClient(row);return json({ok:true,schema:"student-loan-idr-advisor-client-export-v3",exportedAt:new Date().toISOString(),client,caseContext:deriveAdvisorClientCaseContext(client),timelineEvents:timeline.results.map(timelineView),retainedArtifacts:artifacts.results.map(artifactView),calculationSnapshots:snapshots.results.map(snapshotView)});}
     }
