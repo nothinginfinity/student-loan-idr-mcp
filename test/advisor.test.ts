@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import worker from "../src/index.ts";
+import { KNOWLEDGE_PACKS, validateKnowledgePacks } from "../src/knowledge.ts";
 import type { D1DatabaseBinding, D1PreparedStatement } from "../src/advisor.ts";
 
 class SqliteD1Statement implements D1PreparedStatement {
@@ -823,7 +825,24 @@ test("V0.9.6 derives a minimized owner-scoped advisor action dashboard and deter
   assert.ok(completedDashboard.counts.byState.completed >= 1);
 });
 
-test("V0.9.7 assembles current-policy evidence packets without raw FSA embeddings, cross-client leakage, or consultation mutation", async () => {
+test("V0.9.9 Knowledge Packs preserve exact content identity and authority tiers", () => {
+  assert.deepEqual(validateKnowledgePacks(), []);
+  assert.equal(KNOWLEDGE_PACKS.length, 2);
+  const official = KNOWLEDGE_PACKS.find((pack) => pack.authorityTier === "official_federal");
+  const specialty = KNOWLEDGE_PACKS.find((pack) => pack.authorityTier === "accepted_specialty");
+  assert.ok(official && specialty);
+  assert.ok(official.items.some((item) => item.id === "official-pslf-basics"));
+  assert.ok(official.items.some((item) => item.id === "official-default-resolution"));
+  assert.ok(specialty.items.some((item) => item.id === "specialty-comparison"));
+  assert.ok(specialty.items.every((item) => item.audiences.includes("advisor") && !item.audiences.includes("borrower")));
+  for (const pack of KNOWLEDGE_PACKS) for (const item of pack.items) {
+    assert.equal(createHash("sha256").update(item.content, "utf8").digest("hex"), item.contentHash, `${item.id} content hash must bind exact reviewed text`);
+    if (item.authorityTier === "official_federal") assert.ok(item.sourceUrl?.startsWith("https://"), `${item.id} must carry an official source URL`);
+    else assert.equal(item.sourceKind, "accepted_internal");
+  }
+});
+
+test("V0.9.9 hybrid knowledge and grounded advisor consultation remain exact-owner scoped and non-mutating", async () => {
   const d1 = new SqliteD1();
   d1.database.exec(migration);
   d1.database.exec("PRAGMA foreign_keys = ON");
@@ -849,6 +868,10 @@ test("V0.9.7 assembles current-policy evidence packets without raw FSA embedding
   assert.equal(metadataBody.schema, "student-loan-idr-retrieval-metadata-v1");
   assert.equal(metadataBody.policySnapshot, "2026-08-27");
   assert.equal(metadataBody.dictionaryVersion, "2026-09-05-v2");
+  assert.equal(metadataBody.knowledgePackVersion, "2026-09-08-v1");
+  assert.equal(metadataBody.knowledgePacks.length, 2);
+  assert.ok(metadataBody.knowledgePacks.some((pack:any)=>pack.authorityTier==="official_federal"));
+  assert.ok(metadataBody.knowledgePacks.some((pack:any)=>pack.authorityTier==="accepted_specialty"));
   const awardId = metadataBody.dictionary.find((entry:any)=>entry.id==="loan-award-id");
   assert.equal(awardId.retention, "masked_only");
   const loanType = metadataBody.dictionary.find((entry:any)=>entry.id==="loan-type-code");
@@ -887,7 +910,10 @@ test("V0.9.7 assembles current-policy evidence packets without raw FSA embedding
   assert.equal(packet.schemaVersion, 1);
   assert.equal(packet.intent, "eligibility_review");
   assert.equal(packet.policySnapshot, "2026-08-27");
-  assert.equal(packet.retrievalMode, "structured_client_exact_keyword_policy");
+  assert.equal(packet.retrievalMode, "structured_client_hybrid_knowledge");
+  assert.ok(packet.knowledge.length > 0);
+  assert.ok(packet.knowledge.every((item:any)=>["official_federal","accepted_specialty"].includes(item.authorityTier)));
+  assert.ok(packet.knowledge.some((item:any)=>item.authorityTier==="official_federal"));
   assert.equal(packet.privacy.rawStudentAidIncluded, false);
   assert.equal(packet.privacy.rawStudentAidEmbedded, false);
   assert.equal(packet.privacy.sharedBorrowerPiiCorpus, false);
@@ -913,6 +939,8 @@ test("V0.9.7 assembles current-policy evidence packets without raw FSA embedding
   assert.equal(missingBody.consultation.schema, "student-loan-idr-advisor-consultation-v1");
   assert.equal(missingBody.consultation.mutationApplied, false);
   assert.equal(missingBody.consultation.synthesisMode, "deterministic_evidence_summary");
+  assert.equal(missingBody.consultation.fallbackReason, "ai_binding_unavailable");
+  assert.ok(Array.isArray(missingBody.consultation.citations));
   assert.match(missingBody.consultation.answer, /still missing/i);
   assert.ok(missingBody.consultation.evidence.missingInformation.some((item:any)=>item.key==="current_income"&&item.blocking));
 
@@ -933,10 +961,33 @@ test("V0.9.7 assembles current-policy evidence packets without raw FSA embedding
   assert.equal(compareBody.consultation.mutationApplied, false);
   assert.ok(compareBody.consultation.proposedActions.length <= 1);
 
+  let modelPrompt = "";
+  const groundedEnv = { ...env, AI:{ run:async (_model:string,input:any) => { modelPrompt = JSON.stringify(input.messages); return { response:"The deterministic comparison keeps IBR as the lowest modeled payment in this case; review the assumptions before acting. [specialty-comparison]" }; } } };
+  const grounded = await advisorFetch(`/api/advisor/clients/${clientId}/consultation`, alpha, groundedEnv, { method:"POST", body:JSON.stringify({ question:"Compare the modeled plans and explain the tradeoff.", policySnapshot:"2026-08-27", history:[{role:"user",content:"I care most about monthly flexibility."},{role:"assistant",content:"I can explain the deterministic comparison."}] }) });
+  const groundedBody = await grounded.json();
+  assert.equal(grounded.status, 200);
+  assert.equal(groundedBody.consultation.synthesisMode, "workers_ai_grounded");
+  assert.equal(groundedBody.consultation.model.provider, "workers-ai");
+  assert.ok(groundedBody.consultation.citations.some((citation:any)=>citation.id==="specialty-comparison"&&citation.authorityTier==="accepted_specialty"));
+  assert.match(groundedBody.consultation.answer, /\[specialty-comparison\]/);
+  assert.match(modelPrompt, /monthly flexibility/);
+  assert.doesNotMatch(modelPrompt, /beta-owner-secret@example\.test|sessiontoken|rawStudentAid|RAW-STUDENTAID/i);
+
+  const invalidCitationEnv = { ...env, AI:{ run:async () => ({ response:"This answer cites evidence that was never supplied. [invented-policy-card]" }) } };
+  const invalidCitation = await advisorFetch(`/api/advisor/clients/${clientId}/consultation`, alpha, invalidCitationEnv, { method:"POST", body:JSON.stringify({ question:"Explain the comparison." }) });
+  const invalidCitationBody = await invalidCitation.json();
+  assert.equal(invalidCitation.status, 200);
+  assert.equal(invalidCitationBody.consultation.synthesisMode, "deterministic_evidence_summary");
+  assert.equal(invalidCitationBody.consultation.fallbackReason, "model_unknown_citation");
+  assert.doesNotMatch(invalidCitationBody.consultation.answer, /invented-policy-card/);
+
+  const tooMuchHistory = await advisorFetch(`/api/advisor/clients/${clientId}/consultation`, alpha, env, { method:"POST", body:JSON.stringify({ question:"Explain IBR", history:Array.from({length:7},()=>({role:"user",content:"turn"})) }) });
+  assert.equal(tooMuchHistory.status, 400);
+
   const after = await advisorFetch(`/api/advisor/clients/${clientId}`, alpha, env).then((response)=>response.json());
   const afterTimeline = (d1.database.prepare("SELECT COUNT(*) AS n FROM advisor_client_timeline_events WHERE owner_advisor_id=? AND client_id=?").get(alpha.advisor.advisorId,clientId) as {n:number}).n;
   assert.equal(after.client.updatedAt, completeBody.client.updatedAt, "retrieval/consultation must not mutate saved client state");
-  assert.equal(afterTimeline, beforeTimeline, "retrieval/consultation must not create case history");
+  assert.equal(afterTimeline, beforeTimeline, "retrieval/consultation must not create case history, including model-backed consultation");
 });
 
 test("V0.9.8 exports immutable comparison artifacts and shares the exact retained snapshot", async () => {
