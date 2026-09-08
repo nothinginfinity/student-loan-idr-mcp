@@ -1,0 +1,76 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "student-loan-idr-mcp",
+    "branch": "main",
+    "path": "src/types.ts"
+  },
+  "source_sha": "007a18034f2d8a1fe6b3dc13bc332a65d324c3a2",
+  "result_sha": "ef492987a1a63c264ce7f9f8bdc88c36dd6bb613",
+  "commit_sha": "97856101b552128f59ef195ededb400784797a74",
+  "diff": {
+    "before_length": 20734,
+    "after_length": 22238,
+    "delta": 1504,
+    "common_prefix": 15552,
+    "common_suffix": 3632,
+    "before_fingerprint": "5e9b0b47",
+    "after_fingerprint": "29f11dbf"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_1",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_2",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_3",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-08T05:05:17.530Z"
+}
