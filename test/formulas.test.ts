@@ -531,6 +531,7 @@ test("borrower UI serves a privacy-safe same-origin calculator shell", async () 
   assert.match(html, /Calculator facts changed\. Recalculate/);
   assert.doesNotMatch(html, /\/api\/import/);
   assert.match(html, /no analytics, no external assets, and no browser storage/i);
+  assert.doesNotMatch(html, /localStorage|sessionStorage/);
   assert.doesNotMatch(html, /<(?:img|script|link)[^>]+(?:src|href)="https?:\/\//i);
 });
 
@@ -708,7 +709,7 @@ test("borrower calculator API is same-origin and keeps the 64 KiB body ceiling",
   assert.equal(oversized.status, 413);
 });
 
-test("V0.9.7 borrower consultation is deterministic, reviewed-policy grounded, browser-local, and nonpersistent", async () => {
+test("V0.9.9 borrower consultation supports grounded AI with official-only knowledge, bounded history, and deterministic fallback", async () => {
   const calculator = {
     income: [{ cadence: "annual", amount: 50000 }],
     adjustedGrossIncomeOverride: 50000,
@@ -746,6 +747,48 @@ test("V0.9.7 borrower consultation is deterministic, reviewed-policy grounded, b
   assert.ok(body.consultation.policyEvidence.every((entry: { policySnapshot: string; sourceDocumentHash: string; contentHash: string }) => entry.policySnapshot === "2026-08-27" && /^[0-9a-f]{64}$/.test(entry.sourceDocumentHash) && /^[0-9a-f]{64}$/.test(entry.contentHash)));
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.doesNotMatch(JSON.stringify(body), /clientId|advisorId|advisorNotes|VERY-SENSITIVE/i);
+  assert.equal(body.consultation.fallbackReason, "ai_binding_unavailable");
+  assert.ok(body.consultation.knowledge.every((entry: { authorityTier: string }) => entry.authorityTier === "official_federal"));
+
+  const modelInputs: any[] = [];
+  const groundedEnv = {
+    AI: {
+      run: async (_model: string, input: any) => {
+        modelInputs.push(input);
+        return { response: "PSLF generally requires qualifying Direct Loans, qualifying employment, and 120 qualifying monthly payments. [official-pslf-basics]" };
+      }
+    }
+  };
+  const history = Array.from({ length: 8 }, (_, index) => ({ role: index % 2 === 0 ? "user" : "assistant", content: `HISTORY-${index}` }));
+  const groundedResponse = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ question: "What does PSLF require for qualifying employment and payments?", calculator, history })
+  }), groundedEnv);
+  const groundedBody = await groundedResponse.json();
+  assert.equal(groundedResponse.status, 200);
+  assert.equal(groundedBody.consultation.synthesisMode, "workers_ai_grounded");
+  assert.equal(groundedBody.consultation.model.provider, "workers-ai");
+  assert.ok(groundedBody.consultation.citations.some((citation: { id: string }) => citation.id === "official-pslf-basics"));
+  assert.ok(groundedBody.consultation.knowledge.every((entry: { authorityTier: string }) => entry.authorityTier === "official_federal"));
+  assert.doesNotMatch(JSON.stringify(groundedBody), /accepted_specialty|specialty-/i);
+  assert.equal(modelInputs.length, 1);
+  const modelInput = JSON.stringify(modelInputs[0]);
+  assert.doesNotMatch(modelInput, /HISTORY-0|HISTORY-1/);
+  assert.match(modelInput, /HISTORY-2/);
+  assert.match(modelInput, /HISTORY-7/);
+  assert.doesNotMatch(modelInput, /accepted_specialty|specialty-|rawStudentAid|advisorNotes|clientId|advisorId/i);
+
+  const invalidCitationResponse = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ question: "What does PSLF require?", calculator })
+  }), { AI: { run: async () => ({ response: "Use this invented rule. [specialty-provenance]" }) } });
+  const invalidCitationBody = await invalidCitationResponse.json();
+  assert.equal(invalidCitationResponse.status, 200);
+  assert.equal(invalidCitationBody.consultation.synthesisMode, "deterministic_evidence_summary");
+  assert.equal(invalidCitationBody.consultation.fallbackReason, "model_unknown_citation");
+  assert.equal(invalidCitationBody.consultation.mutationApplied, false);
 
   const eligibility = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", {
     method: "POST",
@@ -770,7 +813,7 @@ test("V0.9.7 borrower consultation is deterministic, reviewed-policy grounded, b
   assert.ok(eligibilityBody.consultation.policyEvidence.some((entry: { id: string }) => entry.id === "ibr-pre-july-2026"));
 });
 
-test("V0.9.7 borrower consultation fails closed on stale policy, cross-origin, raw-import/advisor fields, and oversized bodies", async () => {
+test("V0.9.9 borrower consultation fails closed on stale policy, cross-origin, raw-import/advisor fields, and oversized bodies", async () => {
   const calculator = { income: [{ cadence: "annual", amount: 50000 }], region: "contiguous_us", familySize: 2, plans: ["RAP"] };
   const stale = await worker.fetch(new Request("https://student-loan-idr-mcp.example/api/consultation", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({question:"Explain RAP",policySnapshot:"2026-01-01",calculator}) }), {});
   assert.equal(stale.status, 409);
