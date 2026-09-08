@@ -368,6 +368,11 @@ jobs:
             assert(health.advisor_workspace?.structured_client_retrieval_v1 === true, 'V0.9.7 structured client retrieval capability flag missing');
             assert(health.advisor_workspace?.reviewed_policy_rag_v1 === true, 'V0.9.7 reviewed policy RAG capability flag missing');
             assert(health.advisor_workspace?.chat_native_advisor_consultation_v1 === true, 'V0.9.7 chat-native advisor consultation capability flag missing');
+            assert(health.advisor_workspace?.grounded_workers_ai_synthesis_v1 === true, 'V0.9.9 grounded Workers AI synthesis capability flag missing');
+            assert(health.advisor_workspace?.versioned_knowledge_packs_v1 === true, 'V0.9.9 versioned Knowledge Pack capability flag missing');
+            assert(health.advisor_workspace?.advisor_specialty_knowledge_v1 === true, 'V0.9.9 advisor specialty knowledge capability flag missing');
+            assert(health.advisor_workspace?.borrower_official_knowledge_only === true, 'V0.9.9 borrower official-only knowledge boundary missing');
+            assert(health.advisor_workspace?.bounded_consultation_history_turns === 6, 'V0.9.9 consultation history bound mismatch');
             assert(health.advisor_workspace?.deterministic_math_authority === true, 'V0.9.7 deterministic math authority flag missing');
             assert(health.advisor_workspace?.raw_student_aid_embeddings === false, 'V0.9.7 raw StudentAid embedding boundary mismatch');
             assert(health.advisor_workspace?.shared_borrower_pii_corpus === false, 'V0.9.7 shared borrower PII corpus boundary mismatch');
@@ -389,18 +394,31 @@ jobs:
               loan: { newBorrowerOnOrAfterJuly1_2014: true, eligibilityLoans: [{ loanType: 'direct_unsubsidized', disbursementPeriod: 'before_2026_07_01' }] },
               plans: ['IBR', 'RAP']
             };
-            const borrowerConsultationResponse = await fetchChecked(`${base}/api/consultation`, {
-              method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
-              body: JSON.stringify({ question: 'Compare the selected plans and tell me the lowest modeled monthly payment.', policySnapshot: '2026-08-27', calculator: borrowerCalculator })
-            });
-            const borrowerConsultationText = await borrowerConsultationResponse.text();
-            const borrowerConsultation = JSON.parse(borrowerConsultationText);
-            assert(borrowerConsultationResponse.status === 200 && borrowerConsultation?.consultation?.schema === 'student-loan-idr-borrower-consultation-v1', 'V0.9.7 live borrower consultation failed');
-            assert(borrowerConsultation.consultation.contextMode === 'browser_local_calculator' && borrowerConsultation.consultation.synthesisMode === 'deterministic_evidence_summary', 'V0.9.7 live borrower consultation context/synthesis mismatch');
-            assert(borrowerConsultation.consultation.privacy?.persisted === false && borrowerConsultation.consultation.privacy?.advisorDataIncluded === false && borrowerConsultation.consultation.privacy?.rawStudentAidIncluded === false && borrowerConsultation.consultation.privacy?.clientLookup === false, 'V0.9.7 live borrower consultation privacy boundary mismatch');
-            assert(borrowerConsultation.consultation.mutationApplied === false, 'V0.9.7 live borrower consultation must be non-mutating');
-            assert(Array.isArray(borrowerConsultation.consultation.policyEvidence) && borrowerConsultation.consultation.policyEvidence.every((entry) => entry.policySnapshot === '2026-08-27'), 'V0.9.7 live borrower policy evidence snapshot mismatch');
-            assert(!/clientId|advisorId|advisorNotes|LIVE-SENSITIVE/.test(borrowerConsultationText), 'V0.9.7 live borrower consultation leaked advisor/client data');
+            const borrowerHistory = Array.from({ length: 6 }, (_, index) => ({ role: index % 2 === 0 ? 'user' : 'assistant', content: `Live borrower history ${index + 1}` }));
+            let borrowerConsultationResponse;
+            let borrowerConsultationText = '';
+            let borrowerConsultation;
+            for (let attempt = 1; attempt <= 3; attempt += 1) {
+              borrowerConsultationResponse = await fetchChecked(`${base}/api/consultation`, {
+                method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
+                body: JSON.stringify({ question: 'What does PSLF require for qualifying employment and monthly payments?', policySnapshot: '2026-08-27', calculator: borrowerCalculator, history: borrowerHistory })
+              });
+              borrowerConsultationText = await borrowerConsultationResponse.text();
+              borrowerConsultation = JSON.parse(borrowerConsultationText);
+              if (borrowerConsultationResponse.status === 200 && borrowerConsultation?.consultation?.synthesisMode === 'workers_ai_grounded') break;
+              if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750));
+            }
+            assert(borrowerConsultationResponse.status === 200 && borrowerConsultation?.consultation?.schema === 'student-loan-idr-borrower-consultation-v1', 'V0.9.9 live borrower consultation failed');
+            assert(borrowerConsultation.consultation.contextMode === 'browser_local_calculator' && borrowerConsultation.consultation.synthesisMode === 'workers_ai_grounded', `V0.9.9 live borrower grounded synthesis failed: ${borrowerConsultation.consultation.fallbackReason || 'unknown'}`);
+            assert(borrowerConsultation.consultation.model?.provider === 'workers-ai', 'V0.9.9 live borrower model provenance missing');
+            const borrowerKnowledgeIds = new Set((borrowerConsultation.consultation.knowledge || []).map((entry) => entry.id));
+            assert(borrowerKnowledgeIds.size > 0 && borrowerConsultation.consultation.knowledge.every((entry) => entry.authorityTier === 'official_federal'), 'V0.9.9 borrower consultation crossed the official-only knowledge boundary');
+            assert(Array.isArray(borrowerConsultation.consultation.citations) && borrowerConsultation.consultation.citations.length > 0 && borrowerConsultation.consultation.citations.every((entry) => borrowerKnowledgeIds.has(entry.id)), 'V0.9.9 borrower consultation citations are missing or outside supplied knowledge');
+            assert(!/accepted_specialty|specialty-/.test(borrowerConsultationText), 'V0.9.9 borrower consultation leaked specialty advisor knowledge');
+            assert(borrowerConsultation.consultation.privacy?.persisted === false && borrowerConsultation.consultation.privacy?.advisorDataIncluded === false && borrowerConsultation.consultation.privacy?.rawStudentAidIncluded === false && borrowerConsultation.consultation.privacy?.clientLookup === false, 'V0.9.9 live borrower consultation privacy boundary mismatch');
+            assert(borrowerConsultation.consultation.mutationApplied === false, 'V0.9.9 live borrower consultation must be non-mutating');
+            assert(Array.isArray(borrowerConsultation.consultation.policyEvidence) && borrowerConsultation.consultation.policyEvidence.every((entry) => entry.policySnapshot === '2026-08-27'), 'V0.9.9 live borrower policy evidence snapshot mismatch');
+            assert(!/clientId|advisorId|advisorNotes|LIVE-SENSITIVE/.test(borrowerConsultationText), 'V0.9.9 live borrower consultation leaked advisor/client data');
             const borrowerStale = await fetchChecked(`${base}/api/consultation`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Explain IBR', policySnapshot: '2026-01-01', calculator: borrowerCalculator }) });
             assert(borrowerStale.status === 409, 'V0.9.7 live borrower stale policy must fail closed');
             const borrowerCrossOrigin = await fetchChecked(`${base}/api/consultation`, { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Explain IBR', calculator: borrowerCalculator }) });
@@ -615,9 +633,20 @@ jobs:
             assert(betaRetrieval.response.status === 404 && betaRetrieval.body?.error === 'Client not found or not accessible.', 'V0.9.7 cross-advisor retrieval must fail generically');
             const timelineBeforeConsult = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline`, {}, alpha);
             assert(timelineBeforeConsult.response.status === 200 && timelineBeforeConsult.body?.events?.length === 0, 'V0.9.7 pre-consult timeline fixture mismatch');
-            const consultation = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/consultation`, { method: 'POST', body: JSON.stringify({ question: 'What should I ask the borrower next?', policySnapshot: '2026-08-27' }) }, alpha);
-            assert(consultation.response.status === 200 && consultation.body?.consultation?.schema === 'student-loan-idr-advisor-consultation-v1', 'V0.9.7 consultation failed');
-            assert(consultation.body?.consultation?.mutationApplied === false && consultation.body?.consultation?.synthesisMode === 'deterministic_evidence_summary', 'V0.9.7 consultation mutation/synthesis boundary mismatch');
+            let consultation;
+            for (let attempt = 1; attempt <= 3; attempt += 1) {
+              consultation = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/consultation`, { method: 'POST', body: JSON.stringify({ question: 'How should I keep fact provenance clear and ask the smallest useful follow-up question for this borrower?', policySnapshot: '2026-08-27' }) }, alpha);
+              if (consultation.response.status === 200 && consultation.body?.consultation?.synthesisMode === 'workers_ai_grounded') break;
+              if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750));
+            }
+            assert(consultation.response.status === 200 && consultation.body?.consultation?.schema === 'student-loan-idr-advisor-consultation-v1', 'V0.9.9 advisor consultation failed');
+            assert(consultation.body?.consultation?.mutationApplied === false && consultation.body?.consultation?.synthesisMode === 'workers_ai_grounded', `V0.9.9 advisor grounded synthesis failed: ${consultation.body?.consultation?.fallbackReason || 'unknown'}`);
+            assert(consultation.body?.consultation?.model?.provider === 'workers-ai', 'V0.9.9 advisor model provenance missing');
+            assert(consultation.body?.consultation?.evidence?.retrievalMode === 'structured_client_hybrid_knowledge', 'V0.9.9 advisor hybrid retrieval mode mismatch');
+            const advisorKnowledge = consultation.body?.consultation?.evidence?.knowledge || [];
+            const advisorKnowledgeIds = new Set(advisorKnowledge.map((entry) => entry.id));
+            assert(advisorKnowledge.some((entry) => entry.authorityTier === 'accepted_specialty'), 'V0.9.9 advisor specialty knowledge was not retrieved');
+            assert(Array.isArray(consultation.body?.consultation?.citations) && consultation.body.consultation.citations.length > 0 && consultation.body.consultation.citations.every((entry) => advisorKnowledgeIds.has(entry.id)), 'V0.9.9 advisor citations are missing or outside supplied knowledge');
             const timelineAfterConsult = await advisorRequest(`/api/advisor/clients/${liveClient.clientId}/timeline`, {}, alpha);
             assert(timelineAfterConsult.response.status === 200 && timelineAfterConsult.body?.events?.length === 0, 'V0.9.7 consultation must not create timeline history');
 
