@@ -1,0 +1,43 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "student-loan-idr-mcp",
+    "branch": "main",
+    "path": "test/formulas.test.ts"
+  },
+  "source_sha": "d84f74c6812c2a19d11436ab9ce7ad5c80350c51",
+  "result_sha": "4ba193b733471450653a61c8459f554ded5304c6",
+  "commit_sha": "b6ecbd4ddad494aa2217bd285b5847e85b80ed42",
+  "diff": {
+    "before_length": 53102,
+    "after_length": 53102,
+    "delta": 0,
+    "common_prefix": 47059,
+    "common_suffix": 6042,
+    "before_fingerprint": "c9ac9487",
+    "after_fingerprint": "d84e8c1a"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-08T04:21:17.078Z"
+}
