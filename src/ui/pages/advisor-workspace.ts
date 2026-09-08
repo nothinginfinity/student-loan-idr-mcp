@@ -246,3 +246,25 @@ export const ADVISOR_UI_HTML = String.raw`<!doctype html>
     const numericFields = {
       "Loan Amount":"originalAmount", "Loan Disbursed Amount":"disbursedAmount", "Loan Canceled Amount":"canceledAmount", "Loan Outstanding Principal Balance":"outstandingPrincipal", "Loan Outstanding Interest Balance":"outstandingInterest", "Loan Interest Rate":"interestRatePercent", "Loan Actual Interest Rate":"actualInterestRatePercent", "Loan Statutory Interest Rate":"statutoryInterestRatePercent", "Loan Repayment Plan Scheduled Amount":"repaymentPlanScheduledAmount", "Loan Subsidized Usage in Years":"subsidizedUsageYears", "Loan Cumulative Payment Amount":"cumulativePaymentAmount", "Loan PSLF Cumulative Matched Months":"pslfCumulativeMatchedMonths", "Capitalized Interest":"capitalizedInterest", "Net Loan Amount":"netLoanAmount", "Calculated Subsidized Aggregate OPB":"calculatedSubsidizedAggregateOpb", "Calculated Unsubsidized Aggregate OPB":"calculatedUnsubsidizedAggregateOpb", "Calculated Combined Aggregate OPB":"calculatedCombinedAggregateOpb", "Highest Historical Outstanding Principal Balance (OPB)":"highestHistoricalOutstandingPrincipalBalance", "Current Standard-Standard Schedule Payment Amount":"currentStandardSchedulePaymentAmount", "Permanent Standard-Standard Schedule Payment Amount":"permanentStandardSchedulePaymentAmount"
     };
+    for (const token of tokens) {
+      const { key, value, lineNumber } = token;
+      if (!key) continue;
+      if (key === "File Request Date") { recognizedLabels.add(key); fileRequestDate = value || null; continue; }
+      if (key.startsWith("Student ") || key.startsWith("Grant ")) { recognizedLabels.add(key); if (key.startsWith("Student ")) student[key] = value; continue; }
+      if (key === "Loan Award ID") {
+        recognizedLabels.add(key);
+        if (!current) current = newLoan();
+        else if (current.__hasAwardAnchor) { pushCurrent(); current = newLoan(); }
+        current.__hasAwardAnchor = true;
+        const masked = maskStudentAidIdentifierLocal(value);
+        if (masked) { current.maskedAwardId = masked; current.provenance.maskedAwardId = "derived_studentaid"; }
+        continue;
+      }
+      if ((!hasAwardAnchors || !awardFirstLayout) && (key === "Loan Type Code" || key === "Loan Type")) {
+        recognizedLabels.add(key);
+        pushCurrent();
+        current = newLoan();
+        current[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = value || null;
+        if (value) current.provenance[key === "Loan Type Code" ? "loanTypeCode" : "loanTypeDescription"] = "imported_studentaid";
+        continue;
+      }
