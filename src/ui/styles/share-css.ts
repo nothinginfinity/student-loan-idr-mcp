@@ -1,6 +1,6 @@
 export const SHARE_CSS = String.raw`    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light dark; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: Canvas; color: CanvasText; line-height: 1.5; }
+    body { margin: 0; background: radial-gradient(900px 320px at 10% -15%, color-mix(in srgb, #0f6e56 14%, transparent), transparent 55%), Canvas; color: CanvasText; line-height: 1.5; }
     main { width: min(760px, calc(100% - 28px)); margin: 0 auto; padding: 32px 0 60px; }
     h1 { font-size: clamp(1.6rem, 5vw, 2.4rem); line-height: 1.1; letter-spacing: -.03em; margin: 8px 0 14px; }
     h2, h3 { margin-top: 0; }
