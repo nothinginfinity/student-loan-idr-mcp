@@ -1,4 +1,32 @@
 export const BORROWER_BOOT = String.raw`(() => {
+  const activateStep = (name) => {
+    document.querySelectorAll("[data-step-panel]").forEach((panel) => {
+      panel.hidden = panel.getAttribute("data-step-panel") !== name;
+    });
+    document.querySelectorAll(".step-tab").forEach((tab) => {
+      if (tab.getAttribute("data-step") === name) tab.setAttribute("aria-current", "step");
+      else tab.removeAttribute("aria-current");
+    });
+    const map = { portfolio: "loan-import", profile: "calculator-form", guide: "guided-assistant", analysis: "results" };
+    const target = document.getElementById(map[name] || "");
+    if (target) target.scrollIntoView({ block: "start" });
+  };
+  document.querySelector(".step-rail")?.addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-step]");
+    if (tab) activateStep(tab.getAttribute("data-step"));
+  });
+  const hashStep = {
+    "#loan-import": "portfolio",
+    "#calculator-form": "profile",
+    "#guided-assistant": "guide",
+    "#document-workspace": "guide",
+    "#results": "analysis",
+    "#borrower-consultation-workspace": "analysis",
+    "#advisor-comparison-workspace": "analysis"
+  };
+  const initial = hashStep[location.hash] || "portfolio";
+  activateStep(initial);
+  window.addEventListener("hashchange", () => activateStep(hashStep[location.hash] || "portfolio"));
   const form = document.getElementById("calculator-form");
   const cadence = document.getElementById("cadence");
   const hoursField = document.getElementById("hours-field");

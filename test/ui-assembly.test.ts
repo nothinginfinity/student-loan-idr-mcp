@@ -1,22 +1,41 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 import { BORROWER_UI_HTML } from "../src/ui/pages/borrower.ts";
 import { ADVISOR_UI_HTML } from "../src/ui/pages/advisor-workspace.ts";
 import { SHARE_UI_HTML } from "../src/ui/pages/share.ts";
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-describe("V0.9.10B presentation assembly parity", () => {
-  it("keeps borrower HTML identical to the V0.9.10A extracted template", () => {
-    assert.equal(sha256(BORROWER_UI_HTML), "a28ae78d0ae30734ae412906452a0a6135e6f32aeaf5e2ac24df99cb50da622d");
+describe("V0.9.10C visual workflow contracts", () => {
+  it("keeps frozen borrower IDs and four-step chrome", () => {
+    for (const id of [
+      "calculator-form",
+      "guided-assistant",
+      "guide-answers",
+      "guide-input",
+      "document-workspace",
+      "income-readiness-panel",
+      "readiness-summary",
+      "income-source-readiness",
+      "document-scope",
+      "document-reviewed",
+      "loan-file",
+      "borrower-consultation-workspace"
+    ]) {
+      assert.match(BORROWER_UI_HTML, new RegExp(`id="${id}"`));
+    }
+    assert.match(BORROWER_UI_HTML, /class="step-rail"/);
+    assert.match(BORROWER_UI_HTML, /data-step-panel="portfolio"/);
+    assert.match(BORROWER_UI_HTML, /data-step-panel="profile"/);
+    assert.match(BORROWER_UI_HTML, /data-step-panel="guide"/);
+    assert.match(BORROWER_UI_HTML, /data-step-panel="analysis"/);
   });
-  it("keeps advisor workspace HTML identical to the V0.9.10A extracted template", () => {
-    assert.equal(sha256(ADVISOR_UI_HTML), "cc906ec981cad04ce5ab5b168abf54fd21a073c8ca38942e2201deb3a032b0e5");
+  it("keeps frozen advisor workspace IDs", () => {
+    for (const id of ["login-form", "register-form", "create-client-form", "client-list"]) {
+      assert.match(ADVISOR_UI_HTML, new RegExp(`id="${id}"`));
+    }
   });
-  it("keeps share HTML identical to the V0.9.10A extracted template", () => {
-    assert.equal(sha256(SHARE_UI_HTML), "84bb3a3feb14cb0da511eb19e3ccac3162dd546912295baeab5f8c14ad770f36");
+  it("keeps frozen share page IDs", () => {
+    for (const id of ["status-line", "chart-panel", "select-panel", "sign-panel", "signed-panel"]) {
+      assert.match(SHARE_UI_HTML, new RegExp(`id="${id}"`));
+    }
   });
 });

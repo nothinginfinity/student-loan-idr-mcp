@@ -1,6 +1,9 @@
 export const BORROWER_CSS = String.raw`    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light dark; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: Canvas; color: CanvasText; line-height: 1.5; }
+    :root { --ink: CanvasText; --paper: Canvas; --accent: #0f6e56; --line: color-mix(in srgb, CanvasText 16%, transparent); --raise: color-mix(in srgb, CanvasText 4%, Canvas); }
+    body { margin: 0; background:
+      radial-gradient(1200px 420px at 8% -10%, color-mix(in srgb, #0f6e56 16%, transparent), transparent 60%),
+      Canvas; color: CanvasText; line-height: 1.5; }
     main { width: min(1040px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0 64px; }
     h1 { font-size: clamp(2rem, 7vw, 4rem); line-height: 1; letter-spacing: -0.045em; margin: 0 0 16px; }
     h2 { margin-top: 0; }
@@ -88,10 +91,12 @@ export const BORROWER_CSS = String.raw`    :root { font-family: Inter, ui-sans-s
     ul { padding-left: 22px; }
     a { color: inherit; }
     footer { margin-top: 36px; font-size: .9rem; color: color-mix(in srgb, CanvasText 65%, transparent); }
-    .jump-nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 24px; }
-    .jump-nav a { display: inline-flex; align-items: center; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 999px; padding: 8px 12px; text-decoration: none; font-weight: 700; background: color-mix(in srgb, CanvasText 4%, Canvas); }
+    .step-rail { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 18px 0 24px; position: sticky; top: 0; z-index: 30; padding: 10px 0 8px; background: color-mix(in srgb, Canvas 88%, transparent); backdrop-filter: blur(10px); }
+    .step-tab { width: 100%; border-radius: 14px; padding: 10px 12px; background: var(--raise); color: CanvasText; border: 1px solid var(--line); font-weight: 750; min-height: 44px; }
+    .step-tab[aria-current="step"] { background: #0f6e56; color: #f4fff9; border-color: #0f6e56; }
+    .step-panel[hidden] { display: none !important; }
     .field-completion { margin: -8px 0 16px; font-size: .92rem; }
-    @media (max-width: 700px) { .grid, .summary, .fact-grid, .comparison-cards, .chart-grid, .history-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } .jump-nav { position: sticky; top: 0; z-index: 20; background: Canvas; gap: 7px; margin: 0 0 20px; padding: 10px 0 8px; } .jump-nav a { flex: 1 1 calc(50% - 7px); justify-content: center; min-height: 44px; } #guided-assistant, #loan-import, #calculator-form, #results { scroll-margin-top: 68px; } }
+    @media (max-width: 700px) { .grid, .summary, .fact-grid, .comparison-cards, .chart-grid, .history-grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } main { width: min(100% - 24px, 1040px); padding-top: 28px; } .step-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); } #guided-assistant, #loan-import, #calculator-form, #results { scroll-margin-top: 96px; } }
     .field-color-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 4px 0 18px; }
     .field-color-toggle input { width: auto; }
     label[data-fill-state] { border-left: 4px solid transparent; border-radius: 6px; padding-left: 10px; margin-left: -14px; transition: border-color .15s ease, background-color .15s ease; }
