@@ -4,11 +4,11 @@ export const BORROWER_MARKUP = String.raw`<main>
   <p class="lede">This calculator annualizes the income facts you enter and applies the same deterministic RAP, IBR, PAYE, and ICR formulas exposed by this Worker’s MCP tools. It is an estimate—not an official eligibility or billing decision.</p>
   <div class="notice"><strong>Privacy:</strong> this page has no analytics, no external assets, and no browser storage. Calculation inputs are sent only to this same Worker for the current request. A StudentAid.gov loan-data file is parsed locally in your browser and the raw file is never uploaded. Do not enter SSNs, account numbers, or fabricated facts.</div>
   <p class="muted">Working with multiple borrowers? <a href="/advisor">Open the advisor / manager workspace</a>. The direct borrower workflow remains available without an account.</p>
-  <nav class="jump-nav" aria-label="Jump to workflow section">
-    <a href="#guided-assistant">Guide</a>
-    <a href="#loan-import">Loan import</a>
-    <a href="#calculator-form">Calculator</a>
-    <a href="#results">Results</a>
+  <nav class="step-rail" aria-label="Borrower workflow steps">
+    <button type="button" class="step-tab" data-step="portfolio" aria-current="step">1. Portfolio</button>
+    <button type="button" class="step-tab" data-step="profile">2. Household</button>
+    <button type="button" class="step-tab" data-step="guide">3. Guided assistant</button>
+    <button type="button" class="step-tab" data-step="analysis">4. Analysis</button>
   </nav>
 
   <section class="advisor-savebar" id="advisor-client-bar" hidden aria-labelledby="advisor-client-title">
@@ -89,6 +89,7 @@ export const BORROWER_MARKUP = String.raw`<main>
     </div>
   </section>
 
+  <div class="step-panel" data-step-panel="guide" hidden>
   <section class="workspace" id="guided-assistant" aria-labelledby="guided-assistant-title">
     <div class="guide-head">
       <div>
@@ -170,6 +171,8 @@ export const BORROWER_MARKUP = String.raw`<main>
     </div>
   </section>
 
+  </div>
+  <div class="step-panel" data-step-panel="portfolio">
   <section class="workspace" id="loan-import" aria-labelledby="loan-import-title">
     <h2 id="loan-import-title">Import your federal loan portfolio</h2>
     <p><span class="basis">Imported fact</span>Choose the <strong>Download My Aid Data</strong> text file from StudentAid.gov. The raw file can contain personal contact information, so this page reads it only on this device, extracts active loan balance/rate/type/date facts, and never uploads the raw text.</p>
@@ -191,6 +194,8 @@ export const BORROWER_MARKUP = String.raw`<main>
     </div>
   </section>
 
+  </div>
+  <div class="step-panel" data-step-panel="profile" hidden>
   <form id="calculator-form">
     <label class="field-color-toggle"><input type="checkbox" id="field-color-toggle" checked> Show field-status colors (green = has a value, red = required &amp; missing, purple = optional)</label>
     <p id="field-completion" class="field-completion muted" role="status" aria-live="polite"></p>
@@ -299,6 +304,8 @@ export const BORROWER_MARKUP = String.raw`<main>
     </div>
   </form>
 
+  </div>
+  <div class="step-panel" data-step-panel="analysis" hidden>
   <section id="results" aria-live="polite"></section>
 
   <section class="workspace consultation-workspace" id="borrower-consultation-workspace" hidden aria-labelledby="borrower-consultation-title">
@@ -316,6 +323,7 @@ export const BORROWER_MARKUP = String.raw`<main>
     </form>
     <p id="borrower-consultation-status" class="muted" role="status" aria-live="polite">Calculate first, then ask about that estimate. This consultation is not persisted.</p>
   </section>
+  </div>
   <footer>Official eligibility and payment amounts come from the U.S. Department of Education and your loan servicer. SAVE is not modeled in this 2026-08-27 policy snapshot.</footer>
 </main>
 `;
