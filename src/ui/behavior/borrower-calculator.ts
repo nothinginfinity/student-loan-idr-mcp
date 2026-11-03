@@ -134,6 +134,7 @@ export const BORROWER_CALCULATOR = String.raw`  function provenanceLabel(value) 
     [...result.assumptions, ...result.warnings].forEach((item) => list.appendChild(addText("li", item)));
     caveats.appendChild(list);
     results.appendChild(caveats);
+    document.dispatchEvent(new CustomEvent("borrower:calculated", { detail: result }));
   }
 
   const guidedFacts = new Map();
