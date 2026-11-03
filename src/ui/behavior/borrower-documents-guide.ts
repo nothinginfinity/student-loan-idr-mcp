@@ -758,6 +758,7 @@ export const BORROWER_DOCUMENTS_GUIDE = String.raw`  function refreshDocumentSco
       status.textContent = "Estimate ready.";
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : "Calculation failed.";
+      document.dispatchEvent(new CustomEvent("borrower:calculate-error", { detail: status.textContent }));
     } finally {
       submit.disabled = false;
     }
