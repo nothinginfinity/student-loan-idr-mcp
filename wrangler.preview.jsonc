@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "student-loan-idr-pr11-preview",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-27",
+  "workers_dev": true,
+  "ai": {
+    "binding": "AI"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
