@@ -68,9 +68,23 @@ jobs:
           set -euo pipefail
           node --input-type=module <<'NODE'
           const base = process.env.PREVIEW_URL;
-          const ui = await fetch(base);
-          const html = await ui.text();
-          if (!ui.ok || !html.includes('id="explorer-range"') || !html.includes('id="calculator-form"')) throw new Error('Borrower explorer missing from deployed preview');
+          let html = "";
+          let uiStatus = 0;
+          let ready = false;
+          for (let attempt = 1; attempt <= 12; attempt++) {
+            try {
+              const ui = await fetch(base, { cache: "no-store" });
+              uiStatus = ui.status;
+              html = await ui.text();
+              ready = ui.ok && html.includes('id="explorer-range"') && html.includes('id="calculator-form"');
+              if (ready) break;
+              console.log("Preview UI not yet ready:", attempt, "status:", uiStatus, "html bytes:", html.length, "explorer:", html.includes('id="explorer-range"'));
+            } catch (error) {
+              console.log("Preview propagation attempt:", attempt, String(error));
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+          if (!ready) throw new Error("Preview UI did not become ready; status=" + uiStatus + ", html bytes=" + html.length + ", explorer=" + html.includes('id="explorer-range"'));
           const response = await fetch(base + '/api/calculate', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
