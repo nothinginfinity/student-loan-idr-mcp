@@ -230,11 +230,22 @@ export const BORROWER_EXPLORER_SCRIPT = String.raw`(() => {
   view.addEventListener("click",() => document.querySelector('.step-tab[data-step="analysis"]')?.click());
   document.addEventListener("borrower:calculated",(event) => {
     waiting = false;
-    latestResult = event.detail;
+    latestResult = dirty ? null : event.detail;
     renderActive();
     if (dirty) {
+      status.textContent = "Inputs changed · updating estimate…";
       if (timer) clearTimeout(timer);
       timer = setTimeout(runCalculation,250);
+    }
+  });
+  document.addEventListener("borrower:calculate-error",(event) => {
+    waiting = false;
+    latestResult = null;
+    renderActive();
+    status.textContent = String(event.detail || "Calculation failed. Review the Household form.");
+    if (dirty) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(runCalculation,400);
     }
   });
   syncFromSource();
